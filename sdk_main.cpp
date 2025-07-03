@@ -43,7 +43,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.0.0",
+    "1.0.1",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -175,8 +175,10 @@ private:
     // Helper functions for APIs
     pfc::string8 url_encode(const pfc::string8& str);
     bool http_get_request(const pfc::string8& url, pfc::string8& response);
+    bool http_get_request_with_discogs_auth(const pfc::string8& url, pfc::string8& response);
     bool parse_itunes_response(const pfc::string8& json, pfc::string8& artwork_url);
     bool parse_discogs_response(const pfc::string8& json, pfc::string8& artwork_url);
+    bool parse_discogs_release_details(const pfc::string8& json, pfc::string8& artwork_url);
     bool parse_lastfm_response(const pfc::string8& json, pfc::string8& artwork_url);
     bool download_image(const pfc::string8& url, std::vector<BYTE>& data);
     bool create_bitmap_from_data(const std::vector<BYTE>& data);
@@ -300,9 +302,8 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
         return 0;
     }
     case WM_SIZE:
-        // Reload artwork at new size when window is resized
-        if (self && self->m_current_track.is_valid()) {
-            self->load_artwork_for_track(self->m_current_track);
+        // Just repaint the existing artwork at new size - don't reload
+        if (self) {
             InvalidateRect(hwnd, NULL, TRUE);
         }
         return 0;
@@ -1418,6 +1419,112 @@ bool artwork_ui_element::http_get_request(const pfc::string8& url, pfc::string8&
     return success;
 }
 
+// HTTP GET request with Discogs API authentication
+bool artwork_ui_element::http_get_request_with_discogs_auth(const pfc::string8& url, pfc::string8& response) {
+    bool success = false;
+    
+    // Convert URL to wide string
+    pfc::stringcvt::string_wide_from_utf8 wide_url(url);
+    
+    // Parse URL
+    URL_COMPONENTS urlComp = {};
+    urlComp.dwStructSize = sizeof(urlComp);
+    urlComp.dwSchemeLength = (DWORD)-1;
+    urlComp.dwHostNameLength = (DWORD)-1;
+    urlComp.dwUrlPathLength = (DWORD)-1;
+    urlComp.dwExtraInfoLength = (DWORD)-1;
+    
+    if (!WinHttpCrackUrl(wide_url, 0, 0, &urlComp)) {
+        return false;
+    }
+    
+    // Open session
+    HINTERNET hSession = WinHttpOpen(L"foobar2000-artwork/1.0", 
+                                     WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                     WINHTTP_NO_PROXY_NAME, 
+                                     WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return false;
+    
+    // Connect to server
+    pfc::array_t<WCHAR> hostname;
+    hostname.set_size(urlComp.dwHostNameLength + 1);
+    wcsncpy_s(hostname.get_ptr(), hostname.get_size(), urlComp.lpszHostName, urlComp.dwHostNameLength);
+    hostname[urlComp.dwHostNameLength] = 0;
+    
+    HINTERNET hConnect = WinHttpConnect(hSession, hostname.get_ptr(), 
+                                        urlComp.nPort, 0);
+    if (hConnect) {
+        // Build path
+        pfc::array_t<WCHAR> path;
+        DWORD pathLen = urlComp.dwUrlPathLength + urlComp.dwExtraInfoLength + 1;
+        path.set_size(pathLen);
+        wcsncpy_s(path.get_ptr(), path.get_size(), urlComp.lpszUrlPath, pathLen - 1);
+        path[pathLen - 1] = 0;
+        
+        // Open request
+        DWORD flags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path.get_ptr(),
+                                                NULL, WINHTTP_NO_REFERER,
+                                                WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+        if (hRequest) {
+            // Build authorization header using proper Discogs format
+            pfc::string8 auth_header;
+            if (cfg_discogs_key.get_length() > 0) {
+                // Use Personal Access Token format (recommended)
+                auth_header << "Discogs token=" << cfg_discogs_key;
+            } else if (cfg_discogs_consumer_key.get_length() > 0 && cfg_discogs_consumer_secret.get_length() > 0) {
+                // Use Consumer Key/Secret for OAuth (more complex, try simple approach first)
+                auth_header << "Discogs key=" << cfg_discogs_consumer_key << ", secret=" << cfg_discogs_consumer_secret;
+            } else {
+                // No authentication - will likely fail but try anyway
+                auth_header = "";
+            }
+            
+            // Add User-Agent header (required by Discogs)
+            pfc::stringcvt::string_wide_from_utf8 user_agent_header("User-Agent: foobar2000-artwork/1.0\r\n");
+            
+            // Add authorization header if we have credentials
+            pfc::string8 headers_str;
+            headers_str << "User-Agent: foobar2000-artwork/1.0\r\n";
+            if (auth_header.get_length() > 0) {
+                headers_str << "Authorization: " << auth_header << "\r\n";
+            }
+            
+            pfc::stringcvt::string_wide_from_utf8 headers_wide(headers_str);
+            
+            pfc::string8 debug_auth;
+            debug_auth << "Discogs auth headers: " << headers_str << "\n";
+            OutputDebugStringA(debug_auth);
+            
+            // Send request with headers
+            if (WinHttpSendRequest(hRequest, headers_wide, -1,
+                                   WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+                WinHttpReceiveResponse(hRequest, NULL)) {
+                
+                // Read response
+                DWORD bytesAvailable = 0;
+                if (WinHttpQueryDataAvailable(hRequest, &bytesAvailable) && bytesAvailable > 0) {
+                    pfc::array_t<char> buffer;
+                    buffer.set_size(bytesAvailable + 1);
+                    
+                    DWORD bytesRead = 0;
+                    if (WinHttpReadData(hRequest, buffer.get_ptr(), bytesAvailable, &bytesRead)) {
+                        buffer[bytesRead] = 0;
+                        response = buffer.get_ptr();
+                        success = true;
+                    }
+                }
+            }
+            
+            WinHttpCloseHandle(hRequest);
+        }
+        WinHttpCloseHandle(hConnect);
+    }
+    WinHttpCloseHandle(hSession);
+    
+    return success;
+}
+
 // Simple JSON parser for iTunes response
 bool artwork_ui_element::parse_itunes_response(const pfc::string8& json, pfc::string8& artwork_url) {
     // Look for artworkUrl100 field
@@ -1814,6 +1921,11 @@ void artwork_ui_element::search_discogs_artwork(metadb_handle_ptr track) {
         return;
     }
     
+    // Create search key for caching (same format as other APIs)
+    pfc::string8 search_key;
+    search_key << artist << "|" << title;
+    m_current_search_key = search_key;
+    
     pfc::string8 debug_msg;
     debug_msg << "Discogs search for: " << artist << " - " << title << "\n";
     OutputDebugStringA(debug_msg);
@@ -1824,33 +1936,123 @@ void artwork_ui_element::search_discogs_artwork(metadb_handle_ptr track) {
 }
 
 void artwork_ui_element::search_discogs_background(pfc::string8 artist, pfc::string8 title) {
-    // Build Discogs API URL
+    // Build Discogs API URL with proper format (artist - title)
     pfc::string8 search_url = "https://api.discogs.com/database/search?q=";
-    search_url << url_encode(artist) << "%20" << url_encode(title);
-    search_url << "&type=release&format=json";
+    search_url << url_encode(artist) << "%20-%20" << url_encode(title);
+    search_url << "&type=release";
     
-    // Add API key if configured
+    // Add authentication parameters based on available credentials
     if (cfg_discogs_key.get_length() > 0) {
-        search_url << "&key=" << cfg_discogs_key;
+        // Use personal access token
+        search_url << "&token=" << cfg_discogs_key;
+    } else if (cfg_discogs_consumer_key.get_length() > 0 && cfg_discogs_consumer_secret.get_length() > 0) {
+        // Use consumer key/secret
+        search_url << "&key=" << cfg_discogs_consumer_key << "&secret=" << cfg_discogs_consumer_secret;
     }
+    
+    pfc::string8 debug_search;
+    debug_search << "Discogs search terms - Artist: '" << artist << "' Title: '" << title << "'\n";
+    OutputDebugStringA(debug_search);
+    
+    pfc::string8 debug_msg;
+    debug_msg << "Discogs request URL: " << search_url << "\n";
+    OutputDebugStringA(debug_msg);
     
     pfc::string8 response;
     if (http_get_request(search_url, response)) {
+        pfc::string8 debug_resp;
+        debug_resp << "Discogs HTTP success - response length: " << response.get_length() << "\n";
+        OutputDebugStringA(debug_resp);
+        
+        if (response.get_length() > 0) {
+            pfc::string8 debug_json;
+            debug_json << "Discogs JSON response: " << response.subString(0, std::min<size_t>(500, response.get_length())) << "...\n";
+            OutputDebugStringA(debug_json);
+        }
+        
         pfc::string8 artwork_url;
         if (parse_discogs_response(response, artwork_url)) {
+            pfc::string8 debug_url;
+            debug_url << "Discogs artwork URL found: " << artwork_url << "\n";
+            OutputDebugStringA(debug_url);
+            
+            // Check if this is a release ID that needs a second API call
+            if (artwork_url.find_first("DISCOGS_ID:") == 0) {
+                pfc::string8 release_id = artwork_url.subString(11); // Skip "DISCOGS_ID:"
+                
+                pfc::string8 debug_release;
+                debug_release << "Discogs making release details call for ID: " << release_id << "\n";
+                OutputDebugStringA(debug_release);
+                
+                // Make second API call to get release details
+                pfc::string8 release_url = "https://api.discogs.com/releases/";
+                release_url << release_id;
+                
+                // Add authentication
+                if (cfg_discogs_key.get_length() > 0) {
+                    release_url << "?token=" << cfg_discogs_key;
+                } else if (cfg_discogs_consumer_key.get_length() > 0 && cfg_discogs_consumer_secret.get_length() > 0) {
+                    release_url << "?key=" << cfg_discogs_consumer_key << "&secret=" << cfg_discogs_consumer_secret;
+                }
+                
+                pfc::string8 release_response;
+                if (http_get_request(release_url, release_response)) {
+                    pfc::string8 debug_release_resp;
+                    debug_release_resp << "Discogs release details response length: " << release_response.get_length() << "\n";
+                    OutputDebugStringA(debug_release_resp);
+                    
+                    // Parse release details for images
+                    pfc::string8 final_artwork_url;
+                    if (parse_discogs_release_details(release_response, final_artwork_url)) {
+                        artwork_url = final_artwork_url; // Update with actual image URL
+                        
+                        pfc::string8 debug_final;
+                        debug_final << "Discogs final image URL: " << artwork_url << "\n";
+                        OutputDebugStringA(debug_final);
+                    } else {
+                        OutputDebugStringA("Discogs failed: release details parsing failed\n");
+                        // Fall through to Last.fm
+                        if (m_hWnd) {
+                            PostMessage(m_hWnd, WM_USER + 4, 0, 0);
+                        }
+                        return;
+                    }
+                } else {
+                    OutputDebugStringA("Discogs failed: release details request failed\n");
+                    // Fall through to Last.fm
+                    if (m_hWnd) {
+                        PostMessage(m_hWnd, WM_USER + 4, 0, 0);
+                    }
+                    return;
+                }
+            }
+            
             // Download the artwork image
             std::vector<BYTE> image_data;
             if (download_image(artwork_url, image_data)) {
+                pfc::string8 debug_download;
+                debug_download << "Discogs image downloaded: " << image_data.size() << " bytes\n";
+                OutputDebugStringA(debug_download);
+                
                 // Create bitmap from downloaded data
                 if (create_bitmap_from_data(image_data)) {
+                    OutputDebugStringA("Discogs bitmap created successfully\n");
                     // Update UI on main thread
                     if (m_hWnd) {
                         PostMessage(m_hWnd, WM_USER + 3, 0, 0);
                     }
                     return;
+                } else {
+                    OutputDebugStringA("Discogs failed: bitmap creation failed\n");
                 }
+            } else {
+                OutputDebugStringA("Discogs failed: image download failed\n");
             }
+        } else {
+            OutputDebugStringA("Discogs failed: JSON parsing failed\n");
         }
+    } else {
+        OutputDebugStringA("Discogs failed: HTTP request failed\n");
     }
     
     // Failed to get artwork - try Last.fm
@@ -1924,6 +2126,11 @@ void artwork_ui_element::search_lastfm_artwork(metadb_handle_ptr track) {
         return;
     }
     
+    // Create search key for caching (same format as other APIs)
+    pfc::string8 search_key;
+    search_key << artist << "|" << title;
+    m_current_search_key = search_key;
+    
     pfc::string8 debug_msg;
     debug_msg << "Last.fm search for: " << artist << " - " << title << "\n";
     OutputDebugStringA(debug_msg);
@@ -1973,19 +2180,169 @@ void artwork_ui_element::search_lastfm_background(pfc::string8 artist, pfc::stri
 
 // Parse Discogs API response
 bool artwork_ui_element::parse_discogs_response(const pfc::string8& json, pfc::string8& artwork_url) {
-    // Look for "thumb" field in the first result
-    const char* results_start = strstr(json.c_str(), "\"results\":[");
-    if (!results_start) return false;
+    pfc::string8 debug_msg;
+    debug_msg << "Discogs JSON parsing - input length: " << json.get_length() << "\n";
+    OutputDebugStringA(debug_msg);
     
-    const char* thumb_key = "\"thumb\":\"";
-    const char* start = strstr(results_start, thumb_key);
-    if (!start) return false;
+    // Look for "results" array (handle both "results":[...] and "results": [...] formats)
+    const char* results_start = strstr(json.c_str(), "\"results\"");
+    if (!results_start) {
+        OutputDebugStringA("Discogs JSON: 'results' field not found\n");
+        return false;
+    }
     
-    start += strlen(thumb_key);
+    // Find the opening bracket after "results"
+    const char* bracket_start = strchr(results_start, '[');
+    if (!bracket_start) {
+        OutputDebugStringA("Discogs JSON: 'results' array bracket not found\n");
+        return false;
+    }
+    OutputDebugStringA("Discogs JSON: 'results' array found\n");
+    
+    // Check if results array is empty
+    const char* array_start = bracket_start + 1;
+    // Skip whitespace
+    while (*array_start == ' ' || *array_start == '\t' || *array_start == '\n' || *array_start == '\r') {
+        array_start++;
+    }
+    
+    if (*array_start == ']') {
+        OutputDebugStringA("Discogs JSON: results array is empty - no artwork found\n");
+        return false;
+    }
+    
+    // Log a portion of the results array to debug the structure
+    pfc::string8 debug_results;
+    debug_results << "Discogs JSON first 1000 chars of results: " << pfc::string8(bracket_start, std::min<size_t>(1000, json.get_length() - (bracket_start - json.c_str()))) << "\n";
+    OutputDebugStringA(debug_results);
+    
+    // Try multiple possible image field names in Discogs search results
+    const char* image_fields[] = {
+        "\"cover_image\":\"",
+        "\"thumb\":\"",
+        "\"resource_url\":\"",
+        "\"uri\":\""
+    };
+    
+    const char* start = nullptr;
+    const char* field_name = nullptr;
+    
+    for (int i = 0; i < 4; i++) {
+        start = strstr(bracket_start, image_fields[i]);
+        if (start) {
+            field_name = image_fields[i];
+            start += strlen(image_fields[i]);
+            
+            pfc::string8 debug_field;
+            debug_field << "Discogs JSON: found image field '" << image_fields[i] << "'\n";
+            OutputDebugStringA(debug_field);
+            break;
+        }
+    }
+    
+    if (!start) {
+        // If no direct image field found, extract the first result's ID for a detailed lookup
+        const char* id_key = "\"id\":";
+        const char* id_start = strstr(bracket_start, id_key);
+        if (id_start) {
+            id_start += strlen(id_key);
+            while (*id_start == ' ' || *id_start == '\t') id_start++;
+            
+            const char* id_end = id_start;
+            while (*id_end >= '0' && *id_end <= '9') id_end++;
+            
+            if (id_end > id_start) {
+                pfc::string8 release_id(id_start, id_end - id_start);
+                pfc::string8 debug_id;
+                debug_id << "Discogs JSON: found release ID '" << release_id << "', fetching release details\n";
+                OutputDebugStringA(debug_id);
+                
+                // Store the release ID in the artwork_url for now - this signals we need a second API call
+                artwork_url = "DISCOGS_ID:";
+                artwork_url << release_id;
+                return true;
+            }
+        }
+        
+        OutputDebugStringA("Discogs JSON: no image field or release ID found in search results\n");
+        return false;
+    }
+    
     const char* end = strchr(start, '"');
-    if (!end) return false;
+    if (!end) {
+        OutputDebugStringA("Discogs JSON: image URL end quote not found\n");
+        return false;
+    }
     
     artwork_url = pfc::string8(start, end - start);
+    pfc::string8 debug_url;
+    debug_url << "Discogs JSON: extracted URL '" << artwork_url << "' (length: " << artwork_url.length() << ")\n";
+    OutputDebugStringA(debug_url);
+    
+    return artwork_url.length() > 0;
+}
+
+// Parse Discogs release details API response
+bool artwork_ui_element::parse_discogs_release_details(const pfc::string8& json, pfc::string8& artwork_url) {
+    pfc::string8 debug_msg;
+    debug_msg << "Discogs release details parsing - input length: " << json.get_length() << "\n";
+    OutputDebugStringA(debug_msg);
+    
+    // Look for "images" array in release details
+    const char* images_start = strstr(json.c_str(), "\"images\":");
+    if (!images_start) {
+        OutputDebugStringA("Discogs release details: 'images' array not found\n");
+        return false;
+    }
+    
+    // Find the opening bracket
+    const char* bracket_start = strchr(images_start, '[');
+    if (!bracket_start) {
+        OutputDebugStringA("Discogs release details: 'images' array bracket not found\n");
+        return false;
+    }
+    
+    // Check if images array is empty
+    const char* array_start = bracket_start + 1;
+    while (*array_start == ' ' || *array_start == '\t' || *array_start == '\n' || *array_start == '\r') {
+        array_start++;
+    }
+    
+    if (*array_start == ']') {
+        OutputDebugStringA("Discogs release details: images array is empty\n");
+        return false;
+    }
+    
+    // Look for "uri" field in first image (highest quality)
+    const char* uri_key = "\"uri\":\"";
+    const char* start = strstr(bracket_start, uri_key);
+    if (!start) {
+        // Try alternative field names
+        const char* resource_key = "\"resource_url\":\"";
+        start = strstr(bracket_start, resource_key);
+        if (start) {
+            start += strlen(resource_key);
+            OutputDebugStringA("Discogs release details: 'resource_url' found\n");
+        } else {
+            OutputDebugStringA("Discogs release details: no image URL field found\n");
+            return false;
+        }
+    } else {
+        start += strlen(uri_key);
+        OutputDebugStringA("Discogs release details: 'uri' field found\n");
+    }
+    
+    const char* end = strchr(start, '"');
+    if (!end) {
+        OutputDebugStringA("Discogs release details: image URL end quote not found\n");
+        return false;
+    }
+    
+    artwork_url = pfc::string8(start, end - start);
+    pfc::string8 debug_url;
+    debug_url << "Discogs release details: extracted URL '" << artwork_url << "' (length: " << artwork_url.length() << ")\n";
+    OutputDebugStringA(debug_url);
+    
     return artwork_url.length() > 0;
 }
 
