@@ -43,7 +43,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.0.2",
+    "1.0.3",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -161,6 +161,8 @@ private:
     metadb_handle_ptr m_current_track;
     pfc::string8 m_last_search_key;  // Cache key to prevent repeated searches
     pfc::string8 m_current_search_key;  // Current search in progress
+    DWORD m_last_update_timestamp;  // Timestamp for debouncing updates
+    metadb_handle_ptr m_last_update_track;  // Track handle for smart debouncing
     
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
     void paint_artwork(HDC hdc);
@@ -176,6 +178,7 @@ private:
     pfc::string8 url_encode(const pfc::string8& str);
     bool http_get_request(const pfc::string8& url, pfc::string8& response);
     bool http_get_request_with_discogs_auth(const pfc::string8& url, pfc::string8& response);
+    void extract_metadata_for_search(metadb_handle_ptr track, pfc::string8& artist, pfc::string8& title);
     bool parse_itunes_response(const pfc::string8& json, pfc::string8& artwork_url);
     bool parse_discogs_response(const pfc::string8& json, pfc::string8& artwork_url);
     bool parse_discogs_release_details(const pfc::string8& json, pfc::string8& artwork_url);
@@ -187,7 +190,7 @@ public:
     // GUID for our element
     static const GUID g_guid;
     artwork_ui_element(HWND parent, ui_element_config::ptr config, ui_element_instance_callback::ptr callback)
-        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL) {
+        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0) {
         
         m_status_text = "No track playing";
         
@@ -279,10 +282,32 @@ public:
     
     void update_track(metadb_handle_ptr track) {
         OutputDebugStringA("UI Element: update_track called\n");
+        
+        // Smart debouncing: only debounce rapid calls for the SAME track
+        DWORD current_time = GetTickCount();
+        bool same_track = (track == m_last_update_track);
+        
+        if (same_track && current_time - m_last_update_timestamp < 500) {
+            OutputDebugStringA("UI Element: update_track debounced (same track, too soon)\n");
+            return;
+        }
+        
+        // Update debouncing state
+        m_last_update_timestamp = current_time;
+        m_last_update_track = track;
+        
+        // Store previous artwork state to detect changes
+        HBITMAP prev_artwork = m_artwork_bitmap;
+        
         m_current_track = track;
         load_artwork_for_track(track);
-        if (m_hWnd) {
+        
+        // Only invalidate if artwork actually changed
+        if (m_hWnd && m_artwork_bitmap != prev_artwork) {
+            OutputDebugStringA("UI Element: artwork changed - invalidating\n");
             InvalidateRect(m_hWnd, NULL, TRUE);
+        } else if (m_hWnd) {
+            OutputDebugStringA("UI Element: artwork unchanged - skipping invalidate\n");
         }
     }
 };
@@ -783,29 +808,16 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     // Update the search key only if we successfully loaded local artwork
     // Don't set search key if no artwork was found - let iTunes search try
     if (m_artwork_bitmap && track.is_valid()) {
-        file_info_impl info;
-        if (track->get_info(info)) {
-            pfc::string8 artist, title;
-            
-            if (info.meta_exists("ARTIST")) {
-                artist = info.meta_get("ARTIST", 0);
-            } else if (info.meta_exists("artist")) {
-                artist = info.meta_get("artist", 0);
-            }
-            
-            if (info.meta_exists("TITLE")) {
-                title = info.meta_get("TITLE", 0);
-            } else if (info.meta_exists("title")) {
-                title = info.meta_get("title", 0);
-            }
-            
-            m_last_search_key = "";
-            m_last_search_key << artist << "|" << title;
-            
-            pfc::string8 local_debug;
-            local_debug << "LOCAL ARTWORK SUCCESS - search key set to: '" << m_last_search_key << "'\n";
-            OutputDebugStringA(local_debug);
-        }
+        // Use consistent metadata extraction
+        pfc::string8 artist, title;
+        extract_metadata_for_search(track, artist, title);
+        
+        m_last_search_key = "";
+        m_last_search_key << artist << "|" << title;
+        
+        pfc::string8 local_debug;
+        local_debug << "LOCAL ARTWORK SUCCESS - search key set to: '" << m_last_search_key << "'\n";
+        OutputDebugStringA(local_debug);
     } else if (track.is_valid()) {
         // No local artwork found - clear the search key so iTunes search can proceed
         pfc::string8 clear_debug;
@@ -1544,6 +1556,85 @@ bool artwork_ui_element::http_get_request_with_discogs_auth(const pfc::string8& 
     WinHttpCloseHandle(hSession);
     
     return success;
+}
+
+// Extract consistent metadata for search keys
+void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pfc::string8& artist, pfc::string8& title) {
+    artist = "";
+    title = "";
+    
+    if (!track.is_valid()) return;
+    
+    // Use the same comprehensive extraction logic as track change detection
+    // First try window title parsing (for internet radio and dynamic content)
+    static auto find_fb2k_window_with_track_info = [](HWND hwnd, LPARAM lParam) -> BOOL {
+        auto* result = reinterpret_cast<pfc::string8*>(lParam);
+        
+        wchar_t class_name[256];
+        wchar_t window_text[512];
+        
+        if (GetClassNameW(hwnd, class_name, 256) && GetWindowTextW(hwnd, window_text, 512)) {
+            if (wcsstr(window_text, L" - ") && wcsstr(window_text, L"[foobar2000]")) {
+                pfc::stringcvt::string_utf8_from_wide text_utf8(window_text);
+                *result = text_utf8;
+                return FALSE;
+            }
+        }
+        return TRUE;
+    };
+    
+    pfc::string8 track_info_from_window;
+    EnumWindows(find_fb2k_window_with_track_info, reinterpret_cast<LPARAM>(&track_info_from_window));
+    
+    bool extracted_from_window = false;
+    
+    if (!track_info_from_window.is_empty()) {
+        pfc::string8 clean_track_info = track_info_from_window;
+        const char* fb2k_suffix = strstr(clean_track_info.c_str(), " [foobar2000]");
+        if (fb2k_suffix) {
+            clean_track_info = pfc::string8(clean_track_info.c_str(), fb2k_suffix - clean_track_info.c_str());
+        }
+        
+        const char* separator = strstr(clean_track_info.c_str(), " - ");
+        if (separator) {
+            size_t artist_len = separator - clean_track_info.c_str();
+            if (artist_len > 0) {
+                artist = pfc::string8(clean_track_info.c_str(), artist_len);
+                while (artist.length() > 0 && artist[0] == ' ') artist = artist.subString(1);
+                while (artist.length() > 0 && artist[artist.length()-1] == ' ') artist = artist.subString(0, artist.length()-1);
+            }
+            
+            const char* title_start = separator + 3;
+            if (strlen(title_start) > 0) {
+                title = pfc::string8(title_start);
+                while (title.length() > 0 && title[0] == ' ') title = title.subString(1);
+                while (title.length() > 0 && title[title.length()-1] == ' ') title = title.subString(0, title.length()-1);
+                extracted_from_window = true;
+            }
+        }
+    }
+    
+    // Fallback to basic metadata if window parsing failed or returned empty values
+    if (!extracted_from_window || artist.is_empty() || title.is_empty()) {
+        try {
+            file_info_impl info;
+            track->get_info(info);
+            
+            if (info.meta_exists("ARTIST")) {
+                artist = info.meta_get("ARTIST", 0);
+            } else if (info.meta_exists("artist")) {
+                artist = info.meta_get("artist", 0);
+            }
+            
+            if (info.meta_exists("TITLE")) {
+                title = info.meta_get("TITLE", 0);
+            } else if (info.meta_exists("title")) {
+                title = info.meta_get("title", 0);
+            }
+        } catch (...) {
+            // If metadata access fails, keep empty values
+        }
+    }
 }
 
 // Simple JSON parser for iTunes response
