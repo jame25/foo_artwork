@@ -43,7 +43,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.0.1",
+    "1.0.2",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -439,10 +439,31 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
         int window_width = rect.right - rect.left;
         int window_height = rect.bottom - rect.top;
         
-        // Calculate scaling to maintain aspect ratio and fit the entire image
+        // Calculate scaling to maintain aspect ratio with smart fill/fit logic
         float scale_x = (float)window_width / bm.bmWidth;
         float scale_y = (float)window_height / bm.bmHeight;
-        float scale = std::min(scale_x, scale_y); // Use min to fit the entire image without cropping
+        
+        // Calculate aspect ratios
+        float window_aspect = (float)window_width / window_height;
+        float image_aspect = (float)bm.bmWidth / bm.bmHeight;
+        
+        // Use smart scaling: fit for wide windows to prevent cropping
+        float scale;
+        if (window_aspect > 1.6f) {
+            // Wide window - use fit to prevent excessive cropping
+            scale = std::min(scale_x, scale_y);
+            
+            pfc::string8 debug_scale;
+            debug_scale << "Using FIT scaling for wide window (" << window_aspect << ":1)\n";
+            OutputDebugStringA(debug_scale);
+        } else {
+            // Normal/square window - use fill to eliminate empty space
+            scale = std::max(scale_x, scale_y);
+            
+            pfc::string8 debug_scale;
+            debug_scale << "Using FILL scaling for normal window (" << window_aspect << ":1)\n";
+            OutputDebugStringA(debug_scale);
+        }
         
         int scaled_width = (int)(bm.bmWidth * scale);
         int scaled_height = (int)(bm.bmHeight * scale);
