@@ -49,7 +49,7 @@ DECLARE_COMPONENT_VERSION(
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
     "- Online API fallback (iTunes, Discogs, Last.fm)\n"
     "- Configurable preferences\n\n"
-    "Author: Claude\n"
+    "Author: jame25\n"
     "Build date: " __DATE__ "\n\n"
     "This component displays cover artwork for the currently playing track."
 );

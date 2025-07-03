@@ -18,7 +18,7 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 1. Download the latest **foo_artwork.fb2k-component** from [releases](https://github.com/jame25/foo_artwork/releases)
 2. Run the file, foobar2000 will automatically restart
 
-**Note**: The component includes a fully functional preferences dialog accessible through File → Preferences → Components → Artwork Display. All API services can be configured through the preferences interface.
+**Note**: The component includes a fully functional preferences dialog accessible through File → Preferences → Tools → Artwork Display. All API services can be configured through the preferences interface.
 
 ## Configuration
 
