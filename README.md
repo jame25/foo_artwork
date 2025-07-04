@@ -159,7 +159,7 @@ The component links against:
    - Check that GDI+ is properly initialized
 
 3. **High memory usage**
-   - Clear cache manually if needed (restart foobar2000)
+   - Clear cache manually (restart foobar2000)
 
 ### Debug Information
 
