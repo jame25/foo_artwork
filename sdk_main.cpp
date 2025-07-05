@@ -45,7 +45,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.0.4",
+    "1.0.5",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -376,25 +376,25 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
     case WM_USER + 1: // Artwork found
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
-    case WM_USER + 2: // Artwork search failed - try next API
-        if (cfg_enable_discogs) {
-            pThis->search_discogs_artwork(pThis->m_current_track);
-        } else if (cfg_enable_lastfm) {
-            pThis->search_lastfm_artwork(pThis->m_current_track);
-        } else {
-            pThis->m_status_text = "No artwork found";
-            InvalidateRect(hwnd, NULL, TRUE);
-        }
-        return 0;
-    case WM_USER + 3: // Discogs search failed - try Last.fm
+    case WM_USER + 2: // iTunes search failed - try Last.fm
         if (cfg_enable_lastfm) {
             pThis->search_lastfm_artwork(pThis->m_current_track);
+        } else if (cfg_enable_discogs) {
+            pThis->search_discogs_artwork(pThis->m_current_track);
         } else {
             pThis->m_status_text = "No artwork found";
             InvalidateRect(hwnd, NULL, TRUE);
         }
         return 0;
-    case WM_USER + 4: // Last.fm search failed
+    case WM_USER + 3: // Last.fm search failed - try Discogs
+        if (cfg_enable_discogs) {
+            pThis->search_discogs_artwork(pThis->m_current_track);
+        } else {
+            pThis->m_status_text = "No artwork found";
+            InvalidateRect(hwnd, NULL, TRUE);
+        }
+        return 0;
+    case WM_USER + 4: // Discogs search failed
         pThis->m_status_text = "No artwork found";
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
@@ -599,13 +599,13 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
         if (cfg_enable_itunes) {
             search_itunes_artwork(track);
         }
-        // If iTunes failed or disabled, try Discogs API (if enabled)
-        else if (cfg_enable_discogs) {
-            search_discogs_artwork(track);
-        }
-        // If both iTunes and Discogs failed/disabled, try Last.fm API (if enabled)
+        // If iTunes failed or disabled, try Last.fm API (if enabled)
         else if (cfg_enable_lastfm) {
             search_lastfm_artwork(track);
+        }
+        // If both iTunes and Last.fm failed/disabled, try Discogs API (if enabled)
+        else if (cfg_enable_discogs) {
+            search_discogs_artwork(track);
         }
         else {
             // No APIs enabled - mark search as complete to prevent retries
@@ -862,14 +862,14 @@ void artwork_ui_element::search_discogs_background(pfc::string8 artist, pfc::str
         complete_artwork_search();
         m_status_text = "Discogs search failed";
         if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 3, 0, 0);
+            PostMessage(m_hWnd, WM_USER + 4, 0, 0);
         }
         
     } catch (...) {
         complete_artwork_search();  // Mark cache as completed
         m_status_text = "Discogs search error";
         if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 3, 0, 0);
+            PostMessage(m_hWnd, WM_USER + 4, 0, 0);
         }
     }
 }
@@ -917,13 +917,13 @@ void artwork_ui_element::search_lastfm_background(pfc::string8 artist, pfc::stri
         // Failed to get artwork
         m_status_text = "Last.fm search failed";
         if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 4, 0, 0);
+            PostMessage(m_hWnd, WM_USER + 3, 0, 0);
         }
         
     } catch (...) {
         m_status_text = "Last.fm search error";
         if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 4, 0, 0);
+            PostMessage(m_hWnd, WM_USER + 3, 0, 0);
         }
     }
 }
