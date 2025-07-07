@@ -96,8 +96,6 @@ The component uses the following priority order for artwork retrieval:
 5. **MusicBrainz API**: Searches MusicBrainz/Cover Art Archive (if enabled)
 6. **Discogs API**: Searches Discogs database (if enabled and API key provided)
 
-**Note**: Only Deezer is enabled by default. Other services can be enabled through the preferences panel.
-
 ## Building from Source
 
 ### Prerequisites
