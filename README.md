@@ -31,7 +31,6 @@ The component supports five online artwork services.
 1. **iTunes API** (No API key required)
    - Uses iTunes Search API
    - Generally has good coverage for popular music
-   - Disabled by default
 
 2. **Deezer API** (No API key required) ⭐ **Default**
    - Uses Deezer's public search API
@@ -43,21 +42,17 @@ The component supports five online artwork services.
    - Requires a free Last.fm account and API key
    - Good general coverage with community-contributed artwork
    - Get your API key from: https://www.last.fm/api/account/create
-   - Disabled by default
 
 4. **MusicBrainz API** (No API key required)
    - Uses MusicBrainz database with Cover Art Archive integration
    - Excellent for classical, jazz, and international music
    - Community-maintained database with high accuracy
-   - Complies with MusicBrainz API guidelines (proper User-Agent)
-   - Disabled by default
 
 5. **Discogs API** (Consumer key/secret required)
    - Requires a free Discogs account and consumer key/secret
    - API key is optional if consumer credentials are provided
    - Excellent for rare, underground, and vinyl releases
    - Get your credentials from: https://www.discogs.com/settings/developers
-   - Disabled by default
 
 ### Local Artwork Search
 
