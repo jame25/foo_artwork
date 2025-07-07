@@ -2,7 +2,7 @@
 #include "resource.h"
 
 // Reference to configuration variables defined in sdk_main.cpp
-extern cfg_bool cfg_enable_itunes, cfg_enable_discogs, cfg_enable_lastfm;
+extern cfg_bool cfg_enable_itunes, cfg_enable_discogs, cfg_enable_lastfm, cfg_enable_deezer, cfg_enable_musicbrainz;
 extern cfg_string cfg_discogs_key, cfg_discogs_consumer_key, cfg_discogs_consumer_secret, cfg_lastfm_key;
 
 // External declaration from sdk_main.cpp
@@ -86,6 +86,8 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         CheckDlgButton(hwnd, IDC_ENABLE_ITUNES, cfg_enable_itunes ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_ENABLE_DISCOGS, cfg_enable_discogs ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_ENABLE_LASTFM, cfg_enable_lastfm ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_ENABLE_DEEZER, cfg_enable_deezer ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_ENABLE_MUSICBRAINZ, cfg_enable_musicbrainz ? BST_CHECKED : BST_UNCHECKED);
         
         // Initialize text fields
         SetDlgItemTextA(hwnd, IDC_DISCOGS_KEY, cfg_discogs_key);
@@ -105,7 +107,9 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_COMMAND:
         if (HIWORD(wp) == BN_CLICKED && (LOWORD(wp) == IDC_ENABLE_ITUNES || 
                                          LOWORD(wp) == IDC_ENABLE_DISCOGS || 
-                                         LOWORD(wp) == IDC_ENABLE_LASTFM)) {
+                                         LOWORD(wp) == IDC_ENABLE_LASTFM ||
+                                         LOWORD(wp) == IDC_ENABLE_DEEZER ||
+                                         LOWORD(wp) == IDC_ENABLE_MUSICBRAINZ)) {
             p_this->update_controls();
             p_this->on_changed();
         } else if (HIWORD(wp) == EN_CHANGE && (LOWORD(wp) == IDC_DISCOGS_KEY ||
@@ -146,6 +150,8 @@ bool artwork_preferences::has_changed() {
     bool itunes_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_ITUNES) == BST_CHECKED) != cfg_enable_itunes;
     bool discogs_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_DISCOGS) == BST_CHECKED) != cfg_enable_discogs;
     bool lastfm_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_LASTFM) == BST_CHECKED) != cfg_enable_lastfm;
+    bool deezer_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_DEEZER) == BST_CHECKED) != cfg_enable_deezer;
+    bool musicbrainz_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_MUSICBRAINZ) == BST_CHECKED) != cfg_enable_musicbrainz;
     
     // Check text fields
     char buffer[256];
@@ -162,7 +168,7 @@ bool artwork_preferences::has_changed() {
     GetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, buffer, sizeof(buffer));
     bool lastfm_key_changed = strcmp(buffer, cfg_lastfm_key) != 0;
     
-    return itunes_changed || discogs_changed || lastfm_changed || 
+    return itunes_changed || discogs_changed || lastfm_changed || deezer_changed || musicbrainz_changed ||
            discogs_key_changed || discogs_consumer_key_changed || 
            discogs_consumer_secret_changed || lastfm_key_changed;
 }
@@ -172,6 +178,8 @@ void artwork_preferences::apply_settings() {
         cfg_enable_itunes = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_ITUNES) == BST_CHECKED);
         cfg_enable_discogs = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_DISCOGS) == BST_CHECKED);
         cfg_enable_lastfm = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_LASTFM) == BST_CHECKED);
+        cfg_enable_deezer = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_DEEZER) == BST_CHECKED);
+        cfg_enable_musicbrainz = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_MUSICBRAINZ) == BST_CHECKED);
         
         char buffer[256];
         
@@ -195,6 +203,8 @@ void artwork_preferences::reset_settings() {
         CheckDlgButton(m_hwnd, IDC_ENABLE_ITUNES, BST_CHECKED);
         CheckDlgButton(m_hwnd, IDC_ENABLE_DISCOGS, BST_CHECKED);
         CheckDlgButton(m_hwnd, IDC_ENABLE_LASTFM, BST_CHECKED);
+        CheckDlgButton(m_hwnd, IDC_ENABLE_DEEZER, BST_CHECKED);
+        CheckDlgButton(m_hwnd, IDC_ENABLE_MUSICBRAINZ, BST_CHECKED);
         
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_KEY, "");
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_KEY, "");
