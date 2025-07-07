@@ -1,6 +1,6 @@
 # foobar2000 Artwork Display Component
 
-A comprehensive foobar2000 64-bit component that displays cover artwork for currently playing tracks and internet radio streams with intelligent fallback support.
+A comprehensive foobar2000 64-bit component that displays cover artwork for currently playing tracks and internet radio streams with intelligent API fallback support.
 
 ![foo_artwork](https://github.com/user-attachments/assets/c21a1949-ef8f-4d58-904e-0ff88dedd635)
 
