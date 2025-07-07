@@ -11,6 +11,8 @@
 extern cfg_bool cfg_enable_itunes;
 extern cfg_bool cfg_enable_discogs;
 extern cfg_bool cfg_enable_lastfm;
+extern cfg_bool cfg_enable_deezer;
+extern cfg_bool cfg_enable_musicbrainz;
 extern cfg_string cfg_itunes_key;
 extern cfg_string cfg_discogs_key;
 extern cfg_string cfg_lastfm_key;
