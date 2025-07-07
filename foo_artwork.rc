@@ -12,8 +12,10 @@ FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
     GROUPBOX        "API Services",IDC_STATIC,10,10,321,190
     
-    CONTROL         "iTunes",IDC_ENABLE_ITUNES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,28,100,12
-    LTEXT           "iTunes API requires no key - just enable it.",IDC_STATIC,35,45,200,10
+    CONTROL         "iTunes",IDC_ENABLE_ITUNES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,28,70,12
+    CONTROL         "Deezer",IDC_ENABLE_DEEZER,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,100,28,70,12
+    CONTROL         "MusicBrainz",IDC_ENABLE_MUSICBRAINZ,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,180,28,85,12
+    LTEXT           "These services require no API key.",IDC_STATIC,35,45,200,10
     
     CONTROL         "Discogs",IDC_ENABLE_DISCOGS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,65,100,12
     LTEXT           "Discogs API Key:",IDC_STATIC,35,82,85,10
@@ -30,6 +32,6 @@ BEGIN
     LTEXT           "Note: API keys are optional but recommended for better search results.",IDC_STATIC,20,177,300,10
     
     GROUPBOX        "Information",IDC_STATIC,10,210,321,40
-    LTEXT           "API Priority: iTunes > Last.fm > Discogs",IDC_STATIC,20,225,200,10
+    LTEXT           "API Priority: iTunes > Deezer > Last.fm > MusicBrainz > Discogs",IDC_STATIC,20,225,300,10
     LTEXT           "For local files, local artwork is checked first before APIs.",IDC_STATIC,20,237,250,10
 END
