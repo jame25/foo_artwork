@@ -232,7 +232,7 @@ public:
             wc.lpfnWndProc = WindowProc;
             wc.hInstance = g_hIns;
             wc.lpszClassName = L"foo_artwork_window";
-            wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+            wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
             wc.hCursor = LoadCursor(NULL, IDC_ARROW);
             RegisterClass(&wc);
             class_registered = true;
@@ -427,9 +427,9 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
     RECT clientRect;
     GetClientRect(m_hWnd, &clientRect);
     
-    // Use system colors
-    COLORREF bg_color = GetSysColor(COLOR_WINDOW);
-    COLORREF text_color = GetSysColor(COLOR_WINDOWTEXT);
+    // Use black background and white text
+    COLORREF bg_color = RGB(0, 0, 0);     // Black background
+    COLORREF text_color = RGB(255, 255, 255);  // White text
     
     // Fill background
     HBRUSH bgBrush = CreateSolidBrush(bg_color);
@@ -651,6 +651,19 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     // Use the already-extracted and cleaned metadata
     pfc::string8 search_key = artist + "|" + title;
     
+    // Determine search priority (higher is better)
+    int search_priority = 0;
+    if (!artist.is_empty() && !title.is_empty()) {
+        search_priority = 3; // Both artist and title = highest priority
+    } else if (!title.is_empty()) {
+        search_priority = 2; // Title only = medium priority  
+    } else {
+        search_priority = 1; // Neither artist nor title = lowest priority
+    }
+    
+    // Add member variable to track last search priority
+    static int last_search_priority = 0;
+    
     // Check if we already have artwork for this search or search is in progress
     static DWORD last_search_time = 0;
     DWORD current_time = GetTickCount();
@@ -667,6 +680,18 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
         OutputDebugStringA(debug);
         return;
     }
+    
+    // Don't override higher priority artwork with lower priority
+    if (search_priority < last_search_priority && !enough_time_passed) {
+        pfc::string8 priority_debug;
+        priority_debug << "Skipping lower priority search (priority " << search_priority 
+                      << " vs previous " << last_search_priority << ") for: " << search_key << "\n";
+        OutputDebugStringA(priority_debug);
+        return;
+    }
+    
+    // Update priority tracking
+    last_search_priority = search_priority;
     
     // Clear any stale search state
     m_current_search_key = "";
