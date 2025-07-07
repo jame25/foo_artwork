@@ -1,14 +1,16 @@
 # foobar2000 Artwork Display Component
 
-A comprehensive foobar2000 component that displays cover artwork for currently playing tracks and internet radio streams with intelligent fallback support.
+A comprehensive foobar2000 component that displays cover artwork for currently playing tracks and internet radio streams with intelligent fallback support. This component is designed for 64-bit foobar2000.
+
+![foo_artwork](https://github.com/user-attachments/assets/c21a1949-ef8f-4d58-904e-0ff88dedd635)
 
 ## Features
 
 - **Local Artwork Search**: Automatically searches for artwork files in the same directory as your music files
-- **Online API Integration**: Falls back to iTunes, Discogs, and Last.fm APIs when local artwork is not found
+- **Online API Integration**: Falls back to iTunes, Deezer, Last.fm, MusicBrainz, and Discogs APIs when local artwork is not found
 - **Internet Radio Support**: Displays artwork for internet radio streams using metadata
 - **Configurable API Services**: Enable/disable individual API services and manage API keys
-- **Smart Caching**: Prevents repeated API calls for the same track with intelligent caching
+- **Smart Caching**: Prevents repeated API calls for the same track during the current session
 - **High-Quality Display**: Uses GDI+ for smooth, high-quality artwork rendering with aspect ratio preservation
 - **Responsive Scaling**: Automatically scales artwork to fit window size while maintaining aspect ratio
 - **Dark Theme Support**: Seamless integration with foobar2000's dark mode
@@ -24,22 +26,38 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 
 ### API Services
 
-The component supports three online artwork services with configurable priority:
+The component supports five online artwork services.
 
 1. **iTunes API** (No API key required)
    - Uses iTunes Search API
    - Generally has good coverage for popular music
+   - Disabled by default
 
-2. **Discogs API** (Consumer key/secret required)
-   - Requires a free Discogs account and consumer key/secret
-   - API key is optional if consumer credentials are provided
-   - Excellent for rare and underground music
-   - Get your credentials from: https://www.discogs.com/settings/developers
+2. **Deezer API** (No API key required) ⭐ **Default**
+   - Uses Deezer's public search API
+   - Excellent coverage for contemporary and popular music
+   - High-quality artwork
+   - No registration or API key needed
 
 3. **Last.fm API** (API key required)
    - Requires a free Last.fm account and API key
-   - Good general coverage
+   - Good general coverage with community-contributed artwork
    - Get your API key from: https://www.last.fm/api/account/create
+   - Disabled by default
+
+4. **MusicBrainz API** (No API key required)
+   - Uses MusicBrainz database with Cover Art Archive integration
+   - Excellent for classical, jazz, and international music
+   - Community-maintained database with high accuracy
+   - Complies with MusicBrainz API guidelines (proper User-Agent)
+   - Disabled by default
+
+5. **Discogs API** (Consumer key/secret required)
+   - Requires a free Discogs account and consumer key/secret
+   - API key is optional if consumer credentials are provided
+   - Excellent for rare, underground, and vinyl releases
+   - Get your credentials from: https://www.discogs.com/settings/developers
+   - Disabled by default
 
 ### Local Artwork Search
 
@@ -53,7 +71,7 @@ The component automatically searches for these common artwork filenames:
 ### Preferences Configuration
 
 Access the preferences dialog through:
-- File → Preferences → Components → Artwork Display
+- File → Preferences → Tools → Artwork Display
 
 Configure:
 - Enable/disable individual API services
@@ -73,8 +91,12 @@ The component uses the following priority order for artwork retrieval:
 
 1. **Local Files**: Searches music file directory for common artwork filenames
 2. **iTunes API**: Searches iTunes database (if enabled)
-3. **Discogs API**: Searches Discogs database (if enabled and API key provided)
+3. **Deezer API**: Searches Deezer database (if enabled)
 4. **Last.fm API**: Searches Last.fm database (if enabled and API key provided)
+5. **MusicBrainz API**: Searches MusicBrainz/Cover Art Archive (if enabled)
+6. **Discogs API**: Searches Discogs database (if enabled and API key provided)
+
+**Note**: Only Deezer is enabled by default. Other services can be enabled through the preferences panel.
 
 ## Building from Source
 
@@ -135,37 +157,43 @@ The component links against:
 - No authentication required
 - Returns JSON with artwork URLs
 
-### Discogs API
-- Endpoint: `https://api.discogs.com/database/search`
-- Requires API key in headers
-- Returns JSON with image URLs
+### Deezer API
+- Endpoint: `https://api.deezer.com/search/track`
+- No authentication required
+- Returns JSON with high-quality artwork URLs (1000x1000)
+- Automatic URL unescaping for proper image downloads
 
 ### Last.fm API
 - Endpoint: `https://ws.audioscrobbler.com/2.0/`
 - Requires API key parameter
 - Returns XML/JSON with image URLs
 
+### MusicBrainz API
+- Search Endpoint: `https://musicbrainz.org/ws/2/release`
+- Cover Art Endpoint: `https://coverartarchive.org/release/`
+- No authentication required
+- Two-step process: search for release → fetch cover art
+- Proper User-Agent header compliance
+- Multiple release and cover type fallback support
+
+### Discogs API
+- Endpoint: `https://api.discogs.com/database/search`
+- Requires API key in headers
+- Returns JSON with image URLs
+
 ## Troubleshooting
 
 ### Common Issues
 
 1. **No artwork displayed**
-   - Check that at least one API service is enabled
-   - Verify API keys are correctly entered
+   - Deezer should work immediately without configuration
+   - Check that at least one API service is enabled in preferences
+   - Verify API keys are correctly entered for services that require them
    - Check internet connection for online services
 
-2. **Artwork appears blurry**
-   - Ensure high-quality artwork sources
-   - Check that GDI+ is properly initialized
-
-3. **High memory usage**
-   - Clear cache manually (restart foobar2000)
-
-### Debug Information
-
-Enable foobar2000's console to see debugging information:
-- View → Console
-- Component logs API requests and cache operations
+2. **High memory usage**
+   - Restart foobar2000 to clear in-memory cache
+   - Only one artwork image is stored in memory at a time
 
 ## License
 
@@ -174,7 +202,3 @@ This component is provided as-is for educational and personal use. Please respec
 ## Contributing
 
 Contributions are welcome! Please ensure your code follows the existing style and includes appropriate error handling.
-
-## Support
-
-For issues and questions, please check the foobar2000 forums or create an issue in the project repository.
