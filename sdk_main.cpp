@@ -2,6 +2,11 @@
 #include <algorithm>
 #include <thread>
 #include <vector>
+#include <mutex>
+
+#ifndef min
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#endif
 
 // Configuration variable GUIDs
 static constexpr GUID guid_cfg_enable_itunes = { 0x12345678, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0 } };
@@ -15,13 +20,16 @@ static constexpr GUID guid_cfg_fill_mode = { 0x12345680, 0x1234, 0x1234, { 0x12,
 
 // Configuration variables with default values
 cfg_bool cfg_enable_itunes(guid_cfg_enable_itunes, true);
-cfg_bool cfg_enable_discogs(guid_cfg_enable_discogs, true);
-cfg_bool cfg_enable_lastfm(guid_cfg_enable_lastfm, true);
+cfg_bool cfg_enable_discogs(guid_cfg_enable_discogs, false);
+cfg_bool cfg_enable_lastfm(guid_cfg_enable_lastfm, false);
 cfg_string cfg_discogs_key(guid_cfg_discogs_key, "");
 cfg_string cfg_discogs_consumer_key(guid_cfg_discogs_consumer_key, "");
 cfg_string cfg_discogs_consumer_secret(guid_cfg_discogs_consumer_secret, "");
 cfg_string cfg_lastfm_key(guid_cfg_lastfm_key, "");
 cfg_bool cfg_fill_mode(guid_cfg_fill_mode, true);  // true = fill window (crop), false = fit window (letterbox)
+
+// Global download throttle to prevent system freeze
+static std::mutex g_download_mutex;
 
 // Forward declaration
 class artwork_ui_element;
@@ -170,6 +178,10 @@ public:
     DWORD m_last_update_timestamp;  // Timestamp for debouncing updates
     metadb_handle_ptr m_last_update_track;  // Track handle for smart debouncing
     pfc::string8 m_last_update_content;  // Content (artist|title) for smart debouncing
+    
+    // Thread-safe image data storage
+    std::mutex m_image_data_mutex;
+    std::vector<BYTE> m_pending_image_data;
 
 public:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -177,6 +189,9 @@ public:
 private:
     void paint_artwork(HDC hdc);
     void load_artwork_for_track(metadb_handle_ptr track);
+    void load_artwork_for_track_with_metadata(metadb_handle_ptr track, const pfc::string8& artist, const pfc::string8& title);
+    void process_downloaded_image_data();  // Process image data on main thread
+    void queue_image_for_processing(const std::vector<BYTE>& image_data);  // Thread-safe image queuing
     
 public:
     void search_itunes_artwork(metadb_handle_ptr track);
@@ -338,7 +353,8 @@ public:
         // This prevents white flash during transitions
         
         m_current_track = track;
-        load_artwork_for_track(track);
+        // Pass the already-extracted metadata to avoid duplicate extraction
+        load_artwork_for_track_with_metadata(track, current_artist, current_title);
     }
 };
 
@@ -397,6 +413,9 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
     case WM_USER + 4: // Discogs search failed
         pThis->m_status_text = "No artwork found";
         InvalidateRect(hwnd, NULL, TRUE);
+        return 0;
+    case WM_USER + 5: // Create bitmap from downloaded data
+        pThis->process_downloaded_image_data();
         return 0;
     default:
         return DefWindowProc(hwnd, uMsg, wParam, lParam);
@@ -621,6 +640,109 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     m_current_track = track;
 }
 
+// Optimized version that reuses already-extracted metadata
+void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr track, const pfc::string8& artist, const pfc::string8& title) {
+    if (!track.is_valid()) {
+        m_status_text = "No track";
+        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+        return;
+    }
+    
+    // Use the already-extracted and cleaned metadata
+    pfc::string8 search_key = artist + "|" + title;
+    
+    // Check if we already have artwork for this search or search is in progress
+    static DWORD last_search_time = 0;
+    DWORD current_time = GetTickCount();
+    bool enough_time_passed = (current_time - last_search_time) > 30000; // 30 seconds before re-searching
+    
+    // Don't search if we already completed this search recently
+    if ((search_key == m_last_search_key || search_key == m_current_search_key) && !enough_time_passed) {
+        pfc::string8 debug;
+        if (search_key == m_current_search_key) {
+            debug << "Artwork search already in progress for: " << search_key << "\n";
+        } else {
+            debug << "Artwork search already completed for: " << search_key << "\n";
+        }
+        OutputDebugStringA(debug);
+        return;
+    }
+    
+    // Clear any stale search state
+    m_current_search_key = "";
+    
+    // Update search timestamp
+    last_search_time = current_time;
+    
+    // Mark this search as in progress
+    m_current_search_key = search_key;
+    
+    pfc::string8 debug;
+    debug << "Starting artwork search for: " << search_key << "\n";
+    OutputDebugStringA(debug);
+    
+    // Try to get local artwork first
+    try {
+        static_api_ptr_t<album_art_manager_v2> aam;
+        auto aaer = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(track), 
+                              pfc::list_single_ref_t<GUID>(album_art_ids::cover_front), 
+                              fb2k::noAbort);
+        
+        auto aar = aaer->query(album_art_ids::cover_front, fb2k::noAbort);
+        if (aar.is_valid()) {
+            auto data = aar->get_ptr();
+            if (data && aar->get_size() > 0) {
+                const BYTE* byte_data = static_cast<const BYTE*>(data);
+                std::vector<BYTE> image_data(byte_data, byte_data + aar->get_size());
+                if (create_bitmap_from_data(image_data)) {
+                    complete_artwork_search();
+                    if (m_hWnd) {
+                        PostMessage(m_hWnd, WM_USER + 1, 0, 0);
+                    }
+                    m_current_track = track;
+                    return;
+                }
+            }
+        }
+    } catch (...) {
+        // Local artwork failed, continue to online search
+    }
+    
+    // Check if we should search online
+    bool should_search_online = false;
+    pfc::string8 path = track->get_path();
+    if (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://")) {
+        // This looks like a stream URL, search online
+        should_search_online = true;
+    }
+    
+    if (should_search_online && track.is_valid()) {
+        // Try iTunes API first (if enabled)
+        if (cfg_enable_itunes) {
+            search_itunes_background(artist, title);
+        }
+        // If iTunes failed or disabled, try Last.fm API (if enabled)
+        else if (cfg_enable_lastfm) {
+            search_lastfm_background(artist, title);
+        }
+        // If both iTunes and Last.fm failed/disabled, try Discogs API (if enabled)
+        else if (cfg_enable_discogs) {
+            search_discogs_background(artist, title);
+        }
+        else {
+            // No APIs enabled - mark search as complete to prevent retries
+            complete_artwork_search();
+            m_status_text = "No artwork APIs enabled";
+            if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+        }
+    } else {
+        // Not searching - mark as complete to prevent cache issues
+        complete_artwork_search();
+    }
+    
+    m_current_track = track;
+}
+
 // iTunes API artwork search - FIXED to use cleaned metadata
 void artwork_ui_element::search_itunes_artwork(metadb_handle_ptr track) {
     if (!track.is_valid()) return;
@@ -761,15 +883,9 @@ void artwork_ui_element::search_itunes_background(pfc::string8 artist, pfc::stri
                 // Download the artwork image
                 std::vector<BYTE> image_data;
                 if (download_image(artwork_url, image_data)) {
-                    // Create bitmap from downloaded data
-                    if (create_bitmap_from_data(image_data)) {
-                        complete_artwork_search();  // Mark cache as completed
-                        // Update UI on main thread
-                        if (m_hWnd) {
-                            PostMessage(m_hWnd, WM_USER + 1, 0, 0);
-                        }
-                        return;
-                    }
+                    // Queue image data for processing on main thread (safer)
+                    queue_image_for_processing(image_data);
+                    return;
                 }
             } else {
                 pfc::string8 no_results_debug;
@@ -841,15 +957,9 @@ void artwork_ui_element::search_discogs_background(pfc::string8 artist, pfc::str
                 // Download the artwork image
                 std::vector<BYTE> image_data;
                 if (download_image(artwork_url, image_data)) {
-                    // Create bitmap from downloaded data
-                    if (create_bitmap_from_data(image_data)) {
-                        complete_artwork_search();  // Mark cache as completed
-                        // Update UI on main thread
-                        if (m_hWnd) {
-                            PostMessage(m_hWnd, WM_USER + 1, 0, 0);
-                        }
-                        return;
-                    }
+                    // Queue image data for processing on main thread (safer)
+                    queue_image_for_processing(image_data);
+                    return;
                 }
             } else {
                 OutputDebugStringA("Discogs: Failed to parse response or no artwork found\n");
@@ -901,15 +1011,9 @@ void artwork_ui_element::search_lastfm_background(pfc::string8 artist, pfc::stri
                 // Download the artwork image
                 std::vector<BYTE> image_data;
                 if (download_image(artwork_url, image_data)) {
-                    // Create bitmap from downloaded data
-                    if (create_bitmap_from_data(image_data)) {
-                        complete_artwork_search();  // Mark cache as completed
-                        // Update UI on main thread
-                        if (m_hWnd) {
-                            PostMessage(m_hWnd, WM_USER + 1, 0, 0);
-                        }
-                        return;
-                    }
+                    // Queue image data for processing on main thread (safer)
+                    queue_image_for_processing(image_data);
+                    return;
                 }
             }
         }
@@ -944,7 +1048,11 @@ void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pf
         wchar_t window_text[512];
         
         if (GetClassNameW(hwnd, class_name, 256) && GetWindowTextW(hwnd, window_text, 512)) {
-            if (wcsstr(window_text, L" - ") && wcsstr(window_text, L"[foobar2000]")) {
+            // Support two formats:
+            // Format 1: "Artist - Title [foobar2000]"
+            // Format 2: "foobar2000 version info    Artist - Title  |  Station [SomaFM]"
+            if (wcsstr(window_text, L" - ") && 
+                (wcsstr(window_text, L"[foobar2000]") || wcsstr(window_text, L"foobar2000"))) {
                 pfc::stringcvt::string_utf8_from_wide text_utf8(window_text);
                 *result = text_utf8;
                 return FALSE;
@@ -960,11 +1068,33 @@ void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pf
     
     if (!track_info_from_window.is_empty()) {
         pfc::string8 clean_track_info = track_info_from_window;
+        
+        // Check for Format 1: "Artist - Title [foobar2000]"
         const char* fb2k_suffix = strstr(clean_track_info.c_str(), " [foobar2000]");
         if (fb2k_suffix) {
+            // Format 1: Remove the [foobar2000] suffix
             clean_track_info = pfc::string8(clean_track_info.c_str(), fb2k_suffix - clean_track_info.c_str());
         }
+        // Check for Format 2: "foobar2000 version info    Artist - Title  |  Station [SomaFM]"
+        else if (strstr(clean_track_info.c_str(), "foobar2000")) {
+            // Format 2: Find the track info between version info and station info
+            // Look for the pattern: multiple spaces followed by artist - title
+            const char* track_start = strstr(clean_track_info.c_str(), "    ");
+            if (track_start) {
+                track_start += 4; // Skip the 4 spaces
+                
+                // Find the end of track info (before " | " or " |")
+                const char* track_end = strstr(track_start, "  |");
+                if (track_end) {
+                    clean_track_info = pfc::string8(track_start, track_end - track_start);
+                } else {
+                    // If no station info, use everything after the version info
+                    clean_track_info = pfc::string8(track_start);
+                }
+            }
+        }
         
+        // Now parse the cleaned track info for "Artist - Title"
         const char* separator = strstr(clean_track_info.c_str(), " - ");
         if (separator) {
             size_t artist_len = separator - clean_track_info.c_str();
@@ -1016,9 +1146,6 @@ pfc::string8 artwork_ui_element::clean_metadata_text(const pfc::string8& text) {
     pfc::string8 cleaned = text;
     const char* text_cstr;
     
-    pfc::string8 debug_before;
-    debug_before << "clean_metadata_text - Input: '" << text << "'\n";
-    OutputDebugStringA(debug_before);
     
     // Fix common encoding issues (using hex escape sequences)
     cleaned.replace_string("\xE2\x80\x99", "'");  // Right single quotation mark
@@ -1139,10 +1266,6 @@ pfc::string8 artwork_ui_element::clean_metadata_text(const pfc::string8& text) {
         cleaned = cleaned.subString(0, cleaned.length()-1);
     }
     
-    pfc::string8 debug_after;
-    debug_after << "clean_metadata_text - Output: '" << cleaned << "'\n";
-    OutputDebugStringA(debug_after);
-    
     return cleaned;
 }
 
@@ -1262,6 +1385,9 @@ bool artwork_ui_element::http_get_request(const pfc::string8& url, pfc::string8&
 
 // HTTP GET request for binary data (images) using WinHTTP
 bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::vector<BYTE>& data) {
+    // Use global mutex to prevent multiple simultaneous downloads that can freeze the system
+    std::lock_guard<std::mutex> download_lock(g_download_mutex);
+    
     bool success = false;
     data.clear();
     
@@ -1295,8 +1421,8 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
         return false;
     }
     
-    // Set timeouts for image downloads (longer than text requests)
-    WinHttpSetTimeouts(hSession, 30000, 30000, 30000, 60000); // 30s connect, 60s receive
+    // Set shorter timeouts for image downloads to prevent hangs
+    WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000); // 10s connect, 30s receive
     
     // Connect to the server
     std::wstring hostname(urlComp.lpszHostName, urlComp.dwHostNameLength);
@@ -1353,15 +1479,31 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
                 WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
                                    WINHTTP_HEADER_NAME_BY_INDEX, &dwContentLength, &dwSize, WINHTTP_NO_HEADER_INDEX);
                 
+                // Limit artwork size to prevent memory issues (max 10MB)
+                const DWORD MAX_ARTWORK_SIZE = 10 * 1024 * 1024;
+                if (dwContentLength > MAX_ARTWORK_SIZE) {
+                    OutputDebugStringA("Binary HTTP: Artwork too large, aborting download\n");
+                    WinHttpCloseHandle(hRequest);
+                    WinHttpCloseHandle(hConnect);
+                    WinHttpCloseHandle(hSession);
+                    return false;
+                }
+                
                 if (dwContentLength > 0) {
                     data.reserve(dwContentLength);
                     pfc::string8 size_debug;
                     size_debug << "Binary HTTP: Expected content length: " << dwContentLength << " bytes\n";
                     OutputDebugStringA(size_debug.c_str());
+                } else {
+                    // No content length header, reserve reasonable amount
+                    data.reserve(1024 * 1024); // 1MB default
                 }
                 
                 DWORD dwSize = 0;
                 DWORD dwDownloaded = 0;
+                
+                const DWORD CHUNK_SIZE = 8192; // 8KB chunks
+                BYTE buffer[CHUNK_SIZE];
                 
                 do {
                     // Check for available data
@@ -1369,14 +1511,29 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
                     
                     if (dwSize == 0) break;
                     
-                    // Allocate buffer for binary data
-                    std::vector<BYTE> buffer(dwSize);
+                    // Limit chunk size to prevent excessive memory operations
+                    DWORD chunkSize = min(dwSize, CHUNK_SIZE);
                     
                     // Read the binary data
-                    if (!WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded)) break;
+                    if (!WinHttpReadData(hRequest, buffer, chunkSize, &dwDownloaded)) break;
                     
-                    // Append to data vector (no null termination needed for binary data)
-                    data.insert(data.end(), buffer.begin(), buffer.begin() + dwDownloaded);
+                    // Check size limit to prevent runaway downloads
+                    if (data.size() + dwDownloaded > MAX_ARTWORK_SIZE) {
+                        OutputDebugStringA("Binary HTTP: Download size exceeded limit, aborting\n");
+                        break;
+                    }
+                    
+                    // Efficiently append to data vector
+                    size_t old_size = data.size();
+                    data.resize(old_size + dwDownloaded);
+                    memcpy(data.data() + old_size, buffer, dwDownloaded);
+                    
+                    // Add small delay every few chunks to prevent system freeze
+                    static int chunk_count = 0;
+                    chunk_count++;
+                    if (chunk_count % 10 == 0) {
+                        Sleep(1); // 1ms yield to system every 10 chunks (~80KB)
+                    }
                     
                 } while (dwSize > 0);
                 
@@ -1689,9 +1846,9 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
     HBITMAP old_bitmap = m_artwork_bitmap;
     m_artwork_bitmap = NULL;  // Clear the member variable
     
-    // Create memory stream from data
+    // Create memory stream from data using fixed memory (more efficient)
     IStream* pStream = NULL;
-    HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, data.size());
+    HGLOBAL hGlobal = GlobalAlloc(GMEM_FIXED, data.size());
     if (!hGlobal) return false;
     
     void* pData = GlobalLock(hGlobal);
@@ -1700,7 +1857,30 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
         return false;
     }
     
-    memcpy(pData, data.data(), data.size());
+    // Use faster memory copy for large data
+    if (data.size() > 64 * 1024) {
+        // Copy in smaller chunks to prevent freeze
+        const size_t COPY_CHUNK = 64 * 1024;
+        const BYTE* src = data.data();
+        BYTE* dst = static_cast<BYTE*>(pData);
+        size_t remaining = data.size();
+        
+        while (remaining > 0) {
+            size_t chunk_size = min(remaining, COPY_CHUNK);
+            memcpy(dst, src, chunk_size);
+            src += chunk_size;
+            dst += chunk_size;
+            remaining -= chunk_size;
+            
+            // Yield every 64KB to prevent system freeze
+            if (remaining > 0) {
+                Sleep(0);
+            }
+        }
+    } else {
+        memcpy(pData, data.data(), data.size());
+    }
+    
     GlobalUnlock(hGlobal);
     
     if (CreateStreamOnHGlobal(hGlobal, TRUE, &pStream) != S_OK) {
@@ -1709,19 +1889,58 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
     }
     
     // Create GDI+ bitmap from stream
+    OutputDebugStringA("create_bitmap_from_data: Starting GDI+ bitmap creation\n");
     Gdiplus::Bitmap* pBitmap = Gdiplus::Bitmap::FromStream(pStream);
     pStream->Release();
+    OutputDebugStringA("create_bitmap_from_data: GDI+ bitmap created\n");
     
     if (!pBitmap || pBitmap->GetLastStatus() != Gdiplus::Ok) {
         if (pBitmap) delete pBitmap;
+        OutputDebugStringA("create_bitmap_from_data: GDI+ bitmap creation failed\n");
         return false;
     }
     
-    // Convert to HBITMAP
-    Gdiplus::Color backgroundColor(255, 255, 255, 255);
-    if (pBitmap->GetHBITMAP(backgroundColor, &m_artwork_bitmap) != Gdiplus::Ok) {
+    // Use faster DIB creation instead of GetHBITMAP to prevent freeze
+    OutputDebugStringA("create_bitmap_from_data: Starting DIB bitmap creation\n");
+    
+    UINT width = pBitmap->GetWidth();
+    UINT height = pBitmap->GetHeight();
+    
+    // Create DIB section (much faster than GetHBITMAP)
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -(int)height; // Negative for top-down DIB
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    
+    void* pBits = NULL;
+    HDC hdc = GetDC(NULL);
+    HBITMAP hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
+    ReleaseDC(NULL, hdc);
+    
+    if (!hBitmap || !pBits) {
         delete pBitmap;
-        m_artwork_bitmap = old_bitmap;  // Restore old bitmap on failure
+        m_artwork_bitmap = old_bitmap;
+        OutputDebugStringA("create_bitmap_from_data: DIB creation failed\n");
+        return false;
+    }
+    
+    // Lock bitmap data for direct access (faster than GetHBITMAP)
+    Gdiplus::BitmapData bitmapData;
+    Gdiplus::Rect rect(0, 0, width, height);
+    
+    if (pBitmap->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bitmapData) == Gdiplus::Ok) {
+        // Copy pixel data directly (much faster)
+        memcpy(pBits, bitmapData.Scan0, width * height * 4);
+        pBitmap->UnlockBits(&bitmapData);
+        m_artwork_bitmap = hBitmap;
+    } else {
+        DeleteObject(hBitmap);
+        delete pBitmap;
+        m_artwork_bitmap = old_bitmap;
+        OutputDebugStringA("create_bitmap_from_data: Bitmap lock failed\n");
         return false;
     }
     
@@ -1731,7 +1950,50 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
     }
     
     delete pBitmap;
+    OutputDebugStringA("create_bitmap_from_data: Bitmap creation completed successfully\n");
     return true;
+}
+
+// Process downloaded image data on main thread (thread-safe)
+void artwork_ui_element::process_downloaded_image_data() {
+    std::vector<BYTE> image_data;
+    
+    // Thread-safe retrieval of image data
+    {
+        std::lock_guard<std::mutex> lock(m_image_data_mutex);
+        if (m_pending_image_data.empty()) {
+            return; // No data to process
+        }
+        image_data = std::move(m_pending_image_data);
+        m_pending_image_data.clear();
+    }
+    
+    // Create bitmap from data on main thread (safe for GDI+)
+    if (create_bitmap_from_data(image_data)) {
+        complete_artwork_search();
+        InvalidateRect(m_hWnd, NULL, TRUE);
+    } else {
+        // Bitmap creation failed
+        complete_artwork_search();
+        m_status_text = "Failed to create artwork bitmap";
+        InvalidateRect(m_hWnd, NULL, TRUE);
+    }
+}
+
+// Queue image data for processing on main thread (thread-safe)
+void artwork_ui_element::queue_image_for_processing(const std::vector<BYTE>& image_data) {
+    if (image_data.empty()) return;
+    
+    // Thread-safe storage of image data
+    {
+        std::lock_guard<std::mutex> lock(m_image_data_mutex);
+        m_pending_image_data = image_data;
+    }
+    
+    // Signal main thread to process the data
+    if (m_hWnd) {
+        PostMessage(m_hWnd, WM_USER + 5, 0, 0);
+    }
 }
 
 // Playback callback for track changes
