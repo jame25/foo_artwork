@@ -70,7 +70,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.0.8",
+    "1.0.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -125,20 +125,6 @@ public:
                 title = info.meta_get("TITLE", 0);
             }
             
-            // Build display string
-            pfc::string8 display_info;
-            display_info << "Artwork component: ";
-            if (artist.length() > 0) display_info << artist;
-            if (title.length() > 0) {
-                if (artist.length() > 0) display_info << " - ";
-                display_info << title;
-            }
-            if (album.length() > 0) {
-                display_info << " (" << album << ")";
-            }
-            
-            // Output to debug console
-            OutputDebugStringA(display_info.c_str());
         }
     }
 };
@@ -390,10 +376,6 @@ public:
     void update_track(metadb_handle_ptr track) {
         if (!m_hWnd) return;
         
-        pfc::string8 debug;
-        debug << "UI Element: update_track called\n";
-        OutputDebugStringA(debug);
-        
         // Smart debouncing - only update if track or content actually changed
         DWORD current_time = GetTickCount();
         bool track_changed = (track != m_last_update_track);
@@ -407,9 +389,6 @@ public:
         bool enough_time_passed = (current_time - m_last_update_timestamp) > 1000; // 1 second
         
         if (!track_changed && !content_changed && !enough_time_passed) {
-            pfc::string8 debounce_debug;
-            debounce_debug << "UI Element: update_track debounced (same track+content, too soon)\n";
-            OutputDebugStringA(debounce_debug);
             return;
         }
         
@@ -640,9 +619,6 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
         bool artwork_timeout_passed = (current_time - m_last_search_timestamp) > (24 * 60 * 60 * 1000); // 24 hours
         
         if (!artwork_timeout_passed) {
-            pfc::string8 debug;
-            debug << "Artwork already displayed for: " << search_key << " (skipping re-download)\n";
-            OutputDebugStringA(debug);
             return;
         }
     }
@@ -654,13 +630,6 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     // Don't search if already in progress or recently attempted without success
     if (search_key == m_current_search_key || 
         (search_key == m_last_search_key && !m_artwork_bitmap && !retry_timeout_passed)) {
-        pfc::string8 debug;
-        if (search_key == m_current_search_key) {
-            debug << "Artwork search already in progress for: " << search_key << "\n";
-        } else {
-            debug << "Artwork search recently attempted for: " << search_key << " (retry in " << (30000 - (current_time - m_last_search_timestamp)) / 1000 << "s)\n";
-        }
-        OutputDebugStringA(debug);
         return;
     }
     
@@ -676,9 +645,6 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     // Update search timestamp
     m_last_search_timestamp = current_time;
     
-    pfc::string8 debug;
-    debug << "Starting artwork search for: " << search_key << "\n";
-    OutputDebugStringA(debug);
     
     // Don't clear previous artwork here - keep it until new artwork is successfully loaded
     // This prevents white transition screens
@@ -789,9 +755,6 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
         bool artwork_timeout_passed = (current_time - m_last_search_timestamp) > (24 * 60 * 60 * 1000); // 24 hours
         
         if (!artwork_timeout_passed) {
-            pfc::string8 debug;
-            debug << "Artwork already displayed for: " << search_key << " (skipping re-download)\n";
-            OutputDebugStringA(debug);
             return;
         }
     }
@@ -803,22 +766,11 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     // Don't search if already in progress or recently attempted without success
     if (search_key == m_current_search_key || 
         (search_key == m_last_search_key && !m_artwork_bitmap && !retry_timeout_passed)) {
-        pfc::string8 debug;
-        if (search_key == m_current_search_key) {
-            debug << "Artwork search already in progress for: " << search_key << "\n";
-        } else {
-            debug << "Artwork search recently attempted for: " << search_key << " (retry in " << (30000 - (current_time - m_last_search_timestamp)) / 1000 << "s)\n";
-        }
-        OutputDebugStringA(debug);
         return;
     }
     
     // Don't override higher priority artwork with lower priority
     if (search_priority < last_search_priority && !retry_timeout_passed) {
-        pfc::string8 priority_debug;
-        priority_debug << "Skipping lower priority search (priority " << search_priority 
-                      << " vs previous " << last_search_priority << ") for: " << search_key << "\n";
-        OutputDebugStringA(priority_debug);
         return;
     }
     
@@ -837,9 +789,6 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     // Update search timestamp
     m_last_search_timestamp = current_time;
     
-    pfc::string8 debug;
-    debug << "Starting artwork search for: " << search_key << "\n";
-    OutputDebugStringA(debug);
     
     // Try to get local artwork first
     try {
@@ -912,10 +861,6 @@ void artwork_ui_element::search_itunes_artwork(metadb_handle_ptr track) {
     //     InvalidateRect(m_hWnd, NULL, TRUE);
     // }
     
-    // Debug the values being passed to background thread
-    pfc::string8 thread_debug;
-    thread_debug << "Passing to background thread - Artist: '" << artist << "', Title: '" << title << "'\n";
-    OutputDebugStringA(thread_debug);
     
     // Perform iTunes search in background thread
     // Copy strings to avoid potential threading issues
@@ -946,10 +891,6 @@ void artwork_ui_element::search_discogs_artwork(metadb_handle_ptr track) {
     //     InvalidateRect(m_hWnd, NULL, TRUE);
     // }
     
-    // Debug the values being passed to background thread
-    pfc::string8 thread_debug;
-    thread_debug << "Discogs search - Artist: '" << artist << "', Title: '" << title << "'\n";
-    OutputDebugStringA(thread_debug);
     
     // Perform Discogs search in background thread
     // Copy strings to avoid potential threading issues
@@ -980,10 +921,6 @@ void artwork_ui_element::search_lastfm_artwork(metadb_handle_ptr track) {
     //     InvalidateRect(m_hWnd, NULL, TRUE);
     // }
     
-    // Debug the values being passed to background thread
-    pfc::string8 thread_debug;
-    thread_debug << "Last.fm search - Artist: '" << artist << "', Title: '" << title << "'\n";
-    OutputDebugStringA(thread_debug);
     
     // Perform Last.fm search in background thread
     // Copy strings to avoid potential threading issues
@@ -999,33 +936,19 @@ void artwork_ui_element::search_lastfm_artwork(metadb_handle_ptr track) {
 void artwork_ui_element::search_itunes_background(pfc::string8 artist, pfc::string8 title) {
     try {
         // URL encode the search terms
-        pfc::string8 encode_debug;
-        encode_debug << "Before encoding - Artist: '" << artist << "', Title: '" << title << "'\n";
-        encode_debug << "Artist length: " << artist.length() << ", Title length: " << title.length() << "\n";
-        OutputDebugStringA(encode_debug);
         
         pfc::string8 encoded_artist = url_encode(artist);
         pfc::string8 encoded_title = url_encode(title);
         
-        pfc::string8 encoded_debug;
-        encoded_debug << "After encoding - Artist: '" << encoded_artist << "', Title: '" << encoded_title << "'\n";
-        OutputDebugStringA(encoded_debug);
         
         // Build iTunes search URL
         pfc::string8 search_url;
         search_url << "https://itunes.apple.com/search?term=" << encoded_artist << "%20" << encoded_title << "&media=music&entity=song&limit=1";
         
-        pfc::string8 search_debug;
-        search_debug << "iTunes search URL: " << search_url << "\n";
-        OutputDebugStringA(search_debug);
         
         // Make HTTP request
         pfc::string8 response;
         if (http_get_request(search_url, response)) {
-            pfc::string8 response_debug;
-            size_t response_preview_len = response.length() < 200 ? response.length() : 200;
-            response_debug << "iTunes API response (first 200 chars): " << pfc::string8(response.c_str(), response_preview_len) << "\n";
-            OutputDebugStringA(response_debug);
             
             // Parse JSON response and extract artwork URL
             pfc::string8 artwork_url;
@@ -1048,14 +971,8 @@ void artwork_ui_element::search_itunes_background(pfc::string8 artist, pfc::stri
                     return;
                 }
             } else {
-                pfc::string8 no_results_debug;
-                no_results_debug << "iTunes search failed - trying next API in chain\n";
-                OutputDebugStringA(no_results_debug);
             }
         } else {
-            pfc::string8 http_debug;
-            http_debug << "iTunes HTTP request failed for URL: " << search_url << "\n";
-            OutputDebugStringA(http_debug);
         }
         
         // Failed to get artwork
@@ -1074,10 +991,6 @@ void artwork_ui_element::search_discogs_background(pfc::string8 artist, pfc::str
         pfc::string8 search_terms = artist + " - " + title;
         pfc::string8 encoded_search = url_encode(search_terms);
         
-        pfc::string8 search_debug;
-        search_debug << "Discogs search for: " << search_terms << "\n";
-        search_debug << "Discogs search terms - Artist: '" << artist << "' Title: '" << title << "'\n";
-        OutputDebugStringA(search_debug);
         
         // Build Discogs search URL
         pfc::string8 search_url = "https://api.discogs.com/database/search?q=";
@@ -1090,22 +1003,14 @@ void artwork_ui_element::search_discogs_background(pfc::string8 artist, pfc::str
             search_url << "&key=" << url_encode(cfg_discogs_consumer_key.get_ptr());
             search_url << "&secret=" << url_encode(cfg_discogs_consumer_secret.get_ptr());
         } else {
-            OutputDebugStringA("Discogs: No API credentials configured\n");
             complete_artwork_search();
             return;
         }
         
-        pfc::string8 request_debug;
-        request_debug << "Discogs request URL: " << search_url << "\n";
-        OutputDebugStringA(request_debug);
         
         // Make HTTP request
         pfc::string8 response;
         if (http_get_request(search_url, response)) {
-            pfc::string8 response_debug;
-            size_t response_preview_len = response.length() < 300 ? response.length() : 300;
-            response_debug << "Discogs API response (first 300 chars): " << pfc::string8(response.c_str(), response_preview_len) << "\n";
-            OutputDebugStringA(response_debug);
             
             // Parse JSON response and extract artwork URL
             pfc::string8 artwork_url;
@@ -1128,10 +1033,8 @@ void artwork_ui_element::search_discogs_background(pfc::string8 artist, pfc::str
                     return;
                 }
             } else {
-                OutputDebugStringA("Discogs: Failed to parse response or no artwork found\n");
             }
         } else {
-            OutputDebugStringA("Discogs: HTTP request failed\n");
         }
         
         // Failed to get artwork - mark search as completed
@@ -1222,17 +1125,10 @@ void artwork_ui_element::search_deezer_background(pfc::string8 artist, pfc::stri
         pfc::string8 search_url = "https://api.deezer.com/search/track?q=";
         search_url << encoded_search << "&limit=10";
         
-        pfc::string8 search_debug;
-        search_debug << "Deezer search URL: " << search_url << "\n";
-        OutputDebugStringA(search_debug);
         
         // Make HTTP request
         pfc::string8 response;
         if (http_get_request(search_url, response)) {
-            pfc::string8 response_debug;
-            size_t response_preview_len = response.length() < 300 ? response.length() : 300;
-            response_debug << "Deezer API response (first 300 chars): " << pfc::string8(response.c_str(), response_preview_len) << "\n";
-            OutputDebugStringA(response_debug);
             
             // Parse JSON response and extract artwork URL
             pfc::string8 artwork_url;
@@ -1293,17 +1189,10 @@ void artwork_ui_element::search_musicbrainz_background(pfc::string8 artist, pfc:
         search_url << encoded_artist << "%20AND%20recording:" << encoded_title;
         search_url << "&fmt=json&limit=5";
         
-        pfc::string8 search_debug;
-        search_debug << "MusicBrainz search URL: " << search_url << "\n";
-        OutputDebugStringA(search_debug);
         
         // Set User-Agent header as required by MusicBrainz API
         pfc::string8 response;
         if (http_get_request_with_user_agent(search_url, response, "foo_artwork/1.0.5 (https://example.com/contact)")) {
-            pfc::string8 response_debug;
-            size_t response_preview_len = response.length() < 300 ? response.length() : 300;
-            response_debug << "MusicBrainz API response (first 300 chars): " << pfc::string8(response.c_str(), response_preview_len) << "\n";
-            OutputDebugStringA(response_debug);
             
             // Parse JSON response and try multiple release IDs
             std::vector<pfc::string8> release_ids;
@@ -1820,9 +1709,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
     bool success = false;
     data.clear();
     
-    pfc::string8 debug;
-    debug << "Binary HTTP request for: " << url << "\n";
-    OutputDebugStringA(debug.c_str());
     
     // Convert URL to wide string
     pfc::stringcvt::string_wide_from_utf8 wide_url(url);
@@ -1836,7 +1722,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
     urlComp.dwExtraInfoLength = -1;
     
     if (!WinHttpCrackUrl(wide_url, 0, 0, &urlComp)) {
-        OutputDebugStringA("Binary HTTP: Failed to crack URL\n");
         return false;
     }
     
@@ -1846,7 +1731,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
                                      WINHTTP_NO_PROXY_NAME,
                                      WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) {
-        OutputDebugStringA("Binary HTTP: Failed to open session\n");
         return false;
     }
     
@@ -1857,7 +1741,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
     std::wstring hostname(urlComp.lpszHostName, urlComp.dwHostNameLength);
     HINTERNET hConnect = WinHttpConnect(hSession, hostname.c_str(), urlComp.nPort, 0);
     if (!hConnect) {
-        OutputDebugStringA("Binary HTTP: Failed to connect\n");
         WinHttpCloseHandle(hSession);
         return false;
     }
@@ -1878,7 +1761,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
                                            WINHTTP_DEFAULT_ACCEPT_TYPES,
                                            dwFlags);
     if (!hRequest) {
-        OutputDebugStringA("Binary HTTP: Failed to open request\n");
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return false;
@@ -1911,7 +1793,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
                 // Limit artwork size to prevent memory issues (max 10MB)
                 const DWORD MAX_ARTWORK_SIZE = 10 * 1024 * 1024;
                 if (dwContentLength > MAX_ARTWORK_SIZE) {
-                    OutputDebugStringA("Binary HTTP: Artwork too large, aborting download\n");
                     WinHttpCloseHandle(hRequest);
                     WinHttpCloseHandle(hConnect);
                     WinHttpCloseHandle(hSession);
@@ -1920,9 +1801,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
                 
                 if (dwContentLength > 0) {
                     data.reserve(dwContentLength);
-                    pfc::string8 size_debug;
-                    size_debug << "Binary HTTP: Expected content length: " << dwContentLength << " bytes\n";
-                    OutputDebugStringA(size_debug.c_str());
                 } else {
                     // No content length header, reserve reasonable amount
                     data.reserve(1024 * 1024); // 1MB default
@@ -1948,7 +1826,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
                     
                     // Check size limit to prevent runaway downloads
                     if (data.size() + dwDownloaded > MAX_ARTWORK_SIZE) {
-                        OutputDebugStringA("Binary HTTP: Download size exceeded limit, aborting\n");
                         break;
                     }
                     
@@ -1968,9 +1845,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
                 
                 success = (data.size() > 0);
                 
-                pfc::string8 result_debug;
-                result_debug << "Binary HTTP: Downloaded " << data.size() << " bytes\n";
-                OutputDebugStringA(result_debug.c_str());
                 
                 // Basic validation - check for common image file signatures
                 if (success && data.size() >= 4) {
@@ -1979,40 +1853,30 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
                     // Check for JPEG signature (FF D8 FF)
                     if (data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) {
                         valid_image = true;
-                        OutputDebugStringA("Binary HTTP: Detected JPEG image\n");
                     }
                     // Check for PNG signature (89 50 4E 47)
                     else if (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47) {
                         valid_image = true;
-                        OutputDebugStringA("Binary HTTP: Detected PNG image\n");
                     }
                     // Check for GIF signature (47 49 46 38)
                     else if (data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38) {
                         valid_image = true;
-                        OutputDebugStringA("Binary HTTP: Detected GIF image\n");
                     }
                     // Check for WebP signature (52 49 46 46)
                     else if (data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46) {
                         valid_image = true;
-                        OutputDebugStringA("Binary HTTP: Detected WebP image\n");
                     }
                     
                     if (!valid_image) {
-                        OutputDebugStringA("Binary HTTP: Warning - Downloaded data may not be a valid image\n");
                         // Don't fail here - let GDI+ handle the validation
                     }
                 }
                 
             } else {
-                pfc::string8 status_debug;
-                status_debug << "Binary HTTP: HTTP status code: " << dwStatusCode << "\n";
-                OutputDebugStringA(status_debug.c_str());
             }
         } else {
-            OutputDebugStringA("Binary HTTP: Failed to receive response\n");
         }
     } else {
-        OutputDebugStringA("Binary HTTP: Failed to send request\n");
     }
     
     // Clean up
@@ -2025,9 +1889,6 @@ bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::v
 
 // Simple JSON parser for iTunes response
 bool artwork_ui_element::parse_itunes_response(const pfc::string8& json, pfc::string8& artwork_url) {
-    pfc::string8 debug;
-    debug << "iTunes JSON response parsing - Full JSON length: " << json.length() << "\n";
-    OutputDebugStringA(debug);
     
     // First check if we have any results
     const char* result_count_key = "\"resultCount\":";
@@ -2036,12 +1897,8 @@ bool artwork_ui_element::parse_itunes_response(const pfc::string8& json, pfc::st
         result_count_start += strlen(result_count_key);
         int result_count = atoi(result_count_start);
         
-        pfc::string8 count_debug;
-        count_debug << "iTunes result count: " << result_count << "\n";
-        OutputDebugStringA(count_debug);
         
         if (result_count == 0) {
-            OutputDebugStringA("iTunes: No results found\n");
             return false;
         }
     }
@@ -2062,9 +1919,6 @@ bool artwork_ui_element::parse_itunes_response(const pfc::string8& json, pfc::st
             if (end) {
                 artwork_url = pfc::string8(start, end - start);
                 
-                pfc::string8 found_debug;
-                found_debug << "Found iTunes artwork field: " << artwork_fields[i] << " -> " << artwork_url << "\n";
-                OutputDebugStringA(found_debug);
                 
                 // Convert lower resolutions to higher resolution if possible
                 if (strstr(artwork_fields[i], "100")) {
@@ -2076,40 +1930,32 @@ bool artwork_ui_element::parse_itunes_response(const pfc::string8& json, pfc::st
                 }
                 
                 if (artwork_url.length() > 0) {
-                    pfc::string8 final_debug;
-                    final_debug << "Final iTunes artwork URL: " << artwork_url << "\n";
-                    OutputDebugStringA(final_debug);
                     return true;
                 }
             }
         }
     }
     
-    OutputDebugStringA("iTunes: No artwork URL found in response\n");
     return false;
 }
 
 // Simple JSON parser for Discogs response
 bool artwork_ui_element::parse_discogs_response(const pfc::string8& json, pfc::string8& artwork_url) {
-    OutputDebugStringA("Discogs parse_discogs_response: Starting parse\n");
     
     // Look for results array with flexible whitespace handling
     const char* results_start = strstr(json.c_str(), "\"results\"");
     if (!results_start) {
-        OutputDebugStringA("Discogs parse: No results key found\n");
         return false;
     }
     
     // Find the opening bracket for the results array
     const char* bracket_pos = strchr(results_start, '[');
     if (!bracket_pos) {
-        OutputDebugStringA("Discogs parse: No results array bracket found\n");
         return false;
     }
     
     results_start = bracket_pos;
     
-    OutputDebugStringA("Discogs parse: Found results array, starting search\n");
     
     // Loop through multiple results like the JavaScript version
     // Look for cover_image field with flexible spacing
@@ -2119,9 +1965,6 @@ bool artwork_ui_element::parse_discogs_response(const pfc::string8& json, pfc::s
     for (int result_index = 0; result_index < 5; result_index++) {
         const char* key_pos = strstr(current_pos, cover_image_key);
         if (!key_pos) {
-            pfc::string8 no_more_debug;
-            no_more_debug << "Discogs: No more cover_image fields found after checking " << result_index << " results\n";
-            OutputDebugStringA(no_more_debug);
             break; // No more cover_image fields found
         }
         
@@ -2141,9 +1984,6 @@ bool artwork_ui_element::parse_discogs_response(const pfc::string8& json, pfc::s
         
         const char* start = quote_pos + 1;
         
-        pfc::string8 result_debug;
-        result_debug << "Discogs: Checking result #" << (result_index + 1) << "\n";
-        OutputDebugStringA(result_debug);
         
         const char* end = strchr(start, '"');
         if (!end) {
@@ -2153,9 +1993,6 @@ bool artwork_ui_element::parse_discogs_response(const pfc::string8& json, pfc::s
         
         pfc::string8 potential_url = pfc::string8(start, end - start);
         
-        pfc::string8 extracted_debug;
-        extracted_debug << "Discogs: Found cover_image: '" << potential_url << "' (length: " << potential_url.length() << ")\n";
-        OutputDebugStringA(extracted_debug);
         
         // Check if this URL is valid - filter out placeholder images
         if (potential_url.length() > 0 && 
@@ -2166,9 +2003,6 @@ bool artwork_ui_element::parse_discogs_response(const pfc::string8& json, pfc::s
             
             artwork_url = potential_url;
             
-            pfc::string8 found_debug;
-            found_debug << "Found valid Discogs artwork: " << artwork_url << "\n";
-            OutputDebugStringA(found_debug);
             
             return true;
         }
@@ -2177,25 +2011,19 @@ bool artwork_ui_element::parse_discogs_response(const pfc::string8& json, pfc::s
         current_pos = end + 1;
     }
     
-    OutputDebugStringA("Discogs: No valid cover_image found in any results\n");
     return false;
 }
 
 // Enhanced JSON parser for Last.fm response
 bool artwork_ui_element::parse_lastfm_response(const pfc::string8& json, pfc::string8& artwork_url) {
-    pfc::string8 debug;
-    debug << "Last.fm JSON response parsing - Full JSON length: " << json.length() << "\n";
-    OutputDebugStringA(debug);
     
     // First check for API errors
     if (strstr(json.c_str(), "\"error\":")) {
-        OutputDebugStringA("Last.fm: API returned error response\n");
         return false;
     }
     
     // Check if track exists
     if (!strstr(json.c_str(), "\"track\":")) {
-        OutputDebugStringA("Last.fm: No track found in response\n");
         return false;
     }
     
@@ -2236,9 +2064,6 @@ bool artwork_ui_element::parse_lastfm_response(const pfc::string8& json, pfc::st
                         
                         artwork_url = potential_url;
                         
-                        pfc::string8 found_debug;
-                        found_debug << "Found Last.fm artwork (" << size_preferences[i] << "): " << artwork_url << "\n";
-                        OutputDebugStringA(found_debug);
                         
                         return true;
                     }
@@ -2247,30 +2072,25 @@ bool artwork_ui_element::parse_lastfm_response(const pfc::string8& json, pfc::st
         }
     }
     
-    OutputDebugStringA("Last.fm: No artwork URL found in response\n");
     return false;
 }
 
 // Enhanced JSON parser for Deezer response
 bool artwork_ui_element::parse_deezer_response(const pfc::string8& json, pfc::string8& artwork_url) {
-    OutputDebugStringA("Deezer parse_deezer_response: Starting parse\n");
     
     // Look for data array containing track results
     const char* data_start = strstr(json.c_str(), "\"data\"");
     if (!data_start) {
-        OutputDebugStringA("Deezer parse: No data key found\n");
         return false;
     }
     
     // Find the opening bracket for the data array
     const char* bracket_pos = strchr(data_start, '[');
     if (!bracket_pos) {
-        OutputDebugStringA("Deezer parse: No data array bracket found\n");
         return false;
     }
     
     data_start = bracket_pos;
-    OutputDebugStringA("Deezer parse: Found data array, starting search\n");
     
     // Loop through multiple results to find the best artwork
     const char* current_pos = data_start;
@@ -2279,9 +2099,6 @@ bool artwork_ui_element::parse_deezer_response(const pfc::string8& json, pfc::st
         // Look for album object within each track result
         const char* album_key = strstr(current_pos, "\"album\"");
         if (!album_key) {
-            pfc::string8 no_more_debug;
-            no_more_debug << "Deezer: No more album objects found after checking " << result_index << " results\n";
-            OutputDebugStringA(no_more_debug);
             break;
         }
         
@@ -2292,9 +2109,6 @@ bool artwork_ui_element::parse_deezer_response(const pfc::string8& json, pfc::st
             continue;
         }
         
-        pfc::string8 result_debug;
-        result_debug << "Deezer: Checking track result #" << (result_index + 1) << "\n";
-        OutputDebugStringA(result_debug);
         
         // Look for cover_xl, cover_big, cover_medium, or cover fields (in order of preference)
         const char* cover_fields[] = {"\"cover_xl\"", "\"cover_big\"", "\"cover_medium\"", "\"cover\""};
@@ -2325,9 +2139,6 @@ bool artwork_ui_element::parse_deezer_response(const pfc::string8& json, pfc::st
             // Unescape JSON forward slashes (\/ -> /)
             potential_url.replace_string("\\/", "/");
             
-            pfc::string8 extracted_debug;
-            extracted_debug << "Deezer: Found " << cover_field << ": '" << potential_url << "'\n";
-            OutputDebugStringA(extracted_debug);
             
             // Check if this URL is valid
             if (potential_url.length() > 0 && 
@@ -2340,9 +2151,6 @@ bool artwork_ui_element::parse_deezer_response(const pfc::string8& json, pfc::st
                 
                 artwork_url = potential_url;
                 
-                pfc::string8 found_debug;
-                found_debug << "Found valid Deezer artwork (" << cover_field << "): " << artwork_url << "\n";
-                OutputDebugStringA(found_debug);
                 
                 return true;
             }
@@ -2352,32 +2160,27 @@ bool artwork_ui_element::parse_deezer_response(const pfc::string8& json, pfc::st
         current_pos = album_brace + 1;
     }
     
-    OutputDebugStringA("Deezer: No valid artwork found in any results\n");
     return false;
 }
 
 // JSON parser for MusicBrainz release search response
 bool artwork_ui_element::parse_musicbrainz_response(const pfc::string8& json, std::vector<pfc::string8>& release_ids) {
-    OutputDebugStringA("MusicBrainz parse_musicbrainz_response: Starting parse\n");
     
     release_ids.clear();
     
     // Look for releases array
     const char* releases_start = strstr(json.c_str(), "\"releases\"");
     if (!releases_start) {
-        OutputDebugStringA("MusicBrainz parse: No releases key found\n");
         return false;
     }
     
     // Find the opening bracket for the releases array
     const char* bracket_pos = strchr(releases_start, '[');
     if (!bracket_pos) {
-        OutputDebugStringA("MusicBrainz parse: No releases array bracket found\n");
         return false;
     }
     
     releases_start = bracket_pos;
-    OutputDebugStringA("MusicBrainz parse: Found releases array, starting search\n");
     
     // Look for multiple release IDs
     const char* current_pos = releases_start;
@@ -2413,26 +2216,17 @@ bool artwork_ui_element::parse_musicbrainz_response(const pfc::string8& json, st
         pfc::string8 release_id = pfc::string8(id_start, id_end - id_start);
         release_ids.push_back(release_id);
         
-        pfc::string8 found_debug;
-        found_debug << "Found MusicBrainz release ID #" << (release_index + 1) << ": " << release_id << "\n";
-        OutputDebugStringA(found_debug);
         
         // Move to next potential release
         current_pos = id_end + 1;
     }
     
-    pfc::string8 summary_debug;
-    summary_debug << "MusicBrainz parse: Found " << release_ids.size() << " release IDs total\n";
-    OutputDebugStringA(summary_debug);
     
     return !release_ids.empty();
 }
 
 // Get cover art URL from Cover Art Archive using release ID
 bool artwork_ui_element::get_coverart_from_release_id(const pfc::string8& release_id, pfc::string8& artwork_url) {
-    pfc::string8 lookup_debug;
-    lookup_debug << "get_coverart_from_release_id: Starting lookup for release " << release_id << "\n";
-    OutputDebugStringA(lookup_debug);
     
     // Try different artwork endpoints in order of preference
     const char* cover_types[] = { "front", "", "back" }; // "" means all available artwork
@@ -2445,30 +2239,19 @@ bool artwork_ui_element::get_coverart_from_release_id(const pfc::string8& releas
             coverart_url << "/" << cover_type;
         }
         
-        pfc::string8 coverart_debug;
-        coverart_debug << "Trying Cover Art Archive URL: " << coverart_url << "\n";
-        OutputDebugStringA(coverart_debug);
         
         // Make HTTP request to Cover Art Archive
         pfc::string8 response;
         if (http_get_request(coverart_url, response)) {
             // Check if this is an HTML error page (404)
             if (strstr(response.c_str(), "<!doctype html>") || strstr(response.c_str(), "<html")) {
-                pfc::string8 error_debug;
-                error_debug << "Cover Art Archive: Got HTML error page for " << cover_type << " cover\n";
-                OutputDebugStringA(error_debug);
                 continue; // Try next cover type
             }
             
-            pfc::string8 response_debug;
-            size_t response_preview_len = response.length() < 200 ? response.length() : 200;
-            response_debug << "Cover Art Archive response (first 200 chars): " << pfc::string8(response.c_str(), response_preview_len) << "\n";
-            OutputDebugStringA(response_debug);
             
             // Parse Cover Art Archive JSON response
             const char* image_key = strstr(response.c_str(), "\"image\"");
             if (!image_key) {
-                OutputDebugStringA("Cover Art Archive: No image field found in JSON\n");
                 continue; // Try next cover type
             }
             
@@ -2490,36 +2273,21 @@ bool artwork_ui_element::get_coverart_from_release_id(const pfc::string8& releas
             // Unescape JSON forward slashes if needed
             artwork_url.replace_string("\\/", "/");
             
-            pfc::string8 found_debug;
-            found_debug << "Found Cover Art Archive image URL (" << cover_type << "): " << artwork_url << "\n";
-            OutputDebugStringA(found_debug);
             
             return true;
         }
         
-        pfc::string8 fail_debug;
-        fail_debug << "Cover Art Archive: HTTP request failed for " << cover_type << " cover\n";
-        OutputDebugStringA(fail_debug);
     }
     
-    pfc::string8 no_art_debug;
-    no_art_debug << "Cover Art Archive: No artwork found for release " << release_id << "\n";
-    OutputDebugStringA(no_art_debug);
     return false;
 }
 
 // Download image data
 bool artwork_ui_element::download_image(const pfc::string8& url, std::vector<BYTE>& data) {
-    pfc::string8 debug;
-    debug << "download_image called with URL: " << url << "\n";
-    OutputDebugStringA(debug);
     
     // Use the new binary HTTP request function for proper image download
     bool result = http_get_request_binary(url, data);
     
-    pfc::string8 result_debug;
-    result_debug << "download_image result: " << (result ? "SUCCESS" : "FAILED") << ", data size: " << data.size() << "\n";
-    OutputDebugStringA(result_debug);
     
     return result;
 }
@@ -2575,19 +2343,15 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
     }
     
     // Create GDI+ bitmap from stream
-    OutputDebugStringA("create_bitmap_from_data: Starting GDI+ bitmap creation\n");
     Gdiplus::Bitmap* pBitmap = Gdiplus::Bitmap::FromStream(pStream);
     pStream->Release();
-    OutputDebugStringA("create_bitmap_from_data: GDI+ bitmap created\n");
     
     if (!pBitmap || pBitmap->GetLastStatus() != Gdiplus::Ok) {
         if (pBitmap) delete pBitmap;
-        OutputDebugStringA("create_bitmap_from_data: GDI+ bitmap creation failed\n");
         return false;
     }
     
     // Use faster DIB creation instead of GetHBITMAP to prevent freeze
-    OutputDebugStringA("create_bitmap_from_data: Starting DIB bitmap creation\n");
     
     UINT width = pBitmap->GetWidth();
     UINT height = pBitmap->GetHeight();
@@ -2609,7 +2373,6 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
     if (!hBitmap || !pBits) {
         delete pBitmap;
         m_artwork_bitmap = old_bitmap;
-        OutputDebugStringA("create_bitmap_from_data: DIB creation failed\n");
         return false;
     }
     
@@ -2626,7 +2389,6 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
         DeleteObject(hBitmap);
         delete pBitmap;
         m_artwork_bitmap = old_bitmap;
-        OutputDebugStringA("create_bitmap_from_data: Bitmap lock failed\n");
         return false;
     }
     
@@ -2636,7 +2398,6 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
     }
     
     delete pBitmap;
-    OutputDebugStringA("create_bitmap_from_data: Bitmap creation completed successfully\n");
     return true;
 }
 
@@ -2729,9 +2490,6 @@ void artwork_ui_element::complete_artwork_search() {
     // Update timestamp to prevent immediate re-search
     m_last_search_timestamp = GetTickCount();
     
-    pfc::string8 debug;
-    debug << "Artwork search completed for: " << m_last_search_key << "\n";
-    OutputDebugStringA(debug);
 }
 
 // Priority-based search implementation
