@@ -1,6 +1,6 @@
 # foobar2000 Artwork Display Component
 
-A comprehensive foobar2000 64-bit component that displays cover artwork for currently playing tracks and internet radio streams with intelligent API fallback support.
+A comprehensive foobar2000 component that displays cover artwork for currently playing tracks and internet radio streams with intelligent API fallback support.
 
 ![foo_artwork](https://github.com/user-attachments/assets/37b78696-fc07-4ba2-a41c-366ec05837ea)
 
@@ -100,7 +100,6 @@ The component uses the following priority order for artwork retrieval:
 - **Platform Toolset v143** (Visual Studio 2022 Build Tools)
 - **Windows 10 SDK** (10.0 or later)
 - **foobar2000 SDK** (included in `lib/` directory)
-- **64-bit target** (this component is designed for 64-bit foobar2000)
 
 ### Quick Build
 
