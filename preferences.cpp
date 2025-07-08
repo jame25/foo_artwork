@@ -4,6 +4,7 @@
 // Reference to configuration variables defined in sdk_main.cpp
 extern cfg_bool cfg_enable_itunes, cfg_enable_discogs, cfg_enable_lastfm, cfg_enable_deezer, cfg_enable_musicbrainz;
 extern cfg_string cfg_discogs_key, cfg_discogs_consumer_key, cfg_discogs_consumer_secret, cfg_lastfm_key;
+extern cfg_int cfg_priority_1, cfg_priority_2, cfg_priority_3, cfg_priority_4, cfg_priority_5;
 
 // External declaration from sdk_main.cpp
 extern HINSTANCE g_hIns;
@@ -71,6 +72,25 @@ void artwork_preferences::reset() {
     m_callback->on_state_changed();
 }
 
+// Helper functions for API comboboxes
+static const char* get_api_name(int api_index) {
+    switch (api_index) {
+        case 0: return "iTunes";
+        case 1: return "Deezer";
+        case 2: return "Last.fm";
+        case 3: return "MusicBrainz";
+        case 4: return "Discogs";
+        default: return "Unknown";
+    }
+}
+
+static void populate_api_combobox(HWND combo) {
+    SendMessage(combo, CB_RESETCONTENT, 0, 0);
+    for (int i = 0; i < 5; i++) {
+        SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(get_api_name(i)));
+    }
+}
+
 INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     artwork_preferences* p_this = nullptr;
     
@@ -95,6 +115,20 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         SetDlgItemTextA(hwnd, IDC_DISCOGS_CONSUMER_SECRET, cfg_discogs_consumer_secret);
         SetDlgItemTextA(hwnd, IDC_LASTFM_KEY, cfg_lastfm_key);
         
+        // Initialize priority comboboxes
+        populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_1));
+        populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_2));
+        populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_3));
+        populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_4));
+        populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_5));
+        
+        // Set current priority selections
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_1), CB_SETCURSEL, cfg_priority_1, 0);
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_2), CB_SETCURSEL, cfg_priority_2, 0);
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_3), CB_SETCURSEL, cfg_priority_3, 0);
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_4), CB_SETCURSEL, cfg_priority_4, 0);
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_5), CB_SETCURSEL, cfg_priority_5, 0);
+        
         p_this->update_controls();
         p_this->m_has_changes = false;
     } else {
@@ -116,6 +150,12 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
                                               LOWORD(wp) == IDC_DISCOGS_CONSUMER_KEY ||
                                               LOWORD(wp) == IDC_DISCOGS_CONSUMER_SECRET ||
                                               LOWORD(wp) == IDC_LASTFM_KEY)) {
+            p_this->on_changed();
+        } else if (HIWORD(wp) == CBN_SELCHANGE && (LOWORD(wp) == IDC_PRIORITY_1 ||
+                                                  LOWORD(wp) == IDC_PRIORITY_2 ||
+                                                  LOWORD(wp) == IDC_PRIORITY_3 ||
+                                                  LOWORD(wp) == IDC_PRIORITY_4 ||
+                                                  LOWORD(wp) == IDC_PRIORITY_5)) {
             p_this->on_changed();
         }
         break;
@@ -168,9 +208,17 @@ bool artwork_preferences::has_changed() {
     GetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, buffer, sizeof(buffer));
     bool lastfm_key_changed = strcmp(buffer, cfg_lastfm_key) != 0;
     
+    // Check priority comboboxes
+    bool priority1_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0) != cfg_priority_1;
+    bool priority2_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0) != cfg_priority_2;
+    bool priority3_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0) != cfg_priority_3;
+    bool priority4_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0) != cfg_priority_4;
+    bool priority5_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0) != cfg_priority_5;
+    
     return itunes_changed || discogs_changed || lastfm_changed || deezer_changed || musicbrainz_changed ||
            discogs_key_changed || discogs_consumer_key_changed || 
-           discogs_consumer_secret_changed || lastfm_key_changed;
+           discogs_consumer_secret_changed || lastfm_key_changed ||
+           priority1_changed || priority2_changed || priority3_changed || priority4_changed || priority5_changed;
 }
 
 void artwork_preferences::apply_settings() {
@@ -194,6 +242,13 @@ void artwork_preferences::apply_settings() {
         
         GetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, buffer, sizeof(buffer));
         cfg_lastfm_key = buffer;
+        
+        // Save priority combobox selections
+        cfg_priority_1 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0);
+        cfg_priority_2 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0);
+        cfg_priority_3 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0);
+        cfg_priority_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);
+        cfg_priority_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);
     }
 }
 
@@ -210,6 +265,13 @@ void artwork_preferences::reset_settings() {
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_KEY, "");
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_SECRET, "");
         SetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, "");
+        
+        // Reset priority comboboxes to default order
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_SETCURSEL, 1, 0);  // Deezer
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_SETCURSEL, 0, 0);  // iTunes
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_SETCURSEL, 2, 0);  // Last.fm
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_SETCURSEL, 3, 0);  // MusicBrainz
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_SETCURSEL, 4, 0);  // Discogs
         
         update_controls();
     }
