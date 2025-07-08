@@ -19,18 +19,31 @@ static constexpr GUID guid_cfg_discogs_consumer_key = { 0x1234567e, 0x1234, 0x12
 static constexpr GUID guid_cfg_discogs_consumer_secret = { 0x1234567f, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf7 } };
 static constexpr GUID guid_cfg_lastfm_key = { 0x1234567d, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf5 } };
 static constexpr GUID guid_cfg_fill_mode = { 0x12345680, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
+static constexpr GUID guid_cfg_priority_1 = { 0x12345682, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfa } };
+static constexpr GUID guid_cfg_priority_2 = { 0x12345683, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfb } };
+static constexpr GUID guid_cfg_priority_3 = { 0x12345684, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfc } };
+static constexpr GUID guid_cfg_priority_4 = { 0x12345685, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfd } };
+static constexpr GUID guid_cfg_priority_5 = { 0x12345686, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
 
 // Configuration variables with default values
-cfg_bool cfg_enable_itunes(guid_cfg_enable_itunes, true);
+cfg_bool cfg_enable_itunes(guid_cfg_enable_itunes, false);
 cfg_bool cfg_enable_discogs(guid_cfg_enable_discogs, false);
 cfg_bool cfg_enable_lastfm(guid_cfg_enable_lastfm, false);
 cfg_bool cfg_enable_deezer(guid_cfg_enable_deezer, true);
-cfg_bool cfg_enable_musicbrainz(guid_cfg_enable_musicbrainz, true);
+cfg_bool cfg_enable_musicbrainz(guid_cfg_enable_musicbrainz, false);
 cfg_string cfg_discogs_key(guid_cfg_discogs_key, "");
 cfg_string cfg_discogs_consumer_key(guid_cfg_discogs_consumer_key, "");
 cfg_string cfg_discogs_consumer_secret(guid_cfg_discogs_consumer_secret, "");
 cfg_string cfg_lastfm_key(guid_cfg_lastfm_key, "");
 cfg_bool cfg_fill_mode(guid_cfg_fill_mode, true);  // true = fill window (crop), false = fit window (letterbox)
+
+// API Priority order (0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs)
+// Default order: Deezer > iTunes > Last.fm > MusicBrainz > Discogs
+cfg_int cfg_priority_1(guid_cfg_priority_1, 1);  // Deezer
+cfg_int cfg_priority_2(guid_cfg_priority_2, 0);  // iTunes  
+cfg_int cfg_priority_3(guid_cfg_priority_3, 2);  // Last.fm
+cfg_int cfg_priority_4(guid_cfg_priority_4, 3);  // MusicBrainz
+cfg_int cfg_priority_5(guid_cfg_priority_5, 4);  // Discogs
 
 // Global download throttle to prevent system freeze
 static std::mutex g_download_mutex;
@@ -57,7 +70,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.0.6",
+    "1.0.7",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -159,6 +172,40 @@ public:
     }
 };
 
+// Helper function to get API search order based on priority configuration
+enum class ApiType {
+    iTunes = 0,
+    Deezer = 1,
+    LastFm = 2,
+    MusicBrainz = 3,
+    Discogs = 4
+};
+
+struct ApiPriority {
+    ApiType api;
+    int priority_position;
+};
+
+static std::vector<ApiType> get_api_search_order() {
+    std::vector<ApiPriority> priorities = {
+        {ApiType::iTunes, cfg_priority_1},
+        {ApiType::Deezer, cfg_priority_2},
+        {ApiType::LastFm, cfg_priority_3},
+        {ApiType::MusicBrainz, cfg_priority_4},
+        {ApiType::Discogs, cfg_priority_5}
+    };
+    
+    // Find which API is assigned to each priority position (1st, 2nd, 3rd, 4th, 5th)
+    std::vector<ApiType> ordered_apis(5);
+    for (const auto& priority : priorities) {
+        if (priority.priority_position >= 0 && priority.priority_position < 5) {
+            ordered_apis[priority.priority_position] = priority.api;
+        }
+    }
+    
+    return ordered_apis;
+}
+
 // UI Element for displaying artwork
 class artwork_ui_element : public service_impl_single_t<ui_element_instance> {
 public:
@@ -185,6 +232,7 @@ public:
     DWORD m_last_search_timestamp;  // Timestamp for search cooldown
     metadb_handle_ptr m_last_update_track;  // Track handle for smart debouncing
     pfc::string8 m_last_update_content;  // Content (artist|title) for smart debouncing
+    int m_current_priority_position;  // Current position in priority search chain
     
     // Thread-safe image data storage
     std::mutex m_image_data_mutex;
@@ -214,6 +262,10 @@ public:
     void search_musicbrainz_artwork(metadb_handle_ptr track);
     void search_musicbrainz_background(pfc::string8 artist, pfc::string8 title);
     
+    // Priority-based search
+    void start_priority_search(const pfc::string8& artist, const pfc::string8& title);
+    void search_next_api_in_priority(const pfc::string8& artist, const pfc::string8& title, int current_position = 0);
+    
     // Helper functions for APIs
     pfc::string8 url_encode(const pfc::string8& str);
     bool http_get_request(const pfc::string8& url, pfc::string8& response);
@@ -237,7 +289,7 @@ public:
     // GUID for our element
     static const GUID g_guid;
     artwork_ui_element(HWND parent, ui_element_config::ptr config, ui_element_instance_callback::ptr callback)
-        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_found(false) {
+        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_found(false), m_current_priority_position(0) {
         
         // Remove jarring "No track playing" message
         // m_status_text = "No track playing";
@@ -843,32 +895,8 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     }
     
     if (should_search_online && track.is_valid()) {
-        // Try iTunes API first (if enabled)
-        if (cfg_enable_itunes) {
-            search_itunes_background(artist, title);
-        }
-        // If iTunes failed or disabled, try Deezer API (if enabled)
-        else if (cfg_enable_deezer) {
-            search_deezer_background(artist, title);
-        }
-        // If iTunes and Deezer failed/disabled, try Last.fm API (if enabled)
-        else if (cfg_enable_lastfm) {
-            search_lastfm_background(artist, title);
-        }
-        // If iTunes, Deezer, and Last.fm failed/disabled, try MusicBrainz API (if enabled)
-        else if (cfg_enable_musicbrainz) {
-            search_musicbrainz_background(artist, title);
-        }
-        // If iTunes, Deezer, Last.fm, and MusicBrainz failed/disabled, try Discogs API (if enabled)
-        else if (cfg_enable_discogs) {
-            search_discogs_background(artist, title);
-        }
-        else {
-            // No APIs enabled - mark search as complete to prevent retries
-            complete_artwork_search();
-            m_status_text = "No artwork APIs enabled";
-            if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
-        }
+        // Use priority-based search order
+        start_priority_search(artist, title);
     } else {
         // Not searching - mark as complete to prevent cache issues
         complete_artwork_search();
@@ -1044,15 +1072,11 @@ void artwork_ui_element::search_itunes_background(pfc::string8 artist, pfc::stri
         
         // Failed to get artwork
         m_status_text = "iTunes search failed";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 2, 0, 0);
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
         
     } catch (...) {
         m_status_text = "iTunes search error";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 2, 0, 0);
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
     }
 }
 
@@ -1125,16 +1149,12 @@ void artwork_ui_element::search_discogs_background(pfc::string8 artist, pfc::str
         // Failed to get artwork - mark search as completed
         complete_artwork_search();
         m_status_text = "Discogs search failed";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 5, 0, 0);
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
         
     } catch (...) {
         complete_artwork_search();  // Mark cache as completed
         m_status_text = "Discogs search error";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 5, 0, 0);
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
     }
 }
 
@@ -1143,9 +1163,7 @@ void artwork_ui_element::search_lastfm_background(pfc::string8 artist, pfc::stri
     try {
         if (cfg_lastfm_key.is_empty()) {
             m_status_text = "Last.fm API key not configured";
-            if (m_hWnd) {
-                PostMessage(m_hWnd, WM_USER + 4, 0, 0);
-            }
+            search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
             return;
         }
         
@@ -1184,15 +1202,11 @@ void artwork_ui_element::search_lastfm_background(pfc::string8 artist, pfc::stri
         
         // Failed to get artwork
         m_status_text = "Last.fm search failed";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 4, 0, 0);
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
         
     } catch (...) {
         m_status_text = "Last.fm search error";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 4, 0, 0);
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
     }
 }
 
@@ -1257,15 +1271,11 @@ void artwork_ui_element::search_deezer_background(pfc::string8 artist, pfc::stri
         
         // Failed to get artwork - continue fallback chain
         m_status_text = "Deezer search failed";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 3, 0, 0); // Deezer failure message
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
         
     } catch (...) {
         m_status_text = "Deezer search error";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 3, 0, 0);
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
     }
 }
 
@@ -1343,17 +1353,13 @@ void artwork_ui_element::search_musicbrainz_background(pfc::string8 artist, pfc:
             }
         }
         
-        // Failed to get artwork - continue fallback chain
+        // Failed to get artwork - continue to next API in priority
         m_status_text = "MusicBrainz search failed";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 7, 0, 0); // New message for MusicBrainz failure
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
         
     } catch (...) {
         m_status_text = "MusicBrainz search error";
-        if (m_hWnd) {
-            PostMessage(m_hWnd, WM_USER + 7, 0, 0);
-        }
+        search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
     }
 }
 
@@ -2738,6 +2744,71 @@ void artwork_ui_element::complete_artwork_search() {
     pfc::string8 debug;
     debug << "Artwork search completed for: " << m_last_search_key << "\n";
     OutputDebugStringA(debug);
+}
+
+// Priority-based search implementation
+void artwork_ui_element::start_priority_search(const pfc::string8& artist, const pfc::string8& title) {
+    search_next_api_in_priority(artist, title, 0);
+}
+
+void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist, const pfc::string8& title, int current_position) {
+    if (current_position >= 5) {
+        // No more APIs to try - mark search as complete
+        complete_artwork_search();
+        m_status_text = "No artwork found";
+        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+        return;
+    }
+    
+    auto api_order = get_api_search_order();
+    ApiType current_api = api_order[current_position];
+    
+    // Check if the current API is enabled and try it
+    bool api_enabled = false;
+    switch (current_api) {
+        case ApiType::iTunes:
+            api_enabled = cfg_enable_itunes;
+            break;
+        case ApiType::Deezer:
+            api_enabled = cfg_enable_deezer;
+            break;
+        case ApiType::LastFm:
+            api_enabled = cfg_enable_lastfm;
+            break;
+        case ApiType::MusicBrainz:
+            api_enabled = cfg_enable_musicbrainz;
+            break;
+        case ApiType::Discogs:
+            api_enabled = cfg_enable_discogs;
+            break;
+    }
+    
+    if (api_enabled) {
+        // Store current position for fallback
+        m_current_priority_position = current_position;
+        
+        // Start the API search
+        switch (current_api) {
+            case ApiType::iTunes:
+                search_itunes_background(artist, title);
+                break;
+            case ApiType::Deezer:
+                search_deezer_background(artist, title);
+                break;
+            case ApiType::LastFm:
+                search_lastfm_background(artist, title);
+                break;
+            case ApiType::MusicBrainz:
+                search_musicbrainz_background(artist, title);
+                break;
+            case ApiType::Discogs:
+                search_discogs_background(artist, title);
+                break;
+        }
+    } else {
+        // API is disabled, try the next one
+        search_next_api_in_priority(artist, title, current_position + 1);
+    }
 }
 
 // UI Element factory - manual implementation
