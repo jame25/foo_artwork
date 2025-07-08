@@ -8,6 +8,7 @@ A comprehensive foobar2000 64-bit component that displays cover artwork for curr
 
 - **Local Artwork Search**: Automatically searches for artwork files in the same directory as your music files
 - **Online API Integration**: Falls back to iTunes, Deezer, Last.fm, MusicBrainz, and Discogs APIs when local artwork is not found
+- **User-Customizable API Priority**: Configure the order of API fallback chain through an intuitive interface
 - **Internet Radio Support**: Displays artwork for internet radio streams using metadata
 - **Configurable API Services**: Enable/disable individual API services and manage API keys
 - **Smart Caching**: Prevents repeated API calls for the same track during the current session
