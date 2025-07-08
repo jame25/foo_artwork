@@ -35,7 +35,7 @@ cfg_string cfg_discogs_key(guid_cfg_discogs_key, "");
 cfg_string cfg_discogs_consumer_key(guid_cfg_discogs_consumer_key, "");
 cfg_string cfg_discogs_consumer_secret(guid_cfg_discogs_consumer_secret, "");
 cfg_string cfg_lastfm_key(guid_cfg_lastfm_key, "");
-cfg_bool cfg_fill_mode(guid_cfg_fill_mode, true);  // true = fill window (crop), false = fit window (letterbox)
+cfg_bool cfg_fill_mode(guid_cfg_fill_mode, false);  // true = fill window (crop), false = fit window (letterbox)
 
 // API Priority order (0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs)
 // Default order: Deezer > iTunes > Last.fm > MusicBrainz > Discogs
@@ -70,7 +70,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.0.7",
+    "1.0.8",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -568,26 +568,17 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
         double scaleX = (double)windowWidth / bm.bmWidth;
         double scaleY = (double)windowHeight / bm.bmHeight;
         
-        // Choose scaling mode based on configuration
-        double scale;
-        if (cfg_fill_mode) {
-            // Fill mode: Scale to fill window (may crop image, minimizes white space)
-            // Use the larger scale factor to ensure the window is completely filled
-            scale = (scaleX > scaleY) ? scaleX : scaleY;
-        } else {
-            // Fit mode: Scale to fit window (shows full image, may have letterboxing)
-            // Use the smaller scale factor to ensure the entire image is visible
-            scale = (scaleX < scaleY) ? scaleX : scaleY;
-        }
+        // Always use fit mode: Scale to fit window (shows full image, may have letterboxing)
+        // Use the smaller scale factor to ensure the entire image is visible
+        double scale = (scaleX < scaleY) ? scaleX : scaleY;
         
-        // Limit maximum scale to prevent excessive enlargement of small images
-        if (scale > 10.0) {
-            scale = 10.0;
+        // Apply more reasonable scale limits that don't interfere with aspect ratio
+        // Only limit extreme scaling to prevent system issues
+        if (scale > 50.0) {
+            scale = 50.0;
         }
-        
-        // Limit minimum scale to prevent images from becoming too small
-        if (scale < 0.1) {
-            scale = 0.1;
+        if (scale < 0.01) {
+            scale = 0.01;
         }
         
         // Calculate final dimensions with proper rounding
@@ -602,11 +593,8 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
         int x = (windowWidth - scaledWidth) / 2;
         int y = (windowHeight - scaledHeight) / 2;
         
-        // Clamp position to prevent drawing outside the window
-        if (x < 0) x = 0;
-        if (y < 0) y = 0;
-        if (x + scaledWidth > windowWidth) x = windowWidth - scaledWidth;
-        if (y + scaledHeight > windowHeight) y = windowHeight - scaledHeight;
+        // In fit mode, keep image centered - no clamping needed since image always fits in window
+        // The image should always fit within the window bounds in fit mode
         
         // Create compatible DC and select bitmap
         HDC memDC = CreateCompatibleDC(hdc);
