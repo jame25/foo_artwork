@@ -31,7 +31,10 @@ BEGIN
     
     LTEXT           "Note: API keys are optional but recommended for better search results.",IDC_STATIC,20,177,300,10
     
-    GROUPBOX        "Information",IDC_STATIC,10,210,321,40
-    LTEXT           "API Priority: iTunes > Deezer > Last.fm > MusicBrainz > Discogs",IDC_STATIC,20,225,300,10
-    LTEXT           "For local files, local artwork is checked first before APIs.",IDC_STATIC,20,237,250,10
+    GROUPBOX        "Priority",IDC_STATIC,10,210,321,40
+    COMBOBOX        IDC_PRIORITY_1,20,225,55,50,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        IDC_PRIORITY_2,80,225,55,50,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        IDC_PRIORITY_3,140,225,55,50,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        IDC_PRIORITY_4,200,225,55,50,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        IDC_PRIORITY_5,260,225,55,50,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 END
