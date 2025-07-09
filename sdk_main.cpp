@@ -308,6 +308,25 @@ public:
         if (m_hWnd) {
             // Add to global list for tracking
             g_artwork_ui_elements.add_item(this);
+            
+            // Check if there's already a track playing (for resume scenarios)
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            if (pc->get_now_playing(current_track)) {
+                // Schedule initial artwork load after a longer delay
+                // This handles cases where foobar2000 has resumed playback state
+                // but stream metadata takes time to populate
+                m_status_text = "Detected resumed playback - scheduling artwork load...";
+                InvalidateRect(m_hWnd, NULL, TRUE);
+                SetTimer(m_hWnd, 3, 3000, NULL);  // Timer ID 3, 3 second delay
+            } else {
+                // No track playing during initialization
+                m_status_text = "No track playing during initialization";
+                InvalidateRect(m_hWnd, NULL, TRUE);
+                
+                // Set a timer to check periodically if playback starts
+                SetTimer(m_hWnd, 6, 1000, NULL);  // Timer ID 6, check every 1 second
+            }
         }
     }
     
@@ -399,6 +418,7 @@ public:
         m_last_update_timestamp = current_time;
         
         // Clear previous artwork when switching between different source types or streams
+        // OR when content changes within the same internet radio stream
         if (track_changed && track.is_valid()) {
             pfc::string8 new_path = track->get_path();
             bool new_is_internet_stream = (strstr(new_path.c_str(), "://") && !strstr(new_path.c_str(), "file://"));
@@ -427,6 +447,39 @@ public:
             
             if (should_clear_artwork) {
                 clear_artwork();
+                
+                // Force immediate artwork search after clearing
+                // This ensures search happens even if metadata extraction cached old values
+                m_current_track = track;
+                pfc::string8 fresh_artist, fresh_title;
+                extract_metadata_for_search(track, fresh_artist, fresh_title);
+                load_artwork_for_track_with_metadata(track, fresh_artist, fresh_title);
+                return;  // Skip the normal load process since we just did it
+            }
+        }
+        
+        // Handle track changes within the same internet radio stream
+        // Clear artwork when content changes within the same stream
+        if (content_changed && track.is_valid()) {
+            pfc::string8 path = track->get_path();
+            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            
+            if (is_internet_stream) {
+                // For internet radio streams, clear old artwork when metadata changes
+                clear_artwork();
+                
+                // Clear search cache to force new search
+                {
+                    std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
+                    m_last_search_key = "";
+                    m_current_search_key = "";
+                }
+                m_last_search_timestamp = 0;
+                
+                // Force immediate artwork search
+                m_current_track = track;
+                load_artwork_for_track_with_metadata(track, current_artist, current_title);
+                return;  // Skip the normal load process since we just did it
             }
         }
         
@@ -535,6 +588,135 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
         return 0;
     case WM_USER + 6: // Create bitmap from downloaded data
         pThis->process_downloaded_image_data();
+        return 0;
+    case WM_TIMER:
+        if (wParam == 2) {  // Timer ID 2 - delayed retry for station metadata
+            KillTimer(hwnd, 2);  // Kill the timer
+            
+            // Retry artwork search with current track
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            if (pc->get_now_playing(current_track)) {
+                pThis->update_track(current_track);
+            }
+        } else if (wParam == 3) {  // Timer ID 3 - initial load for resume scenarios
+            KillTimer(hwnd, 3);  // Kill the timer
+            
+            // Load artwork for currently playing track
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            if (pc->get_now_playing(current_track)) {
+                // Check if we have valid metadata available
+                pfc::string8 test_artist, test_title;
+                pThis->extract_metadata_for_search(current_track, test_artist, test_title);
+                
+                if (!test_artist.is_empty() && !test_title.is_empty()) {
+                    // We have valid metadata, proceed with search
+                    pThis->m_status_text = "Searching for artwork...";
+                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                    
+                    pThis->clear_artwork();
+                    pThis->update_track(current_track);
+                } else {
+                    // Metadata not ready yet, schedule another retry
+                    pThis->m_status_text = "Waiting for track metadata...";
+                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                    
+                    SetTimer(hwnd, 4, 2000, NULL);  // Timer ID 4, retry in 2 seconds
+                }
+            }
+        } else if (wParam == 4) {  // Timer ID 4 - retry for resume scenarios
+            KillTimer(hwnd, 4);  // Kill the timer
+            
+            // Retry artwork search for resumed internet streams
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            if (pc->get_now_playing(current_track)) {
+                // Check if we have valid metadata available now
+                pfc::string8 test_artist, test_title;
+                pThis->extract_metadata_for_search(current_track, test_artist, test_title);
+                
+                if (!test_artist.is_empty() && !test_title.is_empty()) {
+                    // We have valid metadata, proceed with search
+                    pThis->m_status_text = "Searching for artwork...";
+                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                    
+                    pThis->clear_artwork();
+                    
+                    // Clear search cache to bypass any cached failures
+                    {
+                        std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
+                        pThis->m_last_search_key = "";
+                        pThis->m_current_search_key = "";
+                    }
+                    pThis->m_last_search_timestamp = 0;
+                    
+                    pThis->update_track(current_track);
+                } else {
+                    // Still no metadata, schedule final retry
+                    pThis->m_status_text = "Still waiting for metadata...";
+                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                    
+                    SetTimer(hwnd, 5, 3000, NULL);  // Timer ID 5, final retry in 3 seconds
+                }
+            }
+        } else if (wParam == 5) {  // Timer ID 5 - final retry for resume scenarios
+            KillTimer(hwnd, 5);  // Kill the timer
+            
+            // Final retry for artwork search
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            if (pc->get_now_playing(current_track)) {
+                // Check metadata one more time
+                pfc::string8 test_artist, test_title;
+                pThis->extract_metadata_for_search(current_track, test_artist, test_title);
+                
+                if (!test_artist.is_empty() && !test_title.is_empty()) {
+                    // Finally have metadata, proceed with search
+                    pThis->m_status_text = "Final artwork search...";
+                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                    
+                    // Clear ALL cached search state for final retry
+                    pThis->clear_artwork();
+                    
+                    // Force bypass of search cache
+                    {
+                        std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
+                        pThis->m_last_search_key = "";
+                        pThis->m_current_search_key = "";
+                    }
+                    pThis->m_last_search_timestamp = 0;
+                    
+                    pThis->update_track(current_track);
+                } else {
+                    // Give up - no metadata available
+                    pThis->m_status_text = "No track metadata available";
+                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                }
+            }
+        } else if (wParam == 6) {  // Timer ID 6 - periodic check for playback start
+            // Check if playback has started
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            if (pc->get_now_playing(current_track)) {
+                // Playback has started, switch to resume logic
+                KillTimer(hwnd, 6);  // Stop the periodic check
+                
+                pThis->m_status_text = "Playback detected - scheduling artwork load...";
+                if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                
+                SetTimer(hwnd, 3, 3000, NULL);  // Timer ID 3, 3 second delay
+            } else {
+                // Still no playback, but limit the checking to avoid infinite loop
+                static int check_count = 0;
+                check_count++;
+                if (check_count >= 10) {  // Stop after 10 seconds
+                    KillTimer(hwnd, 6);
+                    pThis->m_status_text = "No playback detected after 10 seconds";
+                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                }
+            }
+        }
         return 0;
     default:
         return DefWindowProc(hwnd, uMsg, wParam, lParam);
@@ -1377,11 +1559,23 @@ void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pf
         wchar_t window_text[512];
         
         if (GetClassNameW(hwnd, class_name, 256) && GetWindowTextW(hwnd, window_text, 512)) {
-            // Support two formats:
+            // Support multiple formats:
             // Format 1: "Artist - Title [foobar2000]"
             // Format 2: "foobar2000 version info    Artist - Title  |  Station [SomaFM]"
-            if (wcsstr(window_text, L" - ") && 
-                (wcsstr(window_text, L"[foobar2000]") || wcsstr(window_text, L"foobar2000"))) {
+            // Format 3: Any window containing " - " that belongs to foobar2000
+            bool is_foobar_window = (wcsstr(window_text, L"[foobar2000]") || wcsstr(window_text, L"foobar2000"));
+            bool has_track_separator = wcsstr(window_text, L" - ");
+            
+            // Also check if this is a foobar2000 window by class name
+            if (!is_foobar_window) {
+                // Check for foobar2000-related class names
+                if (wcsstr(class_name, L"foo_") || wcsstr(class_name, L"foobar") || 
+                    wcscmp(class_name, L"{97E27FAA-C0B3-4b8e-A693-ED7881E99FC1}") == 0) {
+                    is_foobar_window = true;
+                }
+            }
+            
+            if (has_track_separator && is_foobar_window) {
                 pfc::stringcvt::string_utf8_from_wide text_utf8(window_text);
                 *result = text_utf8;
                 return FALSE;
@@ -2610,6 +2804,9 @@ void artwork_ui_element::clear_artwork() {
     m_last_search_artist = "";
     m_last_search_title = "";
     m_current_priority_position = 0;
+    
+    // Reset search timestamp to allow immediate new search
+    m_last_search_timestamp = 0;
     
     // Update status text
     m_status_text = "";
