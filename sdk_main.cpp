@@ -408,7 +408,12 @@ public:
         bool content_changed = (current_content != m_last_update_content);
         bool enough_time_passed = (current_time - m_last_update_timestamp) > 1000; // 1 second
         
-        if (!track_changed && !content_changed && !enough_time_passed) {
+        // Detect transition from empty metadata (ads) to populated metadata (music resumes)
+        bool had_empty_metadata = (m_last_update_content == "|" || m_last_update_content.is_empty());
+        bool now_has_metadata = (!current_artist.is_empty() && !current_title.is_empty());
+        bool metadata_resumed = (had_empty_metadata && now_has_metadata);
+        
+        if (!track_changed && !content_changed && !enough_time_passed && !metadata_resumed) {
             return;
         }
         
@@ -477,6 +482,33 @@ public:
                 m_last_search_timestamp = 0;
                 
                 // Force immediate artwork search
+                m_current_track = track;
+                load_artwork_for_track_with_metadata(track, current_artist, current_title);
+                return;  // Skip the normal load process since we just did it
+            }
+        }
+        
+        // Handle metadata resume after ad breaks
+        if (metadata_resumed && track.is_valid()) {
+            pfc::string8 path = track->get_path();
+            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            
+            if (is_internet_stream) {
+                // Clear any "No artwork found" status from ad period
+                m_status_text = "";
+                
+                // Clear artwork and search cache to force fresh search
+                clear_artwork();
+                
+                // Clear search cache to bypass any cached "no artwork found" from ad period
+                {
+                    std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
+                    m_last_search_key = "";
+                    m_current_search_key = "";
+                }
+                m_last_search_timestamp = 0;
+                
+                // Force immediate artwork search now that we have metadata again
                 m_current_track = track;
                 load_artwork_for_track_with_metadata(track, current_artist, current_title);
                 return;  // Skip the normal load process since we just did it
