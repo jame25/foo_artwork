@@ -4,7 +4,8 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 
 - Important: This component requires the standard windows title bar format in the Default User Interface (DUI).
 
-![foo_artwork](https://github.com/user-attachments/assets/37b78696-fc07-4ba2-a41c-366ec05837ea)
+![foo_artwork](https://github.com/user-attachments/assets/ddc460a3-809e-429c-8e7d-a8493e131633)
+
 
 ## Features
 
@@ -72,9 +73,31 @@ Access the preferences dialog through:
 - File → Preferences → Tools → Artwork Display
 
 Configure:
-- Enable/disable individual API services
-- Set API keys and consumer credentials
+- **API Services**: Enable/disable individual API services
+- **API Keys**: Set API keys and consumer credentials for services that require them
+- **Priority Order**: Customize the fallback chain by selecting your preferred API for each position
+- **Stream Delay**: Configure delay (1-30 seconds) before checking metadata on internet radio streams
 - All changes are saved automatically
+
+#### Priority Section
+The **Priority** section contains five dropdown menus allowing you to customize the API search order:
+- Each dropdown lists all available APIs (iTunes, Deezer, Last.fm, MusicBrainz, Discogs)
+- Arrange them in your preferred order from left to right (highest to lowest priority)
+- Only enabled APIs will be used during searches, disabled APIs are automatically skipped
+
+#### Stream Delay (May fix stream issues)
+The **Stream Delay** setting controls how long the component waits before checking metadata and searching for artwork on internet radio streams:
+
+- **Range**: 1-30 seconds (adjustable with up/down arrows)
+- **Default**: 1 second
+- **Purpose**: Allows radio streams time to provide proper track metadata before artwork search begins
+- **When to increase**: If you experience issues with artwork searches using station names instead of track names
+- **Applies to**: All internet radio stream scenarios including track changes, new streams, and metadata updates
+
+**Recommended values:**
+- **Fast streams**: 1-2 seconds (default works well for most streams)
+- **Slow streams**: 3-5 seconds (for streams that take longer to provide track metadata)
+- **Problem streams**: 5-10 seconds (for streams with persistent metadata issues)
 
 ## Usage
 
