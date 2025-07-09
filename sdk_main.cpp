@@ -1682,6 +1682,16 @@ void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pf
     // Clean up common encoding issues and unwanted text - ENHANCED CLEANING
     artist = clean_metadata_text(artist);
     title = clean_metadata_text(title);
+    
+    // Debug output for track change issues
+    pfc::string8 debug_msg = "DEBUG: Extracted metadata - Artist: '";
+    debug_msg += artist;
+    debug_msg += "', Title: '";
+    debug_msg += title;
+    debug_msg += "', Window: '";
+    debug_msg += track_info_from_window;
+    debug_msg += "'";
+    OutputDebugStringA(debug_msg.c_str());
 }
 
 // Clean metadata text from encoding issues and unwanted content - ENHANCED VERSION
