@@ -398,26 +398,35 @@ public:
         m_last_update_content = current_content;
         m_last_update_timestamp = current_time;
         
-        // For internet radio streams, clear previous artwork when switching streams
-        // Check if this is a different stream (different URL) than the previous one
+        // Clear previous artwork when switching between different source types or streams
         if (track_changed && track.is_valid()) {
             pfc::string8 new_path = track->get_path();
-            bool is_internet_stream = (strstr(new_path.c_str(), "://") && !strstr(new_path.c_str(), "file://"));
+            bool new_is_internet_stream = (strstr(new_path.c_str(), "://") && !strstr(new_path.c_str(), "file://"));
             
-            if (is_internet_stream) {
-                // Check if the stream URL actually changed (not just track metadata)
-                bool stream_url_changed = false;
-                if (m_last_update_track.is_valid()) {
-                    pfc::string8 old_path = m_last_update_track->get_path();
-                    stream_url_changed = (new_path != old_path);
-                } else {
-                    stream_url_changed = true; // First stream load
-                }
+            bool should_clear_artwork = false;
+            
+            if (m_last_update_track.is_valid()) {
+                pfc::string8 old_path = m_last_update_track->get_path();
+                bool old_is_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
                 
-                if (stream_url_changed) {
-                    // Clear previous artwork when switching to a different stream
-                    clear_artwork();
+                // Clear artwork if:
+                // 1. Switching from local file to internet stream
+                // 2. Switching from internet stream to local file
+                // 3. Switching between different internet streams
+                if (old_is_internet_stream != new_is_internet_stream) {
+                    // Source type changed (local <-> internet)
+                    should_clear_artwork = true;
+                } else if (new_is_internet_stream && (new_path != old_path)) {
+                    // Different internet stream URL
+                    should_clear_artwork = true;
                 }
+            } else {
+                // First track load
+                should_clear_artwork = true;
+            }
+            
+            if (should_clear_artwork) {
+                clear_artwork();
             }
         }
         
