@@ -174,11 +174,11 @@ struct ApiPriority {
 
 static std::vector<ApiType> get_api_search_order() {
     std::vector<ApiPriority> priorities = {
-        {ApiType::iTunes, cfg_priority_1},
-        {ApiType::Deezer, cfg_priority_2},
-        {ApiType::LastFm, cfg_priority_3},
-        {ApiType::MusicBrainz, cfg_priority_4},
-        {ApiType::Discogs, cfg_priority_5}
+        {ApiType::Deezer, cfg_priority_1},       // cfg_priority_1 = 1 (Deezer)
+        {ApiType::iTunes, cfg_priority_2},       // cfg_priority_2 = 0 (iTunes)
+        {ApiType::LastFm, cfg_priority_3},       // cfg_priority_3 = 2 (Last.fm)
+        {ApiType::MusicBrainz, cfg_priority_4},  // cfg_priority_4 = 3 (MusicBrainz)
+        {ApiType::Discogs, cfg_priority_5}       // cfg_priority_5 = 4 (Discogs)
     };
     
     // Find which API is assigned to each priority position (1st, 2nd, 3rd, 4th, 5th)
@@ -406,6 +406,13 @@ public:
         pfc::string8 current_content = current_artist + "|" + current_title;
         
         bool content_changed = (current_content != m_last_update_content);
+        
+        // Debug content comparison
+        if (!content_changed) {
+            OutputDebugStringA("DEBUG update_track: Content NOT changed - metadata extraction may be failing");
+        } else {
+            OutputDebugStringA("DEBUG update_track: Content CHANGED detected!");
+        }
         bool enough_time_passed = (current_time - m_last_update_timestamp) > 1000; // 1 second
         
         // Detect transition from empty metadata (ads) to populated metadata (music resumes)
@@ -447,6 +454,19 @@ public:
             }
             OutputDebugStringA("DEBUG update_track: SKIPPING - no changes detected");
             return;
+        } else if (!track_changed && !content_changed && enough_time_passed) {
+            // Also schedule delayed retry when enough time has passed but no content change
+            // This handles cases where callbacks fire but metadata isn't updated yet
+            if (track.is_valid()) {
+                pfc::string8 path = track->get_path();
+                bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                
+                if (is_internet_stream) {
+                    OutputDebugStringA("DEBUG update_track: Time passed but no content change - scheduling metadata retry");
+                    // Schedule multiple retries with shorter intervals
+                    SetTimer(m_hWnd, 8, 1000, NULL);  // Timer ID 8 for aggressive retry
+                }
+            }
         }
         
         // Update tracking variables
@@ -803,6 +823,40 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 // If still no change detected, restore the original content
                 if (pThis->m_last_update_content.is_empty()) {
                     pThis->m_last_update_content = saved_last_content;
+                }
+            }
+        } else if (wParam == 8) {  // Timer ID 8 - aggressive metadata retry for track changes
+            KillTimer(hwnd, 8);  // Kill the timer
+            
+            // More aggressive retry with multiple attempts
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            if (pc->get_now_playing(current_track)) {
+                OutputDebugStringA("DEBUG Timer 8: Aggressive metadata retry for track change");
+                
+                // Extract fresh metadata
+                pfc::string8 fresh_artist, fresh_title;
+                pThis->extract_metadata_for_search(current_track, fresh_artist, fresh_title);
+                pfc::string8 fresh_content = fresh_artist + "|" + fresh_title;
+                
+                // Compare with last known content
+                if (fresh_content != pThis->m_last_update_content && !fresh_artist.is_empty() && !fresh_title.is_empty()) {
+                    OutputDebugStringA("DEBUG Timer 8: Fresh metadata detected - forcing update");
+                    
+                    // Clear search cache and force update
+                    pThis->clear_artwork();
+                    {
+                        std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
+                        pThis->m_last_search_key = "";
+                        pThis->m_current_search_key = "";
+                    }
+                    pThis->m_last_search_timestamp = 0;
+                    
+                    // Update with fresh metadata
+                    pThis->m_last_update_content = fresh_content;
+                    pThis->load_artwork_for_track_with_metadata(current_track, fresh_artist, fresh_title);
+                } else {
+                    OutputDebugStringA("DEBUG Timer 8: Still no fresh metadata - will rely on subsequent callbacks");
                 }
             }
         }
@@ -2961,6 +3015,7 @@ public:
     }
     
     void on_playback_new_track(metadb_handle_ptr p_track) override {
+        OutputDebugStringA("DEBUG CALLBACK: on_playback_new_track triggered");
         // Update all artwork UI elements
         for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
             g_artwork_ui_elements[i]->update_track(p_track);
@@ -2968,6 +3023,7 @@ public:
     }
     
     void on_playback_dynamic_info(const file_info& p_info) override {
+        OutputDebugStringA("DEBUG CALLBACK: on_playback_dynamic_info triggered");
         // Get current track and update UI elements
         static_api_ptr_t<playback_control> pc;
         metadb_handle_ptr current_track;
@@ -2983,6 +3039,7 @@ public:
     void on_playback_pause(bool p_state) override {}
     void on_playback_edited(metadb_handle_ptr p_track) override {}
     void on_playback_dynamic_info_track(const file_info& p_info) override {
+        OutputDebugStringA("DEBUG CALLBACK: on_playback_dynamic_info_track triggered (stream track change)");
         // This is specifically called for stream track title changes
         // Get current track and update UI elements
         static_api_ptr_t<playback_control> pc;
@@ -3024,12 +3081,28 @@ void artwork_ui_element::complete_artwork_search() {
 
 // Priority-based search implementation
 void artwork_ui_element::start_priority_search(const pfc::string8& artist, const pfc::string8& title) {
+    pfc::string8 debug_msg = "DEBUG start_priority_search: artist='";
+    debug_msg += artist;
+    debug_msg += "', title='";
+    debug_msg += title;
+    debug_msg += "'";
+    OutputDebugStringA(debug_msg.c_str());
     search_next_api_in_priority(artist, title, 0);
 }
 
 void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist, const pfc::string8& title, int current_position) {
+    pfc::string8 debug_priority = "DEBUG search_next_api_in_priority: position=";
+    debug_priority += pfc::format_int(current_position);
+    debug_priority += ", artist='";
+    debug_priority += artist;
+    debug_priority += "', title='";
+    debug_priority += title;
+    debug_priority += "'";
+    OutputDebugStringA(debug_priority.c_str());
+    
     if (current_position >= 5) {
         // No more APIs to try - mark search as complete
+        OutputDebugStringA("DEBUG search_next_api_in_priority: No more APIs to try - marking as complete");
         complete_artwork_search();
         m_status_text = "No artwork found";
         if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
@@ -3059,9 +3132,30 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
             break;
     }
     
+    // Debug API status
+    pfc::string8 api_name;
+    switch (current_api) {
+        case ApiType::iTunes: api_name = "iTunes"; break;
+        case ApiType::Deezer: api_name = "Deezer"; break;
+        case ApiType::LastFm: api_name = "LastFm"; break;
+        case ApiType::MusicBrainz: api_name = "MusicBrainz"; break;
+        case ApiType::Discogs: api_name = "Discogs"; break;
+    }
+    
+    pfc::string8 debug_api = "DEBUG search_next_api_in_priority: Trying ";
+    debug_api += api_name;
+    debug_api += " API, enabled=";
+    debug_api += api_enabled ? "true" : "false";
+    OutputDebugStringA(debug_api.c_str());
+    
     if (api_enabled) {
         // Store current position for fallback
         m_current_priority_position = current_position;
+        
+        pfc::string8 debug_start = "DEBUG search_next_api_in_priority: Starting ";
+        debug_start += api_name;
+        debug_start += " search";
+        OutputDebugStringA(debug_start.c_str());
         
         // Start the API search
         switch (current_api) {
@@ -3083,6 +3177,11 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
         }
     } else {
         // API is disabled, try the next one
+        pfc::string8 debug_skip = "DEBUG search_next_api_in_priority: ";
+        debug_skip += api_name;
+        debug_skip += " API disabled, trying next position ";
+        debug_skip += pfc::format_int(current_position + 1);
+        OutputDebugStringA(debug_skip.c_str());
         search_next_api_in_priority(artist, title, current_position + 1);
     }
 }
