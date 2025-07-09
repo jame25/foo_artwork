@@ -413,7 +413,39 @@ public:
         bool now_has_metadata = (!current_artist.is_empty() && !current_title.is_empty());
         bool metadata_resumed = (had_empty_metadata && now_has_metadata);
         
+        // Debug logging for update_track decisions
+        pfc::string8 debug_msg = "DEBUG update_track: track_changed=";
+        debug_msg += track_changed ? "true" : "false";
+        debug_msg += ", content_changed=";
+        debug_msg += content_changed ? "true" : "false";
+        debug_msg += ", metadata_resumed=";
+        debug_msg += metadata_resumed ? "true" : "false";
+        debug_msg += ", time_passed=";
+        debug_msg += enough_time_passed ? "true" : "false";
+        debug_msg += ", current='";
+        debug_msg += current_content;
+        debug_msg += "', last='";
+        debug_msg += m_last_update_content;
+        debug_msg += "', artist='";
+        debug_msg += current_artist;
+        debug_msg += "', title='";
+        debug_msg += current_title;
+        debug_msg += "'";
+        OutputDebugStringA(debug_msg.c_str());
+        
         if (!track_changed && !content_changed && !enough_time_passed && !metadata_resumed) {
+            // For internet radio streams, schedule a delayed retry in case metadata is delayed
+            if (track.is_valid()) {
+                pfc::string8 path = track->get_path();
+                bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                
+                if (is_internet_stream) {
+                    OutputDebugStringA("DEBUG update_track: SCHEDULING DELAYED RETRY for internet stream");
+                    // Schedule a delayed check in 2 seconds for metadata updates
+                    SetTimer(m_hWnd, 7, 2000, NULL);  // Timer ID 7 for delayed metadata check
+                }
+            }
+            OutputDebugStringA("DEBUG update_track: SKIPPING - no changes detected");
             return;
         }
         
@@ -470,6 +502,8 @@ public:
             bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
             
             if (is_internet_stream) {
+                OutputDebugStringA("DEBUG update_track: Content changed in internet stream - clearing artwork and forcing search");
+                
                 // For internet radio streams, clear old artwork when metadata changes
                 clear_artwork();
                 
@@ -494,6 +528,8 @@ public:
             bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
             
             if (is_internet_stream) {
+                OutputDebugStringA("DEBUG update_track: Metadata resumed after ad break - clearing cache and forcing search");
+                
                 // Clear any "No artwork found" status from ad period
                 m_status_text = "";
                 
@@ -748,6 +784,27 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                     if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                 }
             }
+        } else if (wParam == 7) {  // Timer ID 7 - delayed metadata check for track changes
+            KillTimer(hwnd, 7);  // Kill the timer
+            
+            // Retry metadata extraction to check if track has changed
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            if (pc->get_now_playing(current_track)) {
+                OutputDebugStringA("DEBUG Timer 7: Checking for delayed metadata changes");
+                
+                // Force a new update check by temporarily clearing the last update content
+                pfc::string8 saved_last_content = pThis->m_last_update_content;
+                pThis->m_last_update_content = "";  // Clear to force content change detection
+                
+                // Call update_track again
+                pThis->update_track(current_track);
+                
+                // If still no change detected, restore the original content
+                if (pThis->m_last_update_content.is_empty()) {
+                    pThis->m_last_update_content = saved_last_content;
+                }
+            }
         }
         return 0;
     default:
@@ -856,6 +913,15 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     extract_metadata_for_search(track, artist, title);
     pfc::string8 search_key = artist + "|" + title;
     
+    // Debug search key
+    pfc::string8 debug_msg = "DEBUG load_artwork_for_track: search_key='";
+    debug_msg += search_key;
+    debug_msg += "', last_search_key='";
+    debug_msg += m_last_search_key;
+    debug_msg += "', has_artwork=";
+    debug_msg += m_artwork_bitmap ? "true" : "false";
+    OutputDebugStringA(debug_msg.c_str());
+    
     // Check if we already have artwork displayed for this track
     if (m_artwork_bitmap && search_key == m_last_search_key) {
         // For internet radio streams, use shorter cache timeout since artwork might change
@@ -868,6 +934,12 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
         bool artwork_timeout_passed = (current_time - m_last_search_timestamp) > cache_timeout;
         
         if (!artwork_timeout_passed) {
+            pfc::string8 debug_msg2 = "DEBUG load_artwork_for_track: CACHED - time_since_search=";
+            debug_msg2 += pfc::format_int(current_time - m_last_search_timestamp);
+            debug_msg2 += "ms, timeout=";
+            debug_msg2 += pfc::format_int(cache_timeout);
+            debug_msg2 += "ms";
+            OutputDebugStringA(debug_msg2.c_str());
             return;
         }
     }
@@ -884,6 +956,14 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     // Don't search if already in progress or recently attempted without success
     if (search_key == m_current_search_key || 
         (search_key == m_last_search_key && !m_artwork_bitmap && !retry_timeout_passed)) {
+        pfc::string8 debug_msg3 = "DEBUG load_artwork_for_track: BLOCKED - current_search='";
+        debug_msg3 += m_current_search_key;
+        debug_msg3 += "', retry_timeout_passed=";
+        debug_msg3 += retry_timeout_passed ? "true" : "false";
+        debug_msg3 += ", time_since_search=";
+        debug_msg3 += pfc::format_int(current_time - m_last_search_timestamp);
+        debug_msg3 += "ms";
+        OutputDebugStringA(debug_msg3.c_str());
         return;
     }
     
@@ -1714,6 +1794,17 @@ void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pf
     // Clean up common encoding issues and unwanted text - ENHANCED CLEANING
     artist = clean_metadata_text(artist);
     title = clean_metadata_text(title);
+    
+    // Debug metadata extraction
+    pfc::string8 debug_extract = "DEBUG extract_metadata: artist='";
+    debug_extract += artist;
+    debug_extract += "', title='";
+    debug_extract += title;
+    debug_extract += "', window='";
+    debug_extract += track_info_from_window;
+    debug_extract += "', extracted_from_window=";
+    debug_extract += extracted_from_window ? "true" : "false";
+    OutputDebugStringA(debug_extract.c_str());
 }
 
 // Clean metadata text from encoding issues and unwanted content - ENHANCED VERSION
@@ -1858,14 +1949,19 @@ pfc::string8 artwork_ui_element::url_encode(const pfc::string8& str) {
     
     // Use pfc::string8's own length instead of strlen
     for (t_size i = 0; i < str.length(); i++) {
-        char c = str[i];
+        unsigned char c = (unsigned char)str[i];
         
-        if (c == ' ') {
-            encoded << "%20";
-        } else {
-            // Append character properly - create a single-character string
-            char single_char[2] = {c, '\0'};
+        // Check if character needs encoding
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            // Safe characters that don't need encoding
+            char single_char[2] = {(char)c, '\0'};
             encoded << single_char;
+        } else {
+            // Encode all other characters including Unicode
+            pfc::string8 hex_str;
+            hex_str << pfc::format_hex(c, 2);
+            encoded << "%" << hex_str;
         }
     }
     
