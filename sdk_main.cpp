@@ -1682,16 +1682,6 @@ void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pf
     // Clean up common encoding issues and unwanted text - ENHANCED CLEANING
     artist = clean_metadata_text(artist);
     title = clean_metadata_text(title);
-    
-    // Debug output for track change issues
-    pfc::string8 debug_msg = "DEBUG: Extracted metadata - Artist: '";
-    debug_msg += artist;
-    debug_msg += "', Title: '";
-    debug_msg += title;
-    debug_msg += "', Window: '";
-    debug_msg += track_info_from_window;
-    debug_msg += "'";
-    OutputDebugStringA(debug_msg.c_str());
 }
 
 // Clean metadata text from encoding issues and unwanted content - ENHANCED VERSION
@@ -1701,9 +1691,17 @@ pfc::string8 artwork_ui_element::clean_metadata_text(const pfc::string8& text) {
     
     
     // Fix common encoding issues (using hex escape sequences)
+    // Handle all variants of apostrophes and quotes
+    cleaned.replace_string("\xE2\x80\x98", "'");  // Left single quotation mark
     cleaned.replace_string("\xE2\x80\x99", "'");  // Right single quotation mark
+    cleaned.replace_string("\xE2\x80\x9A", "'");  // Single low-9 quotation mark
+    cleaned.replace_string("\xE2\x80\x9B", "'");  // Single high-reversed-9 quotation mark
+    cleaned.replace_string("\xC2\xB4", "'");     // Acute accent (often used as apostrophe)
+    cleaned.replace_string("\xC2\x92", "'");     // Private use character (sometimes apostrophe)
     cleaned.replace_string("\xE2\x80\x9C", "\""); // Left double quotation mark
     cleaned.replace_string("\xE2\x80\x9D", "\""); // Right double quotation mark
+    cleaned.replace_string("\xE2\x80\x9E", "\""); // Double low-9 quotation mark
+    cleaned.replace_string("\xE2\x80\x9F", "\""); // Double high-reversed-9 quotation mark
     cleaned.replace_string("\xE2\x80\x93", "-");  // En dash
     cleaned.replace_string("\xE2\x80\x94", "-");  // Em dash
     cleaned.replace_string("\xE2\x80\xA6", "..."); // Horizontal ellipsis
