@@ -235,6 +235,7 @@ private:
     void load_artwork_for_track_with_metadata(metadb_handle_ptr track, const pfc::string8& artist, const pfc::string8& title);
     void process_downloaded_image_data();  // Process image data on main thread
     void queue_image_for_processing(const std::vector<BYTE>& image_data);  // Thread-safe image queuing
+    void clear_artwork();  // Clear artwork and reset search state
     
 public:
     void search_itunes_artwork(metadb_handle_ptr track);
@@ -397,8 +398,28 @@ public:
         m_last_update_content = current_content;
         m_last_update_timestamp = current_time;
         
-        // Don't clear previous artwork immediately - keep it until new artwork is loaded
-        // This prevents white flash during transitions
+        // For internet radio streams, clear previous artwork when switching streams
+        // Check if this is a different stream (different URL) than the previous one
+        if (track_changed && track.is_valid()) {
+            pfc::string8 new_path = track->get_path();
+            bool is_internet_stream = (strstr(new_path.c_str(), "://") && !strstr(new_path.c_str(), "file://"));
+            
+            if (is_internet_stream) {
+                // Check if the stream URL actually changed (not just track metadata)
+                bool stream_url_changed = false;
+                if (m_last_update_track.is_valid()) {
+                    pfc::string8 old_path = m_last_update_track->get_path();
+                    stream_url_changed = (new_path != old_path);
+                } else {
+                    stream_url_changed = true; // First stream load
+                }
+                
+                if (stream_url_changed) {
+                    // Clear previous artwork when switching to a different stream
+                    clear_artwork();
+                }
+            }
+        }
         
         m_current_track = track;
         // Pass the already-extracted metadata to avoid duplicate extraction
@@ -614,9 +635,14 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     
     // Check if we already have artwork displayed for this track
     if (m_artwork_bitmap && search_key == m_last_search_key) {
-        // Artwork is already displayed for this track - use much longer timeout (24 hours)
+        // For internet radio streams, use shorter cache timeout since artwork might change
+        // For regular files, use longer timeout since artwork is static
+        pfc::string8 path = track->get_path();
+        bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+        
         DWORD current_time = GetTickCount();
-        bool artwork_timeout_passed = (current_time - m_last_search_timestamp) > (24 * 60 * 60 * 1000); // 24 hours
+        DWORD cache_timeout = is_internet_stream ? (5 * 60 * 1000) : (24 * 60 * 60 * 1000); // 5 minutes vs 24 hours
+        bool artwork_timeout_passed = (current_time - m_last_search_timestamp) > cache_timeout;
         
         if (!artwork_timeout_passed) {
             return;
@@ -625,7 +651,12 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     
     // Check if search is in progress or recently failed
     DWORD current_time = GetTickCount();
-    bool retry_timeout_passed = (current_time - m_last_search_timestamp) > 30000; // 30 seconds for retry
+    
+    // For internet radio streams, use shorter retry timeout since tracks change frequently
+    pfc::string8 path = track->get_path();
+    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+    DWORD retry_timeout = is_internet_stream ? 10000 : 30000; // 10 seconds vs 30 seconds
+    bool retry_timeout_passed = (current_time - m_last_search_timestamp) > retry_timeout;
     
     // Don't search if already in progress or recently attempted without success
     if (search_key == m_current_search_key || 
@@ -750,9 +781,14 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     
     // Check if we already have artwork displayed for this track
     if (m_artwork_bitmap && search_key == m_last_search_key) {
-        // Artwork is already displayed for this track - use much longer timeout (24 hours)
+        // For internet radio streams, use shorter cache timeout since artwork might change
+        // For regular files, use longer timeout since artwork is static
+        pfc::string8 path = track->get_path();
+        bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+        
         DWORD current_time = GetTickCount();
-        bool artwork_timeout_passed = (current_time - m_last_search_timestamp) > (24 * 60 * 60 * 1000); // 24 hours
+        DWORD cache_timeout = is_internet_stream ? (5 * 60 * 1000) : (24 * 60 * 60 * 1000); // 5 minutes vs 24 hours
+        bool artwork_timeout_passed = (current_time - m_last_search_timestamp) > cache_timeout;
         
         if (!artwork_timeout_passed) {
             return;
@@ -761,7 +797,12 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     
     // Check if search is in progress or recently failed
     DWORD current_time = GetTickCount();
-    bool retry_timeout_passed = (current_time - m_last_search_timestamp) > 30000; // 30 seconds for retry
+    
+    // For internet radio streams, use shorter retry timeout since tracks change frequently
+    pfc::string8 path = track->get_path();
+    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+    DWORD retry_timeout = is_internet_stream ? 10000 : 30000; // 10 seconds vs 30 seconds
+    bool retry_timeout_passed = (current_time - m_last_search_timestamp) > retry_timeout;
     
     // Don't search if already in progress or recently attempted without success
     if (search_key == m_current_search_key || 
@@ -825,8 +866,7 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     
     // Check if we should search online
     bool should_search_online = false;
-    pfc::string8 path = track->get_path();
-    if (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://")) {
+    if (is_internet_stream) {
         // This looks like a stream URL, search online
         should_search_online = true;
     }
@@ -2535,11 +2575,47 @@ void artwork_ui_element::queue_image_for_processing(const std::vector<BYTE>& ima
     }
 }
 
+// Clear artwork and reset search state
+void artwork_ui_element::clear_artwork() {
+    // Clear artwork bitmap
+    if (m_artwork_bitmap) {
+        DeleteObject(m_artwork_bitmap);
+        m_artwork_bitmap = NULL;
+    }
+    
+    // Reset artwork found flag and search state
+    {
+        std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
+        m_artwork_found = false;
+        m_current_search_key = "";
+        m_last_search_key = "";
+    }
+    
+    // Clear pending image data
+    {
+        std::lock_guard<std::mutex> lock(m_image_data_mutex);
+        m_pending_image_data.clear();
+    }
+    
+    // Clear search metadata cache
+    m_last_search_artist = "";
+    m_last_search_title = "";
+    m_current_priority_position = 0;
+    
+    // Update status text
+    m_status_text = "";
+    
+    // Invalidate window to redraw
+    if (m_hWnd) {
+        InvalidateRect(m_hWnd, NULL, TRUE);
+    }
+}
+
 // Playback callback for track changes
 class artwork_play_callback : public play_callback_static {
 public:
     unsigned get_flags() override {
-        return flag_on_playback_new_track | flag_on_playback_dynamic_info | flag_on_playback_dynamic_info_track;
+        return flag_on_playback_new_track | flag_on_playback_dynamic_info | flag_on_playback_dynamic_info_track | flag_on_playback_starting;
     }
     
     void on_playback_new_track(metadb_handle_ptr p_track) override {
@@ -2577,7 +2653,17 @@ public:
     }
     void on_playback_time(double p_time) override {}
     void on_volume_change(float p_new_val) override {}
-    void on_playback_starting(play_control::t_track_command p_command, bool p_paused) override {}
+    void on_playback_starting(play_control::t_track_command p_command, bool p_paused) override {
+        // This is called when playback starts (including new internet radio streams)
+        // Get current track and update UI elements
+        static_api_ptr_t<playback_control> pc;
+        metadb_handle_ptr current_track;
+        if (pc->get_now_playing(current_track)) {
+            for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
+                g_artwork_ui_elements[i]->update_track(current_track);
+            }
+        }
+    }
 };
 
 // Helper method to complete artwork search cache management
