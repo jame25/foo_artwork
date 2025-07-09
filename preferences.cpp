@@ -5,6 +5,7 @@
 extern cfg_bool cfg_enable_itunes, cfg_enable_discogs, cfg_enable_lastfm, cfg_enable_deezer, cfg_enable_musicbrainz;
 extern cfg_string cfg_discogs_key, cfg_discogs_consumer_key, cfg_discogs_consumer_secret, cfg_lastfm_key;
 extern cfg_int cfg_priority_1, cfg_priority_2, cfg_priority_3, cfg_priority_4, cfg_priority_5;
+extern cfg_int cfg_stream_delay;
 
 // External declaration from sdk_main.cpp
 extern HINSTANCE g_hIns;
@@ -129,6 +130,14 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_4), CB_SETCURSEL, cfg_priority_4, 0);
         SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_5), CB_SETCURSEL, cfg_priority_5, 0);
         
+        // Set stream delay value
+        SetDlgItemInt(hwnd, IDC_STREAM_DELAY, cfg_stream_delay, FALSE);
+        
+        // Initialize spin control for stream delay
+        HWND spin_hwnd = GetDlgItem(hwnd, IDC_STREAM_DELAY_SPIN);
+        SendMessage(spin_hwnd, UDM_SETRANGE, 0, MAKELPARAM(30, 1));  // Range: 1-30 seconds
+        SendMessage(spin_hwnd, UDM_SETPOS, 0, cfg_stream_delay);
+        
         p_this->update_controls();
         p_this->m_has_changes = false;
     } else {
@@ -149,7 +158,8 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         } else if (HIWORD(wp) == EN_CHANGE && (LOWORD(wp) == IDC_DISCOGS_KEY ||
                                               LOWORD(wp) == IDC_DISCOGS_CONSUMER_KEY ||
                                               LOWORD(wp) == IDC_DISCOGS_CONSUMER_SECRET ||
-                                              LOWORD(wp) == IDC_LASTFM_KEY)) {
+                                              LOWORD(wp) == IDC_LASTFM_KEY ||
+                                              LOWORD(wp) == IDC_STREAM_DELAY)) {
             p_this->on_changed();
         } else if (HIWORD(wp) == CBN_SELCHANGE && (LOWORD(wp) == IDC_PRIORITY_1 ||
                                                   LOWORD(wp) == IDC_PRIORITY_2 ||
@@ -215,10 +225,16 @@ bool artwork_preferences::has_changed() {
     bool priority4_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0) != cfg_priority_4;
     bool priority5_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0) != cfg_priority_5;
     
+    // Check stream delay
+    BOOL success;
+    int stream_delay_value = GetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, &success, FALSE);
+    bool stream_delay_changed = success && (stream_delay_value != cfg_stream_delay);
+    
     return itunes_changed || discogs_changed || lastfm_changed || deezer_changed || musicbrainz_changed ||
            discogs_key_changed || discogs_consumer_key_changed || 
            discogs_consumer_secret_changed || lastfm_key_changed ||
-           priority1_changed || priority2_changed || priority3_changed || priority4_changed || priority5_changed;
+           priority1_changed || priority2_changed || priority3_changed || priority4_changed || priority5_changed ||
+           stream_delay_changed;
 }
 
 void artwork_preferences::apply_settings() {
@@ -249,6 +265,13 @@ void artwork_preferences::apply_settings() {
         cfg_priority_3 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0);
         cfg_priority_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);
         cfg_priority_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);
+        
+        // Save stream delay
+        BOOL success;
+        int stream_delay_value = GetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, &success, FALSE);
+        if (success && stream_delay_value >= 1 && stream_delay_value <= 30) {
+            cfg_stream_delay = stream_delay_value;
+        }
     }
 }
 
@@ -272,6 +295,10 @@ void artwork_preferences::reset_settings() {
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_SETCURSEL, 2, 0);  // Last.fm
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_SETCURSEL, 3, 0);  // MusicBrainz
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_SETCURSEL, 4, 0);  // Discogs
+        
+        // Reset stream delay to default (1 second)
+        SetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, 1, FALSE);
+        SendMessage(GetDlgItem(m_hwnd, IDC_STREAM_DELAY_SPIN), UDM_SETPOS, 0, 1);
         
         update_controls();
     }
