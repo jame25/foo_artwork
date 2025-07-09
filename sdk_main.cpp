@@ -70,7 +70,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.0.9",
+    "1.1.0",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -851,8 +851,24 @@ void artwork_ui_element::search_itunes_artwork(metadb_handle_ptr track) {
     extract_metadata_for_search(track, artist, title);
     
     // Check if we have valid metadata for search
-    if (artist.is_empty() || title.is_empty()) {
-        return; // No point searching without both artist and title
+    // For internet radio streams, allow search with just title
+    if (title.is_empty()) {
+        return; // Need at least a title to search
+    }
+    
+    // Try to parse artist from title if artist is empty (common for internet radio)
+    if (artist.is_empty() && !title.is_empty()) {
+        const char* separator = strstr(title.c_str(), " - ");
+        if (separator && separator != title.c_str()) {
+            // Extract artist from "Artist - Title" format
+            size_t artist_len = separator - title.c_str();
+            artist = pfc::string8(title.c_str(), artist_len);
+            title = pfc::string8(separator + 3);
+            
+            // Clean up extracted values
+            artist = clean_metadata_text(artist);
+            title = clean_metadata_text(title);
+        }
     }
     
     // Remove jarring "Searching iTunes API..." message
@@ -881,8 +897,24 @@ void artwork_ui_element::search_discogs_artwork(metadb_handle_ptr track) {
     extract_metadata_for_search(track, artist, title);
     
     // Check if we have valid metadata for search
-    if (artist.is_empty() || title.is_empty()) {
-        return; // No point searching without both artist and title
+    // For internet radio streams, allow search with just title
+    if (title.is_empty()) {
+        return; // Need at least a title to search
+    }
+    
+    // Try to parse artist from title if artist is empty (common for internet radio)
+    if (artist.is_empty() && !title.is_empty()) {
+        const char* separator = strstr(title.c_str(), " - ");
+        if (separator && separator != title.c_str()) {
+            // Extract artist from "Artist - Title" format
+            size_t artist_len = separator - title.c_str();
+            artist = pfc::string8(title.c_str(), artist_len);
+            title = pfc::string8(separator + 3);
+            
+            // Clean up extracted values
+            artist = clean_metadata_text(artist);
+            title = clean_metadata_text(title);
+        }
     }
     
     // Remove jarring "Searching Discogs API..." message
@@ -911,8 +943,24 @@ void artwork_ui_element::search_lastfm_artwork(metadb_handle_ptr track) {
     extract_metadata_for_search(track, artist, title);
     
     // Check if we have valid metadata for search
-    if (artist.is_empty() || title.is_empty()) {
-        return; // No point searching without both artist and title
+    // For internet radio streams, allow search with just title
+    if (title.is_empty()) {
+        return; // Need at least a title to search
+    }
+    
+    // Try to parse artist from title if artist is empty (common for internet radio)
+    if (artist.is_empty() && !title.is_empty()) {
+        const char* separator = strstr(title.c_str(), " - ");
+        if (separator && separator != title.c_str()) {
+            // Extract artist from "Artist - Title" format
+            size_t artist_len = separator - title.c_str();
+            artist = pfc::string8(title.c_str(), artist_len);
+            title = pfc::string8(separator + 3);
+            
+            // Clean up extracted values
+            artist = clean_metadata_text(artist);
+            title = clean_metadata_text(title);
+        }
     }
     
     // Remove jarring "Searching Last.fm API..." message
@@ -943,7 +991,11 @@ void artwork_ui_element::search_itunes_background(pfc::string8 artist, pfc::stri
         
         // Build iTunes search URL
         pfc::string8 search_url;
-        search_url << "https://itunes.apple.com/search?term=" << encoded_artist << "%20" << encoded_title << "&media=music&entity=song&limit=1";
+        if (artist.is_empty()) {
+            search_url << "https://itunes.apple.com/search?term=" << encoded_title << "&media=music&entity=song&limit=1";
+        } else {
+            search_url << "https://itunes.apple.com/search?term=" << encoded_artist << "%20" << encoded_title << "&media=music&entity=song&limit=1";
+        }
         
         
         // Make HTTP request
@@ -988,7 +1040,12 @@ void artwork_ui_element::search_itunes_background(pfc::string8 artist, pfc::stri
 // Background Discogs API search
 void artwork_ui_element::search_discogs_background(pfc::string8 artist, pfc::string8 title) {
     try {
-        pfc::string8 search_terms = artist + " - " + title;
+        pfc::string8 search_terms;
+        if (artist.is_empty()) {
+            search_terms = title;
+        } else {
+            search_terms = artist + " - " + title;
+        }
         pfc::string8 encoded_search = url_encode(search_terms);
         
         
@@ -1060,8 +1117,14 @@ void artwork_ui_element::search_lastfm_background(pfc::string8 artist, pfc::stri
         
         // Build Last.fm API URL
         pfc::string8 search_url = "https://ws.audioscrobbler.com/2.0/?method=track.getInfo";
-        search_url << "&artist=" << url_encode(artist);
-        search_url << "&track=" << url_encode(title);
+        if (artist.is_empty()) {
+            // For empty artist, use track.search method instead
+            search_url = "https://ws.audioscrobbler.com/2.0/?method=track.search";
+            search_url << "&track=" << url_encode(title);
+        } else {
+            search_url << "&artist=" << url_encode(artist);
+            search_url << "&track=" << url_encode(title);
+        }
         search_url << "&api_key=" << url_encode(cfg_lastfm_key.get_ptr());
         search_url << "&format=json";
         
@@ -1119,7 +1182,12 @@ void artwork_ui_element::search_deezer_artwork(metadb_handle_ptr track) {
 void artwork_ui_element::search_deezer_background(pfc::string8 artist, pfc::string8 title) {
     try {
         // Build Deezer search URL (search for tracks, which include album info)
-        pfc::string8 search_query = artist + " " + title;
+        pfc::string8 search_query;
+        if (artist.is_empty()) {
+            search_query = title;
+        } else {
+            search_query = artist + " " + title;
+        }
         pfc::string8 encoded_search = url_encode(search_query);
         
         pfc::string8 search_url = "https://api.deezer.com/search/track?q=";
@@ -1185,8 +1253,12 @@ void artwork_ui_element::search_musicbrainz_background(pfc::string8 artist, pfc:
         pfc::string8 encoded_artist = url_encode(artist);
         pfc::string8 encoded_title = url_encode(title);
         
-        pfc::string8 search_url = "https://musicbrainz.org/ws/2/release?query=artist:";
-        search_url << encoded_artist << "%20AND%20recording:" << encoded_title;
+        pfc::string8 search_url = "https://musicbrainz.org/ws/2/release?query=";
+        if (artist.is_empty()) {
+            search_url << "recording:" << encoded_title;
+        } else {
+            search_url << "artist:" << encoded_artist << "%20AND%20recording:" << encoded_title;
+        }
         search_url << "&fmt=json&limit=5";
         
         
@@ -1322,21 +1394,41 @@ void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pf
         }
     }
     
-    // Fallback to basic metadata if window parsing failed or returned empty values
-    if (!extracted_from_window || artist.is_empty() || title.is_empty()) {
+    // Determine if this is an internet radio stream
+    pfc::string8 path = track->get_path();
+    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+    
+    // For internet radio streams, prioritize window title parsing
+    // Only fall back to metadata if window parsing completely failed AND we have empty values
+    bool should_use_metadata = false;
+    
+    if (is_internet_stream) {
+        // For internet streams, only use metadata if window parsing completely failed
+        if (!extracted_from_window && artist.is_empty() && title.is_empty()) {
+            should_use_metadata = true;
+        }
+    } else {
+        // For regular files, use the original logic (fall back if any field is empty)
+        if (!extracted_from_window || artist.is_empty() || title.is_empty()) {
+            should_use_metadata = true;
+        }
+    }
+    
+    if (should_use_metadata) {
         try {
             file_info_impl info;
             track->get_info(info);
             
-            if (info.meta_exists("ARTIST")) {
+            // Only overwrite empty values to preserve any good data from window parsing
+            if (artist.is_empty() && info.meta_exists("ARTIST")) {
                 artist = info.meta_get("ARTIST", 0);
-            } else if (info.meta_exists("artist")) {
+            } else if (artist.is_empty() && info.meta_exists("artist")) {
                 artist = info.meta_get("artist", 0);
             }
             
-            if (info.meta_exists("TITLE")) {
+            if (title.is_empty() && info.meta_exists("TITLE")) {
                 title = info.meta_get("TITLE", 0);
-            } else if (info.meta_exists("title")) {
+            } else if (title.is_empty() && info.meta_exists("title")) {
                 title = info.meta_get("title", 0);
             }
         } catch (...) {
@@ -2447,7 +2539,7 @@ void artwork_ui_element::queue_image_for_processing(const std::vector<BYTE>& ima
 class artwork_play_callback : public play_callback_static {
 public:
     unsigned get_flags() override {
-        return flag_on_playback_new_track | flag_on_playback_dynamic_info;
+        return flag_on_playback_new_track | flag_on_playback_dynamic_info | flag_on_playback_dynamic_info_track;
     }
     
     void on_playback_new_track(metadb_handle_ptr p_track) override {
@@ -2472,7 +2564,17 @@ public:
     void on_playback_seek(double p_time) override {}
     void on_playback_pause(bool p_state) override {}
     void on_playback_edited(metadb_handle_ptr p_track) override {}
-    void on_playback_dynamic_info_track(const file_info& p_info) override {}
+    void on_playback_dynamic_info_track(const file_info& p_info) override {
+        // This is specifically called for stream track title changes
+        // Get current track and update UI elements
+        static_api_ptr_t<playback_control> pc;
+        metadb_handle_ptr current_track;
+        if (pc->get_now_playing(current_track)) {
+            for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
+                g_artwork_ui_elements[i]->update_track(current_track);
+            }
+        }
+    }
     void on_playback_time(double p_time) override {}
     void on_volume_change(float p_new_val) override {}
     void on_playback_starting(play_control::t_track_command p_command, bool p_paused) override {}
