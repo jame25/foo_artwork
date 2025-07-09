@@ -4,8 +4,7 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 
 - Important: This component requires the standard windows title bar format in the Default User Interface (DUI).
 
-![foo_artwork](https://github.com/user-attachments/assets/ddc460a3-809e-429c-8e7d-a8493e131633)
-
+![foo_artwork](https://github.com/user-attachments/assets/0f75c0cc-fc13-4ed5-8d5b-6675b640184c)
 
 ## Features
 
