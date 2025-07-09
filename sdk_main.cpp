@@ -74,7 +74,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.1.2",
+    "1.1.3",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -426,8 +426,8 @@ public:
                 bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                 
                 if (is_internet_stream) {
-                    // Schedule a delayed check for metadata updates
-                    SetTimer(m_hWnd, 7, cfg_stream_delay * 1000, NULL);  // Timer ID 7 for delayed metadata check
+                    // Schedule a delayed check for metadata updates (short delay for responsiveness)
+                    SetTimer(m_hWnd, 7, 1000, NULL);  // Timer ID 7 for delayed metadata check (1 second)
                 }
             }
             return;
@@ -439,8 +439,8 @@ public:
                 bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                 
                 if (is_internet_stream) {
-                    // Schedule retry with user-configured delay
-                    SetTimer(m_hWnd, 8, cfg_stream_delay * 1000, NULL);  // Timer ID 8 for retry
+                    // Schedule retry with short delay for responsiveness
+                    SetTimer(m_hWnd, 8, 500, NULL);  // Timer ID 8 for retry (0.5 seconds)
                 }
             }
         }
@@ -546,9 +546,9 @@ public:
                 }
                 m_last_search_timestamp = 0;
                 
-                // Use stream delay for track changes within internet radio streams
+                // Use short delay for track changes within internet radio streams (0.5 seconds)
                 m_current_track = track;
-                SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Use configurable delay
+                SetTimer(m_hWnd, 9, 500, NULL);  // Short 500ms delay for responsiveness
                 return;  // Skip the normal load process since Timer 9 will handle it
             }
         }
@@ -574,9 +574,9 @@ public:
                 }
                 m_last_search_timestamp = 0;
                 
-                // Use stream delay for metadata resume after ad breaks
+                // Use short delay for metadata resume after ad breaks (0.5 seconds)
                 m_current_track = track;
-                SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Use configurable delay
+                SetTimer(m_hWnd, 9, 500, NULL);  // Short 500ms delay for responsiveness
                 return;  // Skip the normal load process since Timer 9 will handle it
             }
         }
