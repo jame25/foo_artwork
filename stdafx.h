@@ -1,5 +1,8 @@
 #pragma once
 
+// foobar2000 v1.5 compatibility - fix for older Visual C runtime libraries
+#define _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR
+
 // Prevent socket conflicts
 #define _WINSOCKAPI_
 #define NOMINMAX
