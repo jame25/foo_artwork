@@ -2,8 +2,6 @@
 
 A comprehensive foobar2000 component that displays cover artwork for currently playing tracks and internet radio streams with intelligent API fallback support. 
 
-- Important: This component requires the standard windows title bar format in the Default User Interface (DUI).
-
 ![foo_artwork](https://github.com/user-attachments/assets/0f75c0cc-fc13-4ed5-8d5b-6675b640184c)
 
 ## Features
