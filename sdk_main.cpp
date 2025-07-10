@@ -74,7 +74,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.1.6",
+    "1.1.7",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -178,12 +178,13 @@ struct ApiPriority {
 
 static std::vector<ApiType> get_api_search_order() {
     std::vector<ApiPriority> priorities = {
-        {ApiType::Deezer, cfg_priority_1},       // cfg_priority_1 = 1 (Deezer)
-        {ApiType::iTunes, cfg_priority_2},       // cfg_priority_2 = 0 (iTunes)
-        {ApiType::LastFm, cfg_priority_3},       // cfg_priority_3 = 2 (Last.fm)
-        {ApiType::MusicBrainz, cfg_priority_4},  // cfg_priority_4 = 3 (MusicBrainz)
-        {ApiType::Discogs, cfg_priority_5}       // cfg_priority_5 = 4 (Discogs)
+        {ApiType::Deezer, cfg_priority_1},       
+        {ApiType::iTunes, cfg_priority_2},       
+        {ApiType::LastFm, cfg_priority_3},       
+        {ApiType::MusicBrainz, cfg_priority_4},  
+        {ApiType::Discogs, cfg_priority_5}       
     };
+    
     
     // Find which API is assigned to each priority position (1st, 2nd, 3rd, 4th, 5th)
     std::vector<ApiType> ordered_apis(5);
@@ -2244,6 +2245,132 @@ pfc::string8 artwork_ui_element::clean_metadata_text(const pfc::string8& text) {
     cleaned.replace_string("\xE2\x80\x98", "'");  // Left single quotation mark
     cleaned.replace_string("\xE2\x80\x99", "'");  // Right single quotation mark
     cleaned.replace_string("\xE2\x80\x9A", "'");  // Single low-9 quotation mark
+    
+    // Remove common subtitle patterns in brackets/parentheses
+    // These patterns often prevent artwork APIs from finding matches
+    
+    // Remove parentheses with common live/acoustic/remix patterns (case insensitive)
+    text_cstr = cleaned.c_str();
+    
+    // Pattern 1: (live...)
+    const char* live_patterns[] = {
+        "(live)",
+        "(live at",
+        "(acoustic)",
+        "(acoustic version)",
+        "(unplugged)",
+        "(radio edit)",
+        "(extended)",
+        "(extended version)", 
+        "(single version)",
+        "(album version)",
+        "(remix)",
+        "(remaster)",
+        "(remastered)",
+        "(demo)",
+        "(instrumental)",
+        "(explicit)",
+        "(clean)",
+        "(feat.",
+        "(featuring",
+        "(ft.",
+        "(with"
+    };
+    
+    for (int i = 0; i < 20; i++) {
+        // Find pattern (case insensitive)
+        const char* found_pos = text_cstr;
+        bool pattern_found = false;
+        
+        while (*found_pos) {
+            if (*found_pos == '(' || *found_pos == '[') {
+                // Check if this bracket contains our pattern
+                bool matches = true;
+                const char* pattern = live_patterns[i];
+                const char* check_pos = found_pos + 1;
+                const char* pattern_pos = pattern + 1; // Skip opening bracket in pattern
+                
+                while (*pattern_pos && *check_pos) {
+                    char p_char = *pattern_pos >= 'A' && *pattern_pos <= 'Z' ? *pattern_pos + 32 : *pattern_pos;
+                    char c_char = *check_pos >= 'A' && *check_pos <= 'Z' ? *check_pos + 32 : *check_pos;
+                    
+                    if (p_char != c_char) {
+                        matches = false;
+                        break;
+                    }
+                    pattern_pos++;
+                    check_pos++;
+                }
+                
+                if (matches) {
+                    // Found the pattern, now find the closing bracket
+                    char closing_bracket = (*found_pos == '(') ? ')' : ']';
+                    const char* end_pos = check_pos;
+                    while (*end_pos && *end_pos != closing_bracket) {
+                        end_pos++;
+                    }
+                    if (*end_pos == closing_bracket) {
+                        end_pos++; // Include closing bracket
+                        
+                        // Remove this entire bracketed section
+                        size_t start_offset = found_pos - text_cstr;
+                        size_t end_offset = end_pos - text_cstr;
+                        pfc::string8 before = cleaned.subString(0, start_offset);
+                        pfc::string8 after = cleaned.subString(end_offset);
+                        cleaned = before + after;
+                        
+                        // Update text_cstr for next iteration
+                        text_cstr = cleaned.c_str();
+                        pattern_found = true;
+                        break;
+                    }
+                }
+            }
+            found_pos++;
+        }
+        
+        if (pattern_found) {
+            // Start over with updated string
+            i = -1; // Will be incremented to 0
+            continue;
+        }
+    }
+    
+    // Remove trailing timestamp patterns like " - 0.00", " - 3:45", " - 12.34"
+    // These are commonly added by radio streaming software
+    text_cstr = cleaned.c_str();
+    const char* hyphen_pos = text_cstr;
+    
+    // Look for " - " pattern near the end
+    while (*hyphen_pos) {
+        if (*hyphen_pos == ' ' && *(hyphen_pos + 1) == '-' && *(hyphen_pos + 2) == ' ') {
+            // Found " - ", check if followed by digits/time pattern
+            const char* after_hyphen = hyphen_pos + 3;
+            bool is_timestamp = true;
+            int digit_count = 0;
+            
+            // Check if it's a timestamp pattern (digits, colons, dots)
+            const char* check_pos = after_hyphen;
+            while (*check_pos && *check_pos != '\0') {
+                char c = *check_pos;
+                if ((c >= '0' && c <= '9') || c == ':' || c == '.') {
+                    if (c >= '0' && c <= '9') digit_count++;
+                    check_pos++;
+                } else {
+                    is_timestamp = false;
+                    break;
+                }
+            }
+            
+            // If it looks like a timestamp and has at least 1 digit, remove it
+            if (is_timestamp && digit_count >= 1) {
+                size_t remove_start = hyphen_pos - text_cstr;
+                cleaned = cleaned.subString(0, remove_start);
+                break; // Only remove the first occurrence
+            }
+        }
+        hyphen_pos++;
+    }
     
     // Remove leading and trailing whitespace
     while (cleaned.length() > 0 && cleaned[0] == ' ') {
