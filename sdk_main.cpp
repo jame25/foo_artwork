@@ -74,7 +74,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.1.4",
+    "1.1.5",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -229,6 +229,7 @@ public:
     std::vector<BYTE> m_pending_image_data;
     std::mutex m_artwork_found_mutex;  // Protect artwork found flag
     bool m_artwork_found;  // Track whether artwork has been found
+    bool m_new_stream_delay_active;  // Track when Timer 9 is active for new stream delay
 
 public:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -264,6 +265,7 @@ public:
     bool http_get_request_with_discogs_auth(const pfc::string8& url, pfc::string8& response);
     bool http_get_request_with_user_agent(const pfc::string8& url, pfc::string8& response, const pfc::string8& user_agent);
     void extract_metadata_for_search(metadb_handle_ptr track, pfc::string8& artist, pfc::string8& title);
+    void extract_metadata_from_info(const file_info& info, pfc::string8& artist, pfc::string8& title);
     bool parse_itunes_response(const pfc::string8& json, pfc::string8& artwork_url);
     bool parse_discogs_response(const pfc::string8& json, pfc::string8& artwork_url);
     bool parse_discogs_release_details(const pfc::string8& json, pfc::string8& artwork_url);
@@ -280,7 +282,7 @@ public:
     // GUID for our element
     static const GUID g_guid;
     artwork_ui_element(HWND parent, ui_element_config::ptr config, ui_element_instance_callback::ptr callback)
-        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_found(false), m_current_priority_position(0) {
+        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_found(false), m_current_priority_position(0), m_new_stream_delay_active(false) {
         
         // Remove jarring "No track playing" message
         // m_status_text = "No track playing";
@@ -419,6 +421,15 @@ public:
         bool metadata_resumed = (had_empty_metadata && now_has_metadata);
         
         
+        // Capture old path BEFORE updating tracking variables (for stream detection later)
+        pfc::string8 old_track_path;
+        bool had_previous_track = false;
+        if (m_last_update_track.is_valid()) {
+            old_track_path = m_last_update_track->get_path();
+            had_previous_track = true;
+        }
+        
+        
         if (!track_changed && !content_changed && !enough_time_passed && !metadata_resumed) {
             // For internet radio streams, schedule a delayed retry in case metadata is delayed
             if (track.is_valid()) {
@@ -445,31 +456,53 @@ public:
             }
         }
         
-        // Update tracking variables
-        m_last_update_track = track;
-        m_last_update_content = current_content;
-        m_last_update_timestamp = current_time;
+        // DON'T update tracking variables yet - do it after stream detection logic
+        // This ensures stream detection can compare old vs new correctly
+        // m_last_update_track = track;
+        // m_last_update_content = current_content;
+        // m_last_update_timestamp = current_time;
         
         // Handle ad breaks (when metadata becomes empty) - only clear during actual ad breaks
         if (track.is_valid()) {
             pfc::string8 path = track->get_path();
             bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
             
+            
             // Only clear artwork if this is actually an ad break (empty metadata from non-empty)
             if (is_internet_stream && current_artist.is_empty() && current_title.is_empty()) {
                 // Check if we transitioned from having metadata to empty (actual ad break)
                 bool was_not_empty = !m_last_update_content.is_empty() && m_last_update_content != "|";
                 
-                // Add additional check: only clear if we don't have artwork already loaded
-                // This prevents clearing artwork during normal metadata updates after successful loading
-                bool has_artwork_loaded = (m_artwork_bitmap != NULL);
-                
-                if (was_not_empty && !has_artwork_loaded) {
-                    clear_artwork();
-                    m_status_text = "";  // Clear any status text
-                    if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+                // CRITICAL FIX: Don't trigger ad break logic during local-to-stream transitions
+                // Check if this is a local-to-stream transition (previous track was local file)
+                bool is_local_to_stream_transition = false;
+                if (m_last_update_track.is_valid()) {
+                    pfc::string8 old_path = m_last_update_track->get_path();
+                    bool old_was_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
+                    if (!old_was_internet_stream && is_internet_stream) {
+                        is_local_to_stream_transition = true;
+                    }
                 }
-                return;  // Don't search during ad breaks
+                
+                // Only process as ad break if this is NOT a local-to-stream transition
+                if (!is_local_to_stream_transition) {
+                    // Add additional check: only clear if we don't have artwork already loaded
+                    // This prevents clearing artwork during normal metadata updates after successful loading
+                    bool has_artwork_loaded = (m_artwork_bitmap != NULL);
+                    
+                    if (was_not_empty && !has_artwork_loaded) {
+                        clear_artwork();
+                        m_status_text = "";  // Clear any status text
+                        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+                    }
+                    
+                    // Update tracking variables before returning
+                    m_last_update_track = track;
+                    m_last_update_content = current_content;
+                    m_last_update_timestamp = current_time;
+                    return;  // Don't search during ad breaks
+                }
+                
             }
         }
         
@@ -518,12 +551,24 @@ public:
                 if (is_new_stream) {
                     // Schedule delayed metadata check for new streams
                     SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Timer ID 9 for new stream delay
+                    m_new_stream_delay_active = true;  // Set flag to prevent override
+                    
+                    // Update tracking variables before returning
+                    m_last_update_track = track;
+                    m_last_update_content = current_content;
+                    m_last_update_timestamp = current_time;
                     return;  // Don't search immediately for new streams
                 }
                 
                 // CRITICAL FIX: Check if this is an internet stream regardless of is_new_stream flag
                 if (new_is_internet_stream) {
                     SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
+                    m_new_stream_delay_active = true;  // Set flag to prevent override
+                    
+                    // Update tracking variables before returning
+                    m_last_update_track = track;
+                    m_last_update_content = current_content;
+                    m_last_update_timestamp = current_time;
                     return;  // Never allow immediate searches for internet streams
                 }
                 
@@ -533,6 +578,11 @@ public:
                 pfc::string8 fresh_artist, fresh_title;
                 extract_metadata_for_search(track, fresh_artist, fresh_title);
                 load_artwork_for_track_with_metadata(track, fresh_artist, fresh_title);
+                
+                // Update tracking variables before returning
+                m_last_update_track = track;
+                m_last_update_content = current_content;
+                m_last_update_timestamp = current_time;
                 return;  // Skip the normal load process since we just did it
             }
         }
@@ -544,6 +594,22 @@ public:
             bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
             
             if (is_internet_stream) {
+                // Check if this is a new stream connection vs track change within stream
+                bool is_new_stream_in_content_changed = false;
+                if (had_previous_track) {
+                    bool old_is_internet_stream = (strstr(old_track_path.c_str(), "://") && !strstr(old_track_path.c_str(), "file://"));
+                    
+                    // New stream if transitioning TO internet stream or different stream URL
+                    if (!old_is_internet_stream && is_internet_stream) {
+                        is_new_stream_in_content_changed = true;  // Local file -> Internet stream
+                    } else if (is_internet_stream && (path != old_track_path)) {
+                        is_new_stream_in_content_changed = true;  // Different internet stream
+                    }
+                } else if (is_internet_stream) {
+                    is_new_stream_in_content_changed = true;  // First track is internet stream
+                }
+                
+                
                 // For internet radio streams, DON'T clear artwork yet - keep old artwork until new one loads
                 // This prevents flashing and provides smoother transitions
                 
@@ -556,9 +622,24 @@ public:
                 }
                 m_last_search_timestamp = 0;
                 
-                // Use short delay for track changes within internet radio streams (responsive)
+                // Use appropriate delay based on stream connection type
                 m_current_track = track;
-                SetTimer(m_hWnd, 9, 500, NULL);  // Short 0.5 second delay for track changes
+                if (is_new_stream_in_content_changed) {
+                    // New stream connection: Use full configurable stream delay
+                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
+                    m_new_stream_delay_active = true;  // Set flag to prevent override
+                } else {
+                    // Check if Timer 9 is already running for a new stream delay - don't override it
+                    if (!m_new_stream_delay_active) {
+                        // Normal track change: Use short delay for responsiveness
+                        SetTimer(m_hWnd, 9, 500, NULL);
+                    }
+                }
+                
+                // Update tracking variables before returning
+                m_last_update_track = track;
+                m_last_update_content = current_content;
+                m_last_update_timestamp = current_time;
                 return;  // Skip the normal load process since Timer 9 will handle it
             }
         }
@@ -584,9 +665,20 @@ public:
                 }
                 m_last_search_timestamp = 0;
                 
-                // Use short delay for metadata resume after ad breaks (0.5 seconds)
+                // For stream resumes (like restarting foobar2000), use full stream delay
+                // This handles both ad break recoveries and stream reconnections properly
                 m_current_track = track;
-                SetTimer(m_hWnd, 9, 500, NULL);  // Short 500ms delay for responsiveness
+                
+                // Only set timer if not already active for new stream delay
+                if (!m_new_stream_delay_active) {
+                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Use full configurable delay
+                    m_new_stream_delay_active = true;  // Set flag to prevent override
+                }
+                
+                // Update tracking variables before returning
+                m_last_update_track = track;
+                m_last_update_content = current_content;
+                m_last_update_timestamp = current_time;
                 return;  // Skip the normal load process since Timer 9 will handle it
             }
         }
@@ -616,13 +708,23 @@ public:
             
             // Use nuanced delay approach for internet streams
             if (new_is_internet_stream) {
+                
                 if (is_new_stream_connection) {
                     // Initial stream connection: Use full configurable stream delay
                     SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
+                    m_new_stream_delay_active = true;  // Set flag to prevent override
                 } else {
                     // Normal track changes within stream: Use short delay for responsiveness
-                    SetTimer(m_hWnd, 9, 500, NULL);  // 0.5 second delay for track changes
+                    // Only set if new stream delay is not already active
+                    if (!m_new_stream_delay_active) {
+                        SetTimer(m_hWnd, 9, 500, NULL);  // 0.5 second delay for track changes
+                    }
                 }
+                
+                // Update tracking variables before returning
+                m_last_update_track = track;
+                m_last_update_content = current_content;
+                m_last_update_timestamp = current_time;
                 return;  // Timer 9 will handle the artwork search
             }
         }
@@ -651,15 +753,136 @@ public:
                 
                 if (is_final_new_stream) {
                     SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Full delay for new streams
+                    m_new_stream_delay_active = true;  // Set flag to prevent override
                 } else {
-                    SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for track changes
+                    // Only set short delay if new stream delay is not already active
+                    if (!m_new_stream_delay_active) {
+                        SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for track changes
+                    }
                 }
+                
+                // Update tracking variables before returning
+                m_last_update_track = track;
+                m_last_update_content = current_content;
+                m_last_update_timestamp = current_time;
                 return;  // Never allow immediate searches for internet streams
             }
         }
         
         // Pass the already-extracted metadata to avoid duplicate extraction (LOCAL FILES ONLY)
         load_artwork_for_track_with_metadata(track, current_artist, current_title);
+        
+        // Update tracking variables at the end
+        m_last_update_track = track;
+        m_last_update_content = current_content;
+        m_last_update_timestamp = current_time;
+    }
+    
+    // Track update method with direct metadata (for radio streams)
+    void update_track_with_metadata(metadb_handle_ptr track, const pfc::string8& artist, const pfc::string8& title) {
+        
+        if (!m_hWnd) {
+            return;
+        }
+        
+        // Create content string for comparison
+        pfc::string8 current_content = artist + "|" + title;
+        
+        // Smart debouncing - only update if content actually changed
+        DWORD current_time = GetTickCount();
+        bool content_changed = (current_content != m_last_update_content);
+        bool enough_time_passed = (current_time - m_last_update_timestamp) > 3000; // 3 second debounce
+        
+        
+        // Skip if no changes and not enough time passed
+        if (!content_changed && !enough_time_passed) {
+            return;
+        }
+        
+        
+        // Check if this looks like a stream name rather than actual track metadata
+        if (track.is_valid()) {
+            pfc::string8 path = track->get_path();
+            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            
+            if (is_internet_stream && artist.is_empty() && !title.is_empty()) {
+                // Single title with no artist on internet stream - likely a station name
+                // Check for common station name patterns
+                bool looks_like_station_name = false;
+                
+                // Pattern 1: Ends with exclamation mark
+                if (title.get_ptr()[title.get_length() - 1] == '!') {
+                    looks_like_station_name = true;
+                }
+                
+                // Pattern 2: Contains radio/stream keywords
+                const char* station_keywords[] = {"Radio", "FM", "Stream", "Station", "Music", "Rocks", "Hits", "Channel"};
+                for (int i = 0; i < 8; i++) {
+                    if (strstr(title.c_str(), station_keywords[i])) {
+                        looks_like_station_name = true;
+                        break;
+                    }
+                }
+                
+                // Pattern 3: All caps or mostly caps
+                if (title.get_length() > 3) {
+                    int caps_count = 0;
+                    int letter_count = 0;
+                    for (t_size i = 0; i < title.get_length(); i++) {
+                        char c = title.get_ptr()[i];
+                        if (isalpha(c)) {
+                            letter_count++;
+                            if (isupper(c)) caps_count++;
+                        }
+                    }
+                    if (letter_count > 0 && (caps_count * 100 / letter_count) > 70) {
+                        looks_like_station_name = true;
+                    }
+                }
+                
+                if (looks_like_station_name) {
+                    // Schedule delayed metadata check to wait for real track metadata
+                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
+                    m_new_stream_delay_active = true;
+                    
+                    // Update tracking variables
+                    m_last_update_track = track;
+                    m_last_update_content = current_content;
+                    m_last_update_timestamp = current_time;
+                    return;
+                }
+            }
+        }
+        
+        // For internet radio streams, use stream delay for new track metadata
+        if (track.is_valid()) {
+            pfc::string8 path = track->get_path();
+            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            
+            
+            if (is_internet_stream && !artist.is_empty() && !title.is_empty()) {
+                // For track changes with valid metadata, search immediately
+                // The stream delay is primarily for initial connections, not track changes
+                m_current_track = track;
+                load_artwork_for_track_with_metadata(track, artist, title);
+                
+                // Update tracking variables
+                m_last_update_track = track;
+                m_last_update_content = current_content; 
+                m_last_update_timestamp = current_time;
+                return;
+            } else {
+            }
+        }
+        
+        // For local files, search immediately
+        m_current_track = track;
+        load_artwork_for_track_with_metadata(track, artist, title);
+        
+        // Update tracking variables
+        m_last_update_track = track;
+        m_last_update_content = current_content;
+        m_last_update_timestamp = current_time;
     }
 };
 
@@ -797,6 +1020,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         pThis->clear_artwork();
                         // Use stream delay for internet streams even during UI initialization
                         SetTimer(hwnd, 9, cfg_stream_delay * 1000, NULL);
+                        pThis->m_new_stream_delay_active = true;  // Set flag to prevent override
                     } else {
                         pThis->m_status_text = "Searching for artwork...";
                         if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
@@ -845,6 +1069,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         
                         // Use stream delay for internet streams even during retry
                         SetTimer(hwnd, 9, cfg_stream_delay * 1000, NULL);
+                        pThis->m_new_stream_delay_active = true;  // Set flag to prevent override
                     } else {
                         pThis->m_status_text = "Searching for artwork...";
                         if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
@@ -903,6 +1128,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         
                         // Use stream delay for internet streams even during final retry
                         SetTimer(hwnd, 9, cfg_stream_delay * 1000, NULL);
+                        pThis->m_new_stream_delay_active = true;  // Set flag to prevent override
                     } else {
                         pThis->m_status_text = "Final artwork search...";
                         if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
@@ -1004,15 +1230,21 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
             }
         } else if (wParam == 9) {  // Timer ID 9 - delayed metadata check for new streams
             KillTimer(hwnd, 9);  // Kill the timer
+            pThis->m_new_stream_delay_active = false;  // Clear the flag when timer fires
             
             // Check metadata after new stream has had time to buffer
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
             if (pc->get_now_playing(current_track)) {
                 
-                // Extract metadata now that stream has had time to buffer
+                // Extract metadata now that stream has had time to buffer using new method
                 pfc::string8 stream_artist, stream_title;
-                pThis->extract_metadata_for_search(current_track, stream_artist, stream_title);
+                try {
+                    const file_info& info = current_track->get_info_ref()->info();
+                    pThis->extract_metadata_from_info(info, stream_artist, stream_title);
+                } catch (...) {
+                    pThis->extract_metadata_for_search(current_track, stream_artist, stream_title);
+                }
                 
                 // Only proceed if we have valid track metadata (not just station name)
                 if (!stream_artist.is_empty() && !stream_title.is_empty()) {
@@ -1030,7 +1262,6 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                     pThis->m_current_track = current_track;
                     pThis->m_last_update_content = stream_artist + "|" + stream_title;
                     pThis->load_artwork_for_track_with_metadata(current_track, stream_artist, stream_title);
-                } else {
                 }
             }
         }
@@ -1229,6 +1460,7 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
             
             // Schedule delayed metadata check to wait for real track metadata
             SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
+            m_new_stream_delay_active = true;  // Set flag to prevent override
             return;
         }
     }
@@ -1299,6 +1531,7 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
 
 // Optimized version that reuses already-extracted metadata
 void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr track, const pfc::string8& artist, const pfc::string8& title) {
+    
     if (!track.is_valid()) {
         m_status_text = "No track";
         if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
@@ -1331,6 +1564,7 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     } else {
         search_priority = 1; // Neither artist nor title = lowest priority
     }
+    
     
     // Add member variable to track last search priority
     static int last_search_priority = 0;
@@ -1370,6 +1604,7 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     if (search_priority < last_search_priority && !retry_timeout_passed) {
         return;
     }
+    
     
     // Update priority tracking
     last_search_priority = search_priority;
@@ -1413,8 +1648,11 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
                     }
                     m_current_track = track;
                     return;
+                } else {
                 }
+            } else {
             }
+        } else {
         }
     } catch (...) {
         // Local artwork failed, continue to online search
@@ -1425,6 +1663,12 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     if (is_internet_stream) {
         // This looks like a stream URL, search online
         should_search_online = true;
+    } else {
+        // For local files, search online if we have valid metadata but no local artwork
+        if (!artist.is_empty() && !title.is_empty()) {
+            should_search_online = true;
+        } else {
+        }
     }
     
     if (should_search_online && track.is_valid()) {
@@ -1923,140 +2167,27 @@ void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pf
     
     if (!track.is_valid()) return;
     
-    // Use the same comprehensive extraction logic as track change detection
-    // First try window title parsing (for internet radio and dynamic content)
-    static auto find_fb2k_window_with_track_info = [](HWND hwnd, LPARAM lParam) -> BOOL {
-        auto* result = reinterpret_cast<pfc::string8*>(lParam);
+    // Use file_info directly to get metadata (no more window title parsing)
+    try {
+        const file_info& info = track->get_info_ref()->info();
         
-        wchar_t class_name[256];
-        wchar_t window_text[512];
-        
-        if (GetClassNameW(hwnd, class_name, 256) && GetWindowTextW(hwnd, window_text, 512)) {
-            // Support multiple formats:
-            // Format 1: "Artist - Title [foobar2000]"
-            // Format 2: "foobar2000 version info    Artist - Title  |  Station [SomaFM]"
-            // Format 3: Any window containing " - " that belongs to foobar2000
-            bool is_foobar_window = (wcsstr(window_text, L"[foobar2000]") || wcsstr(window_text, L"foobar2000"));
-            bool has_track_separator = wcsstr(window_text, L" - ");
-            
-            // Also check if this is a foobar2000 window by class name
-            if (!is_foobar_window) {
-                // Check for foobar2000-related class names
-                if (wcsstr(class_name, L"foo_") || wcsstr(class_name, L"foobar") || 
-                    wcscmp(class_name, L"{97E27FAA-C0B3-4b8e-A693-ED7881E99FC1}") == 0) {
-                    is_foobar_window = true;
-                }
-            }
-            
-            if (has_track_separator && is_foobar_window) {
-                pfc::stringcvt::string_utf8_from_wide text_utf8(window_text);
-                *result = text_utf8;
-                return FALSE;
-            }
-        }
-        return TRUE;
-    };
-    
-    pfc::string8 track_info_from_window;
-    EnumWindows(find_fb2k_window_with_track_info, reinterpret_cast<LPARAM>(&track_info_from_window));
-    
-    bool extracted_from_window = false;
-    
-    if (!track_info_from_window.is_empty()) {
-        pfc::string8 clean_track_info = track_info_from_window;
-        
-        // Check for Format 1: "Artist - Title [foobar2000]"
-        const char* fb2k_suffix = strstr(clean_track_info.c_str(), " [foobar2000]");
-        if (fb2k_suffix) {
-            // Format 1: Remove the [foobar2000] suffix
-            clean_track_info = pfc::string8(clean_track_info.c_str(), fb2k_suffix - clean_track_info.c_str());
-        }
-        // Check for Format 2: "foobar2000 version info    Artist - Title  |  Station [SomaFM]"
-        else if (strstr(clean_track_info.c_str(), "foobar2000")) {
-            // Format 2: Find the track info between version info and station info
-            // Look for the pattern: multiple spaces followed by artist - title
-            const char* track_start = strstr(clean_track_info.c_str(), "    ");
-            if (track_start) {
-                track_start += 4; // Skip the 4 spaces
-                
-                // Find the end of track info (before " | " or " |")
-                const char* track_end = strstr(track_start, "  |");
-                if (track_end) {
-                    clean_track_info = pfc::string8(track_start, track_end - track_start);
-                } else {
-                    // If no station info, use everything after the version info
-                    clean_track_info = pfc::string8(track_start);
-                }
-            }
+        // Extract metadata from track info
+        if (info.meta_get("ARTIST", 0)) {
+            artist = info.meta_get("ARTIST", 0);
         }
         
-        // Now parse the cleaned track info for "Artist - Title"
-        const char* separator = strstr(clean_track_info.c_str(), " - ");
-        if (separator) {
-            size_t artist_len = separator - clean_track_info.c_str();
-            if (artist_len > 0) {
-                artist = pfc::string8(clean_track_info.c_str(), artist_len);
-                while (artist.length() > 0 && artist[0] == ' ') artist = artist.subString(1);
-                while (artist.length() > 0 && artist[artist.length()-1] == ' ') artist = artist.subString(0, artist.length()-1);
-            }
-            
-            const char* title_start = separator + 3;
-            if (strlen(title_start) > 0) {
-                title = pfc::string8(title_start);
-                while (title.length() > 0 && title[0] == ' ') title = title.subString(1);
-                while (title.length() > 0 && title[title.length()-1] == ' ') title = title.subString(0, title.length()-1);
-                extracted_from_window = true;
-            }
+        if (info.meta_get("TITLE", 0)) {
+            title = info.meta_get("TITLE", 0);
         }
+    } catch (...) {
+        // If metadata access fails, keep empty values
     }
     
-    // Determine if this is an internet radio stream
-    pfc::string8 path = track->get_path();
-    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
-    
-    // For internet radio streams, prioritize window title parsing
-    // Only fall back to metadata if window parsing completely failed AND we have empty values
-    bool should_use_metadata = false;
-    
-    if (is_internet_stream) {
-        // For internet streams, only use metadata if window parsing completely failed
-        if (!extracted_from_window && artist.is_empty() && title.is_empty()) {
-            should_use_metadata = true;
-        }
-    } else {
-        // For regular files, use the original logic (fall back if any field is empty)
-        if (!extracted_from_window || artist.is_empty() || title.is_empty()) {
-            should_use_metadata = true;
-        }
-    }
-    
-    if (should_use_metadata) {
-        try {
-            file_info_impl info;
-            track->get_info(info);
-            
-            // Only overwrite empty values to preserve any good data from window parsing
-            if (artist.is_empty() && info.meta_exists("ARTIST")) {
-                artist = info.meta_get("ARTIST", 0);
-            } else if (artist.is_empty() && info.meta_exists("artist")) {
-                artist = info.meta_get("artist", 0);
-            }
-            
-            if (title.is_empty() && info.meta_exists("TITLE")) {
-                title = info.meta_get("TITLE", 0);
-            } else if (title.is_empty() && info.meta_exists("title")) {
-                title = info.meta_get("title", 0);
-            }
-        } catch (...) {
-            // If metadata access fails, keep empty values
-        }
-    }
-    
-    // Clean up common encoding issues and unwanted text - ENHANCED CLEANING
+    // Clean up common encoding issues and unwanted text
     artist = clean_metadata_text(artist);
     title = clean_metadata_text(title);
-    
 }
+
 
 // Clean metadata text from encoding issues and unwanted content - ENHANCED VERSION
 pfc::string8 artwork_ui_element::clean_metadata_text(const pfc::string8& text) {
@@ -2069,121 +2200,8 @@ pfc::string8 artwork_ui_element::clean_metadata_text(const pfc::string8& text) {
     cleaned.replace_string("\xE2\x80\x98", "'");  // Left single quotation mark
     cleaned.replace_string("\xE2\x80\x99", "'");  // Right single quotation mark
     cleaned.replace_string("\xE2\x80\x9A", "'");  // Single low-9 quotation mark
-    cleaned.replace_string("\xE2\x80\x9B", "'");  // Single high-reversed-9 quotation mark
-    cleaned.replace_string("\xC2\xB4", "'");     // Acute accent (often used as apostrophe)
-    cleaned.replace_string("\xC2\x92", "'");     // Private use character (sometimes apostrophe)
-    cleaned.replace_string("\xE2\x80\x9C", "\""); // Left double quotation mark
-    cleaned.replace_string("\xE2\x80\x9D", "\""); // Right double quotation mark
-    cleaned.replace_string("\xE2\x80\x9E", "\""); // Double low-9 quotation mark
-    cleaned.replace_string("\xE2\x80\x9F", "\""); // Double high-reversed-9 quotation mark
-    cleaned.replace_string("\xE2\x80\x93", "-");  // En dash
-    cleaned.replace_string("\xE2\x80\x94", "-");  // Em dash
-    cleaned.replace_string("\xE2\x80\xA6", "..."); // Horizontal ellipsis
     
-    // Remove featuring artists (ft., feat., featuring, etc.) - ENHANCED PATTERNS
-    // Patterns: various forms of featuring with different cases and spacing
-    const char* featuring_patterns[] = {
-        " ft.", " ft ", " feat.", " feat ", " featuring ", " Ft.", " Ft ", " Feat.", " Feat ", " Featuring ",
-        " featuring.", " Featured ", " featured ", " feat. ", " ft. ", " Feat. ", " Ft. "
-    };
-    
-    for (int i = 0; i < 17; i++) {
-        const char* ft_pos = strstr(cleaned.c_str(), featuring_patterns[i]);
-        if (ft_pos) {
-            // Remove everything from the featuring pattern onwards
-            cleaned = pfc::string8(cleaned.c_str(), ft_pos - cleaned.c_str());
-            break;
-        }
-    }
-    
-    // Remove content in brackets/parentheses (remixes, versions, etc.)
-    // Patterns: "(text)", "[text]"
-    text_cstr = cleaned.c_str();
-    const char* open_paren = strchr(text_cstr, '(');
-    const char* open_bracket = strchr(text_cstr, '[');
-    
-    // Find the earliest bracket/parenthesis
-    const char* earliest_bracket = nullptr;
-    if (open_paren && open_bracket) {
-        earliest_bracket = (open_paren < open_bracket) ? open_paren : open_bracket;
-    } else if (open_paren) {
-        earliest_bracket = open_paren;
-    } else if (open_bracket) {
-        earliest_bracket = open_bracket;
-    }
-    
-    if (earliest_bracket) {
-        cleaned = pfc::string8(text_cstr, earliest_bracket - text_cstr);
-    }
-    
-    // Simplify multiple artists - keep only the first main artist
-    // Pattern: "Artist1, Artist2" -> "Artist1"
-    const char* comma_pos = strchr(cleaned.c_str(), ',');
-    if (comma_pos) {
-        cleaned = pfc::string8(cleaned.c_str(), comma_pos - cleaned.c_str());
-    }
-    
-    // Remove timestamp patterns (like "- 0:00", "- 3:45", etc.) - ENHANCED VERSION
-    text_cstr = cleaned.c_str();
-    const char* timestamp_pattern = strstr(text_cstr, " - ");
-    
-    if (timestamp_pattern) {
-        const char* after_dash = timestamp_pattern + 3;
-        
-        // Skip any whitespace after the dash
-        while (*after_dash == ' ') {
-            after_dash++;
-        }
-        
-        // Check if it looks like a timestamp: digits:digits (potentially followed by whitespace)
-        bool looks_like_timestamp = false;
-        const char* colon_pos = strchr(after_dash, ':');
-        
-        if (colon_pos && colon_pos > after_dash) {
-            // Check before colon: should be digits (1-3 digits for minutes/hours)
-            bool digits_before = true;
-            int digit_count_before = 0;
-            for (const char* p = after_dash; p < colon_pos; p++) {
-                if (*p < '0' || *p > '9') {
-                    digits_before = false;
-                    break;
-                }
-                digit_count_before++;
-            }
-            
-            // Check after colon: should be 1-2 digits followed by end of string or whitespace
-            bool digits_after = true;
-            int digit_count_after = 0;
-            const char* p = colon_pos + 1;
-            while (*p >= '0' && *p <= '9') {
-                digit_count_after++;
-                p++;
-            }
-            
-            // After digits, should only be whitespace or end of string
-            while (*p == ' ') {
-                p++;
-            }
-            
-            if (*p != '\0') {
-                digits_after = false;
-            }
-            
-            // Valid timestamp: 1-3 digits before colon, 1-2 digits after colon
-            if (digits_before && digits_after && 
-                digit_count_before >= 1 && digit_count_before <= 3 &&
-                digit_count_after >= 1 && digit_count_after <= 2) {
-                looks_like_timestamp = true;
-            }
-        }
-        
-        // If it looks like a timestamp, remove it
-        if (looks_like_timestamp) {
-            cleaned = pfc::string8(text_cstr, timestamp_pattern - text_cstr);
-        }
-    }
-    
-    // Trim whitespace
+    // Remove leading and trailing whitespace
     while (cleaned.length() > 0 && cleaned[0] == ' ') {
         cleaned = cleaned.subString(1);
     }
@@ -2194,25 +2212,40 @@ pfc::string8 artwork_ui_element::clean_metadata_text(const pfc::string8& text) {
     return cleaned;
 }
 
+// Extract metadata directly from file_info (for radio streams)
+void artwork_ui_element::extract_metadata_from_info(const file_info& info, pfc::string8& artist, pfc::string8& title) {
+    artist = "";
+    title = "";
+    
+    // Get artist from file_info
+    if (info.meta_get("ARTIST", 0)) {
+        artist = info.meta_get("ARTIST", 0);
+    }
+    
+    // Get title from file_info
+    if (info.meta_get("TITLE", 0)) {
+        title = info.meta_get("TITLE", 0);
+    }
+    
+    // Clean the metadata
+    artist = clean_metadata_text(artist);
+    title = clean_metadata_text(title);
+    
+}
+
 // URL encoding helper function
 pfc::string8 artwork_ui_element::url_encode(const pfc::string8& str) {
     pfc::string8 encoded;
     
-    // Use pfc::string8's own length instead of strlen
-    for (t_size i = 0; i < str.length(); i++) {
-        unsigned char c = (unsigned char)str[i];
-        
-        // Check if character needs encoding
+    for (size_t i = 0; i < str.length(); i++) {
+        char c = str[i];
         if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
             c == '-' || c == '_' || c == '.' || c == '~') {
-            // Safe characters that don't need encoding
-            char single_char[2] = {(char)c, '\0'};
-            encoded << single_char;
+            encoded.add_char(c);
         } else {
-            // Encode all other characters including Unicode
-            pfc::string8 hex_str;
-            hex_str << pfc::format_hex(c, 2);
-            encoded << "%" << hex_str;
+            char hex[4];
+            sprintf_s(hex, "%%%02X", (unsigned char)c);
+            encoded += hex;
         }
     }
     
@@ -3222,30 +3255,12 @@ public:
     
     void on_playback_new_track(metadb_handle_ptr p_track) override {
         // Update all artwork UI elements
+        if (p_track.is_valid()) {
+            pfc::string8 track_path = p_track->get_path();
+        }
+        
         for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
             g_artwork_ui_elements[i]->update_track(p_track);
-        }
-    }
-    
-    void on_playback_dynamic_info(const file_info& p_info) override {
-        // Get current track and update UI elements with intelligent debouncing
-        static_api_ptr_t<playback_control> pc;
-        metadb_handle_ptr current_track;
-        if (pc->get_now_playing(current_track)) {
-            for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
-                auto* element = g_artwork_ui_elements[i];
-                
-                // Use same intelligent debouncing logic as Timer 7
-                pfc::string8 fresh_artist, fresh_title;
-                element->extract_metadata_for_search(current_track, fresh_artist, fresh_title);
-                pfc::string8 fresh_content = fresh_artist + "|" + fresh_title;
-                
-                // Only update if content has actually changed
-                if (fresh_content != element->m_last_update_content && !fresh_artist.is_empty() && !fresh_title.is_empty()) {
-                    element->update_track(current_track);
-                } else {
-                }
-            }
         }
     }
     
@@ -3253,24 +3268,36 @@ public:
     void on_playback_seek(double p_time) override {}
     void on_playback_pause(bool p_state) override {}
     void on_playback_edited(metadb_handle_ptr p_track) override {}
+    void on_playback_dynamic_info(const file_info& p_info) override {
+        // Empty implementation - not needed for artwork component
+        // This callback is for bitrate changes and other non-essential info
+    }
     void on_playback_dynamic_info_track(const file_info& p_info) override {
         // This is specifically called for stream track title changes
-        // Get current track and update UI elements with intelligent debouncing
+        // Use the p_info parameter directly to get accurate metadata
+        
         static_api_ptr_t<playback_control> pc;
         metadb_handle_ptr current_track;
         if (pc->get_now_playing(current_track)) {
+            pfc::string8 track_path = current_track->get_path();
+            
             for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
                 auto* element = g_artwork_ui_elements[i];
                 
-                // Use same intelligent debouncing logic as Timer 7
+                // Extract metadata directly from the p_info parameter
                 pfc::string8 fresh_artist, fresh_title;
-                element->extract_metadata_for_search(current_track, fresh_artist, fresh_title);
+                element->extract_metadata_from_info(p_info, fresh_artist, fresh_title);
                 pfc::string8 fresh_content = fresh_artist + "|" + fresh_title;
                 
-                // Only update if content has actually changed
-                if (fresh_content != element->m_last_update_content && !fresh_artist.is_empty() && !fresh_title.is_empty()) {
-                    element->update_track(current_track);
-                } else {
+                
+                // Only update if content has actually changed and we have valid metadata
+                // OR if we don't have artwork yet for valid metadata
+                bool content_changed = (fresh_content != element->m_last_update_content);
+                bool has_valid_metadata = (!fresh_artist.is_empty() && !fresh_title.is_empty());
+                bool needs_artwork = (!element->m_artwork_bitmap || element->m_last_search_key.is_empty());
+                
+                if ((content_changed || needs_artwork) && has_valid_metadata) {
+                    element->update_track_with_metadata(current_track, fresh_artist, fresh_title);
                 }
             }
         }
