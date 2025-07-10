@@ -74,7 +74,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.1.5",
+    "1.1.6",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -230,6 +230,9 @@ public:
     std::mutex m_artwork_found_mutex;  // Protect artwork found flag
     bool m_artwork_found;  // Track whether artwork has been found
     bool m_new_stream_delay_active;  // Track when Timer 9 is active for new stream delay
+    bool m_playback_stopped;  // Track when playback is stopped to detect initial connections
+    pfc::string8 m_pending_timer_artist;  // Store artist for Timer 9 delayed search
+    pfc::string8 m_pending_timer_title;   // Store title for Timer 9 delayed search
 
 public:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -240,9 +243,9 @@ private:
     void load_artwork_for_track_with_metadata(metadb_handle_ptr track, const pfc::string8& artist, const pfc::string8& title);
     void process_downloaded_image_data();  // Process image data on main thread
     void queue_image_for_processing(const std::vector<BYTE>& image_data);  // Thread-safe image queuing
-    void clear_artwork();  // Clear artwork and reset search state
     
 public:
+    void clear_artwork();  // Clear artwork and reset search state
     void search_itunes_artwork(metadb_handle_ptr track);
     void search_itunes_background(pfc::string8 artist, pfc::string8 title);
     void search_discogs_artwork(metadb_handle_ptr track);
@@ -282,7 +285,7 @@ public:
     // GUID for our element
     static const GUID g_guid;
     artwork_ui_element(HWND parent, ui_element_config::ptr config, ui_element_instance_callback::ptr callback)
-        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_found(false), m_current_priority_position(0), m_new_stream_delay_active(false) {
+        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_found(false), m_current_priority_position(0), m_new_stream_delay_active(false), m_playback_stopped(true) {
         
         // Remove jarring "No track playing" message
         // m_status_text = "No track playing";
@@ -327,8 +330,6 @@ public:
                 SetTimer(m_hWnd, 3, 3000, NULL);  // Timer ID 3, 3 second delay
             } else {
                 // No track playing during initialization
-                m_status_text = "No track playing during initialization";
-                InvalidateRect(m_hWnd, NULL, TRUE);
                 
                 // Set a timer to check periodically if playback starts
                 SetTimer(m_hWnd, 6, 1000, NULL);  // Timer ID 6, check every 1 second
@@ -371,6 +372,13 @@ public:
     
     GUID get_subclass() override {
         return ui_element_subclass_utility;
+    }
+    
+    void ui_colors_changed() {
+        // Repaint when UI colors change (theme switching, etc.)
+        if (m_hWnd) {
+            InvalidateRect(m_hWnd, NULL, TRUE);
+        }
     }
     
     static GUID g_get_guid() {
@@ -854,29 +862,43 @@ public:
             }
         }
         
-        // For internet radio streams, use stream delay for new track metadata
+        // For internet radio streams, only apply delay on initial connection
         if (track.is_valid()) {
             pfc::string8 path = track->get_path();
             bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
             
-            
             if (is_internet_stream && !artist.is_empty() && !title.is_empty()) {
-                // For track changes with valid metadata, search immediately
-                // The stream delay is primarily for initial connections, not track changes
-                m_current_track = track;
-                load_artwork_for_track_with_metadata(track, artist, title);
+                // Check if this is initial connection from stopped state
+                bool is_initial_connection = m_playback_stopped || 
+                                           !m_last_update_track.is_valid() ||
+                                           m_last_update_content.is_empty();
+                
+                if (is_initial_connection) {
+                    // Store metadata for Timer 9 to use later
+                    m_pending_timer_artist = artist;
+                    m_pending_timer_title = title;
+                    
+                    // Use stream delay for initial connection
+                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
+                    m_new_stream_delay_active = true;
+                    m_playback_stopped = false;  // Clear the stopped flag
+                } else {
+                    // For track changes within the same stream, search immediately
+                    m_current_track = track;
+                    load_artwork_for_track_with_metadata(track, artist, title);
+                }
                 
                 // Update tracking variables
                 m_last_update_track = track;
                 m_last_update_content = current_content; 
                 m_last_update_timestamp = current_time;
                 return;
-            } else {
             }
         }
         
         // For local files, search immediately
         m_current_track = track;
+        m_playback_stopped = false;  // Clear stopped flag for local files too
         load_artwork_for_track_with_metadata(track, artist, title);
         
         // Update tracking variables
@@ -1170,8 +1192,6 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 check_count++;
                 if (check_count >= 10) {  // Stop after 10 seconds
                     KillTimer(hwnd, 6);
-                    pThis->m_status_text = "No playback detected after 10 seconds";
-                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                 }
             }
         } else if (wParam == 7) {  // Timer ID 7 - delayed metadata check for track changes
@@ -1232,23 +1252,16 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
             KillTimer(hwnd, 9);  // Kill the timer
             pThis->m_new_stream_delay_active = false;  // Clear the flag when timer fires
             
-            // Check metadata after new stream has had time to buffer
+            // Use stored metadata from when timer was set
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
             if (pc->get_now_playing(current_track)) {
+                // Use the metadata that was stored when the timer was set
+                pfc::string8 stream_artist = pThis->m_pending_timer_artist;
+                pfc::string8 stream_title = pThis->m_pending_timer_title;
                 
-                // Extract metadata now that stream has had time to buffer using new method
-                pfc::string8 stream_artist, stream_title;
-                try {
-                    const file_info& info = current_track->get_info_ref()->info();
-                    pThis->extract_metadata_from_info(info, stream_artist, stream_title);
-                } catch (...) {
-                    pThis->extract_metadata_for_search(current_track, stream_artist, stream_title);
-                }
-                
-                // Only proceed if we have valid track metadata (not just station name)
-                if (!stream_artist.is_empty() && !stream_title.is_empty()) {
-                    
+                // Proceed if we have at least a title (artist can be empty for some streams)
+                if (!stream_title.is_empty()) {
                     // Clear search cache and start fresh search
                     {
                         std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
@@ -1262,6 +1275,10 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                     pThis->m_current_track = current_track;
                     pThis->m_last_update_content = stream_artist + "|" + stream_title;
                     pThis->load_artwork_for_track_with_metadata(current_track, stream_artist, stream_title);
+                    
+                    // Clear stored metadata after use
+                    pThis->m_pending_timer_artist = "";
+                    pThis->m_pending_timer_title = "";
                 }
             }
         }
@@ -1276,9 +1293,36 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
     RECT clientRect;
     GetClientRect(m_hWnd, &clientRect);
     
-    // Use black background and white text
-    COLORREF bg_color = RGB(0, 0, 0);     // Black background
-    COLORREF text_color = RGB(255, 255, 255);  // White text
+    // Use foobar2000's proper UI element colors
+    COLORREF bg_color, text_color;
+    
+    // Try to get foobar2000 UI element colors
+    try {
+        t_ui_color ui_bg_color, ui_text_color;
+        
+        // Query the UI element background and text colors
+        if (m_callback.is_valid() && 
+            m_callback->query_color(ui_color_background, ui_bg_color) && 
+            m_callback->query_color(ui_color_text, ui_text_color)) {
+            // Use foobar2000 UI colors
+            bg_color = ui_bg_color;
+            text_color = ui_text_color;
+        } else {
+            // Fallback: get standard colors using helper method
+            if (m_callback.is_valid()) {
+                bg_color = m_callback->query_std_color(ui_color_background);
+                text_color = m_callback->query_std_color(ui_color_text);
+            } else {
+                // Final fallback to system colors
+                bg_color = GetSysColor(COLOR_WINDOW);
+                text_color = GetSysColor(COLOR_WINDOWTEXT);
+            }
+        }
+    } catch (...) {
+        // Fallback to system colors if any foobar2000 API calls fail
+        bg_color = GetSysColor(COLOR_WINDOW);
+        text_color = GetSysColor(COLOR_WINDOWTEXT);
+    }
     
     // Fill background
     HBRUSH bgBrush = CreateSolidBrush(bg_color);
@@ -3250,7 +3294,7 @@ void artwork_ui_element::clear_artwork() {
 class artwork_play_callback : public play_callback_static {
 public:
     unsigned get_flags() override {
-        return flag_on_playback_new_track | flag_on_playback_dynamic_info | flag_on_playback_dynamic_info_track | flag_on_playback_starting;
+        return flag_on_playback_new_track | flag_on_playback_dynamic_info | flag_on_playback_dynamic_info_track | flag_on_playback_starting | flag_on_playback_stop;
     }
     
     void on_playback_new_track(metadb_handle_ptr p_track) override {
@@ -3264,7 +3308,18 @@ public:
         }
     }
     
-    void on_playback_stop(play_control::t_stop_reason p_reason) override {}
+    void on_playback_stop(play_control::t_stop_reason p_reason) override {
+        // Clear artwork from all UI elements when playback stops
+        for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
+            g_artwork_ui_elements[i]->clear_artwork();
+            g_artwork_ui_elements[i]->m_status_text = "";
+            g_artwork_ui_elements[i]->m_current_track.release();
+            g_artwork_ui_elements[i]->m_playback_stopped = true;  // Mark playback as stopped
+            if (g_artwork_ui_elements[i]->m_hWnd) {
+                InvalidateRect(g_artwork_ui_elements[i]->m_hWnd, NULL, TRUE);
+            }
+        }
+    }
     void on_playback_seek(double p_time) override {}
     void on_playback_pause(bool p_state) override {}
     void on_playback_edited(metadb_handle_ptr p_track) override {}
@@ -3311,6 +3366,8 @@ public:
         metadb_handle_ptr current_track;
         if (pc->get_now_playing(current_track)) {
             for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
+                // Don't clear stopped flag here - let update_track_with_metadata handle it
+                // This ensures stream delay logic works properly
                 g_artwork_ui_elements[i]->update_track(current_track);
             }
         }
