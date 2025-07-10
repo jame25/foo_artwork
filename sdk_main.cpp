@@ -74,7 +74,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.1.3",
+    "1.1.4",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -493,6 +493,10 @@ public:
                 if (old_is_internet_stream != new_is_internet_stream) {
                     // Source type changed (local <-> internet)
                     should_clear_artwork = true;
+                    if (new_is_internet_stream) {
+                        // Transitioning TO internet stream - treat as new stream
+                        is_new_stream = true;
+                    }
                 } else if (new_is_internet_stream && (new_path != old_path)) {
                     // Different internet stream URL
                     should_clear_artwork = true;
@@ -507,6 +511,7 @@ public:
             }
             
             if (should_clear_artwork) {
+                
                 clear_artwork();
                 
                 // For new internet radio streams, wait before checking metadata
@@ -516,7 +521,13 @@ public:
                     return;  // Don't search immediately for new streams
                 }
                 
-                // Force immediate artwork search after clearing (for non-stream changes)
+                // CRITICAL FIX: Check if this is an internet stream regardless of is_new_stream flag
+                if (new_is_internet_stream) {
+                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
+                    return;  // Never allow immediate searches for internet streams
+                }
+                
+                // Force immediate artwork search after clearing (for LOCAL FILES ONLY)
                 // This ensures search happens even if metadata extraction cached old values
                 m_current_track = track;
                 pfc::string8 fresh_artist, fresh_title;
@@ -533,7 +544,6 @@ public:
             bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
             
             if (is_internet_stream) {
-                
                 // For internet radio streams, DON'T clear artwork yet - keep old artwork until new one loads
                 // This prevents flashing and provides smoother transitions
                 
@@ -546,9 +556,9 @@ public:
                 }
                 m_last_search_timestamp = 0;
                 
-                // Use short delay for track changes within internet radio streams (0.5 seconds)
+                // Use short delay for track changes within internet radio streams (responsive)
                 m_current_track = track;
-                SetTimer(m_hWnd, 9, 500, NULL);  // Short 500ms delay for responsiveness
+                SetTimer(m_hWnd, 9, 500, NULL);  // Short 0.5 second delay for track changes
                 return;  // Skip the normal load process since Timer 9 will handle it
             }
         }
@@ -582,7 +592,73 @@ public:
         }
         
         m_current_track = track;
-        // Pass the already-extracted metadata to avoid duplicate extraction
+        
+        // Check if this is a new internet radio stream that should use delay
+        if (track.is_valid()) {
+            pfc::string8 path = track->get_path();
+            bool new_is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            
+            // Check if this is a new stream (different from last track)
+            bool is_new_stream_connection = false;
+            if (m_last_update_track.is_valid()) {
+                pfc::string8 old_path = m_last_update_track->get_path();
+                bool old_is_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
+                
+                // New stream if transitioning TO internet stream or different stream URL
+                if (!old_is_internet_stream && new_is_internet_stream) {
+                    is_new_stream_connection = true;  // Local file -> Internet stream
+                } else if (new_is_internet_stream && (path != old_path)) {
+                    is_new_stream_connection = true;  // Different internet stream
+                }
+            } else if (new_is_internet_stream) {
+                is_new_stream_connection = true;  // First track is internet stream
+            }
+            
+            // Use nuanced delay approach for internet streams
+            if (new_is_internet_stream) {
+                if (is_new_stream_connection) {
+                    // Initial stream connection: Use full configurable stream delay
+                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
+                } else {
+                    // Normal track changes within stream: Use short delay for responsiveness
+                    SetTimer(m_hWnd, 9, 500, NULL);  // 0.5 second delay for track changes
+                }
+                return;  // Timer 9 will handle the artwork search
+            }
+        }
+        
+        // FINAL CHECK: Apply stream delay to ALL internet streams regardless of execution path
+        if (track.is_valid()) {
+            pfc::string8 path = track->get_path();
+            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            
+            if (is_internet_stream) {
+                // This should not happen if our earlier logic is correct, but this is a safety net
+                // Check if this is a new stream connection for nuanced delay
+                bool is_final_new_stream = false;
+                if (m_last_update_track.is_valid()) {
+                    pfc::string8 old_path = m_last_update_track->get_path();
+                    bool old_is_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
+                    
+                    if (!old_is_internet_stream && is_internet_stream) {
+                        is_final_new_stream = true;  // Local file -> Internet stream
+                    } else if (is_internet_stream && (path != old_path)) {
+                        is_final_new_stream = true;  // Different internet stream
+                    }
+                } else if (is_internet_stream) {
+                    is_final_new_stream = true;  // First track is internet stream
+                }
+                
+                if (is_final_new_stream) {
+                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Full delay for new streams
+                } else {
+                    SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for track changes
+                }
+                return;  // Never allow immediate searches for internet streams
+            }
+        }
+        
+        // Pass the already-extracted metadata to avoid duplicate extraction (LOCAL FILES ONLY)
         load_artwork_for_track_with_metadata(track, current_artist, current_title);
     }
 };
@@ -710,11 +786,24 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 
                 if (!test_artist.is_empty() && !test_title.is_empty()) {
                     // We have valid metadata, proceed with search
-                    pThis->m_status_text = "Searching for artwork...";
-                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                    // Check if this is an internet stream that should respect delay
+                    pfc::string8 path = current_track->get_path();
+                    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                     
-                    pThis->clear_artwork();
-                    pThis->update_track(current_track);
+                    if (is_internet_stream) {
+                        pThis->m_status_text = "Waiting for stream delay before searching...";
+                        if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                        
+                        pThis->clear_artwork();
+                        // Use stream delay for internet streams even during UI initialization
+                        SetTimer(hwnd, 9, cfg_stream_delay * 1000, NULL);
+                    } else {
+                        pThis->m_status_text = "Searching for artwork...";
+                        if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                        
+                        pThis->clear_artwork();
+                        pThis->update_track(current_track);
+                    }
                 } else {
                     // Metadata not ready yet, schedule another retry
                     pThis->m_status_text = "Waiting for track metadata...";
@@ -736,20 +825,42 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 
                 if (!test_artist.is_empty() && !test_title.is_empty()) {
                     // We have valid metadata, proceed with search
-                    pThis->m_status_text = "Searching for artwork...";
-                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                    // Check if this is an internet stream that should respect delay
+                    pfc::string8 path = current_track->get_path();
+                    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                     
-                    pThis->clear_artwork();
-                    
-                    // Clear search cache to bypass any cached failures
-                    {
-                        std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
-                        pThis->m_last_search_key = "";
-                        pThis->m_current_search_key = "";
+                    if (is_internet_stream) {
+                        pThis->m_status_text = "Waiting for stream delay before searching...";
+                        if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                        
+                        pThis->clear_artwork();
+                        
+                        // Clear search cache to bypass any cached failures
+                        {
+                            std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
+                            pThis->m_last_search_key = "";
+                            pThis->m_current_search_key = "";
+                        }
+                        pThis->m_last_search_timestamp = 0;
+                        
+                        // Use stream delay for internet streams even during retry
+                        SetTimer(hwnd, 9, cfg_stream_delay * 1000, NULL);
+                    } else {
+                        pThis->m_status_text = "Searching for artwork...";
+                        if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                        
+                        pThis->clear_artwork();
+                        
+                        // Clear search cache to bypass any cached failures
+                        {
+                            std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
+                            pThis->m_last_search_key = "";
+                            pThis->m_current_search_key = "";
+                        }
+                        pThis->m_last_search_timestamp = 0;
+                        
+                        pThis->update_track(current_track);
                     }
-                    pThis->m_last_search_timestamp = 0;
-                    
-                    pThis->update_track(current_track);
                 } else {
                     // Still no metadata, schedule final retry
                     pThis->m_status_text = "Still waiting for metadata...";
@@ -771,21 +882,44 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 
                 if (!test_artist.is_empty() && !test_title.is_empty()) {
                     // Finally have metadata, proceed with search
-                    pThis->m_status_text = "Final artwork search...";
-                    if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                    // Check if this is an internet stream that should respect delay
+                    pfc::string8 path = current_track->get_path();
+                    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                     
-                    // Clear ALL cached search state for final retry
-                    pThis->clear_artwork();
-                    
-                    // Force bypass of search cache
-                    {
-                        std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
-                        pThis->m_last_search_key = "";
-                        pThis->m_current_search_key = "";
+                    if (is_internet_stream) {
+                        pThis->m_status_text = "Waiting for stream delay before final search...";
+                        if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                        
+                        // Clear ALL cached search state for final retry
+                        pThis->clear_artwork();
+                        
+                        // Force bypass of search cache
+                        {
+                            std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
+                            pThis->m_last_search_key = "";
+                            pThis->m_current_search_key = "";
+                        }
+                        pThis->m_last_search_timestamp = 0;
+                        
+                        // Use stream delay for internet streams even during final retry
+                        SetTimer(hwnd, 9, cfg_stream_delay * 1000, NULL);
+                    } else {
+                        pThis->m_status_text = "Final artwork search...";
+                        if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
+                        
+                        // Clear ALL cached search state for final retry
+                        pThis->clear_artwork();
+                        
+                        // Force bypass of search cache
+                        {
+                            std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
+                            pThis->m_last_search_key = "";
+                            pThis->m_current_search_key = "";
+                        }
+                        pThis->m_last_search_timestamp = 0;
+                        
+                        pThis->update_track(current_track);
                     }
-                    pThis->m_last_search_timestamp = 0;
-                    
-                    pThis->update_track(current_track);
                 } else {
                     // Give up - no metadata available
                     pThis->m_status_text = "No track metadata available";
