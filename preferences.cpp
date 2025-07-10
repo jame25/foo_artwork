@@ -85,6 +85,20 @@ static const char* get_api_name(int api_index) {
     }
 }
 
+// Convert dropdown index to API enum value
+static int dropdown_index_to_api_value(int dropdown_index) {
+    // Dropdown index:  0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs
+    // API enum value:  0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs
+    return dropdown_index; // They match, so direct mapping
+}
+
+// Convert API enum value to dropdown index
+static int api_value_to_dropdown_index(int api_value) {
+    // API enum value:  0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs
+    // Dropdown index:  0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs
+    return api_value; // They match, so direct mapping
+}
+
 static void populate_api_combobox(HWND combo) {
     SendMessage(combo, CB_RESETCONTENT, 0, 0);
     for (int i = 0; i < 5; i++) {
@@ -124,11 +138,22 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_5));
         
         // Set current priority selections
-        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_1), CB_SETCURSEL, cfg_priority_1, 0);
-        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_2), CB_SETCURSEL, cfg_priority_2, 0);
-        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_3), CB_SETCURSEL, cfg_priority_3, 0);
-        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_4), CB_SETCURSEL, cfg_priority_4, 0);
-        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_5), CB_SETCURSEL, cfg_priority_5, 0);
+        // Convert from "What position is API X in?" to "Which API is at position Y?"
+        int apis_at_position[5] = {-1, -1, -1, -1, -1};
+        
+        // Map each API to its position
+        if (cfg_priority_2 >= 0 && cfg_priority_2 < 5) apis_at_position[cfg_priority_2] = 0; // iTunes
+        if (cfg_priority_1 >= 0 && cfg_priority_1 < 5) apis_at_position[cfg_priority_1] = 1; // Deezer
+        if (cfg_priority_3 >= 0 && cfg_priority_3 < 5) apis_at_position[cfg_priority_3] = 2; // LastFm
+        if (cfg_priority_4 >= 0 && cfg_priority_4 < 5) apis_at_position[cfg_priority_4] = 3; // MusicBrainz
+        if (cfg_priority_5 >= 0 && cfg_priority_5 < 5) apis_at_position[cfg_priority_5] = 4; // Discogs
+        
+        // Set dropdown selections
+        if (apis_at_position[0] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_1), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[0]), 0);
+        if (apis_at_position[1] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_2), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[1]), 0);
+        if (apis_at_position[2] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_3), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[2]), 0);
+        if (apis_at_position[3] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_4), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[3]), 0);
+        if (apis_at_position[4] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_5), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[4]), 0);
         
         // Set stream delay value
         SetDlgItemInt(hwnd, IDC_STREAM_DELAY, cfg_stream_delay, FALSE);
@@ -219,11 +244,26 @@ bool artwork_preferences::has_changed() {
     bool lastfm_key_changed = strcmp(buffer, cfg_lastfm_key) != 0;
     
     // Check priority comboboxes
-    bool priority1_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0) != cfg_priority_1;
-    bool priority2_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0) != cfg_priority_2;
-    bool priority3_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0) != cfg_priority_3;
-    bool priority4_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0) != cfg_priority_4;
-    bool priority5_changed = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0) != cfg_priority_5;
+    // Convert current UI state to config format and compare
+    int current_positions[5] = {-1, -1, -1, -1, -1}; // iTunes, Deezer, LastFm, MusicBrainz, Discogs
+    
+    int current_api_at_pos0 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0));
+    int current_api_at_pos1 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0));
+    int current_api_at_pos2 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0));
+    int current_api_at_pos3 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0));
+    int current_api_at_pos4 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0));
+    
+    if (current_api_at_pos0 >= 0 && current_api_at_pos0 < 5) current_positions[current_api_at_pos0] = 0;
+    if (current_api_at_pos1 >= 0 && current_api_at_pos1 < 5) current_positions[current_api_at_pos1] = 1;
+    if (current_api_at_pos2 >= 0 && current_api_at_pos2 < 5) current_positions[current_api_at_pos2] = 2;
+    if (current_api_at_pos3 >= 0 && current_api_at_pos3 < 5) current_positions[current_api_at_pos3] = 3;
+    if (current_api_at_pos4 >= 0 && current_api_at_pos4 < 5) current_positions[current_api_at_pos4] = 4;
+    
+    bool priority1_changed = current_positions[1] != cfg_priority_1; // Deezer
+    bool priority2_changed = current_positions[0] != cfg_priority_2; // iTunes
+    bool priority3_changed = current_positions[2] != cfg_priority_3; // LastFm
+    bool priority4_changed = current_positions[3] != cfg_priority_4; // MusicBrainz
+    bool priority5_changed = current_positions[4] != cfg_priority_5; // Discogs
     
     // Check stream delay
     BOOL success;
@@ -259,12 +299,32 @@ void artwork_preferences::apply_settings() {
         GetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, buffer, sizeof(buffer));
         cfg_lastfm_key = buffer;
         
-        // Save priority combobox selections
-        cfg_priority_1 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0);
-        cfg_priority_2 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0);
-        cfg_priority_3 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0);
-        cfg_priority_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);
-        cfg_priority_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);
+        // Save priority combobox selections 
+        // The UI shows: Priority 1 = "Which API is first?", Priority 2 = "Which API is second?", etc.
+        // We need to convert this to: cfg_priority_X = "What position is API X in?"
+        
+        int priority_positions[5] = {-1, -1, -1, -1, -1}; // iTunes, Deezer, LastFm, MusicBrainz, Discogs
+        
+        // Get which API is selected for each priority position
+        int api_at_pos0 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0));
+        int api_at_pos1 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0));
+        int api_at_pos2 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0));
+        int api_at_pos3 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0));
+        int api_at_pos4 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0));
+        
+        // Set the position for each API
+        if (api_at_pos0 >= 0 && api_at_pos0 < 5) priority_positions[api_at_pos0] = 0;
+        if (api_at_pos1 >= 0 && api_at_pos1 < 5) priority_positions[api_at_pos1] = 1;
+        if (api_at_pos2 >= 0 && api_at_pos2 < 5) priority_positions[api_at_pos2] = 2;
+        if (api_at_pos3 >= 0 && api_at_pos3 < 5) priority_positions[api_at_pos3] = 3;
+        if (api_at_pos4 >= 0 && api_at_pos4 < 5) priority_positions[api_at_pos4] = 4;
+        
+        // Save to config variables
+        cfg_priority_2 = priority_positions[0]; // iTunes position
+        cfg_priority_1 = priority_positions[1]; // Deezer position  
+        cfg_priority_3 = priority_positions[2]; // LastFm position
+        cfg_priority_4 = priority_positions[3]; // MusicBrainz position
+        cfg_priority_5 = priority_positions[4]; // Discogs position
         
         // Save stream delay
         BOOL success;
