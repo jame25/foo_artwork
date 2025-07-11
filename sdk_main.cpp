@@ -74,7 +74,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.1.7",
+    "1.1.8",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -246,7 +246,8 @@ private:
     void queue_image_for_processing(const std::vector<BYTE>& image_data);  // Thread-safe image queuing
     
 public:
-    void clear_artwork();  // Clear artwork and reset search state
+    void clear_artwork();  // Clear search state only (keep bitmap visible)
+    void clear_artwork_bitmap();  // Actually clear bitmap (only for playback stop)
     void search_itunes_artwork(metadb_handle_ptr track);
     void search_itunes_background(pfc::string8 artist, pfc::string8 title);
     void search_discogs_artwork(metadb_handle_ptr track);
@@ -500,7 +501,7 @@ public:
                     bool has_artwork_loaded = (m_artwork_bitmap != NULL);
                     
                     if (was_not_empty && !has_artwork_loaded) {
-                        clear_artwork();
+                        // DON'T clear artwork - keep existing artwork visible during transitions
                         m_status_text = "";  // Clear any status text
                         if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
                     }
@@ -528,61 +529,46 @@ public:
                 pfc::string8 old_path = m_last_update_track->get_path();
                 bool old_is_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
                 
-                // Clear artwork if:
-                // 1. Switching from local file to internet stream
-                // 2. Switching from internet stream to local file
-                // 3. Switching between different internet streams
-                if (old_is_internet_stream != new_is_internet_stream) {
-                    // Source type changed (local <-> internet)
-                    should_clear_artwork = true;
-                    if (new_is_internet_stream) {
-                        // Transitioning TO internet stream - treat as new stream
-                        is_new_stream = true;
-                    }
-                } else if (new_is_internet_stream && (new_path != old_path)) {
-                    // Different internet stream URL
-                    should_clear_artwork = true;
+                // NEVER clear artwork during any transitions - only when playback stops
+                // Keep existing artwork for smooth transitions in all cases:
+                // 1. Local file to local file transitions
+                // 2. Local file to internet stream transitions  
+                // 3. Internet stream to local file transitions
+                // 4. Internet stream to different internet stream transitions
+                should_clear_artwork = false; // Never clear during track transitions
+                
+                if (new_is_internet_stream && !old_is_internet_stream) {
+                    // Transitioning TO internet stream from local file
+                    is_new_stream = true;
+                } else if (new_is_internet_stream && old_is_internet_stream && (new_path != old_path)) {
+                    // Different internet stream URL - treat as new stream but don't clear
                     is_new_stream = true;
                 }
             } else {
-                // First track load
-                should_clear_artwork = true;
+                // First track load - never clear artwork, even for first stream
+                should_clear_artwork = false;
                 if (new_is_internet_stream) {
                     is_new_stream = true;
                 }
             }
             
             if (should_clear_artwork) {
-                
                 clear_artwork();
+            }
+            
+            // For new internet radio streams, wait before checking metadata (regardless of clearing)
+            if (is_new_stream) {
+                // Schedule delayed metadata check for new streams
+                SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Timer ID 9 for new stream delay
+                m_new_stream_delay_active = true;  // Set flag to prevent override
                 
-                // For new internet radio streams, wait before checking metadata
-                if (is_new_stream) {
-                    // Schedule delayed metadata check for new streams
-                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Timer ID 9 for new stream delay
-                    m_new_stream_delay_active = true;  // Set flag to prevent override
-                    
-                    // Update tracking variables before returning
-                    m_last_update_track = track;
-                    m_last_update_content = current_content;
-                    m_last_update_timestamp = current_time;
-                    return;  // Don't search immediately for new streams
-                }
-                
-                // CRITICAL FIX: Check if this is an internet stream regardless of is_new_stream flag
-                if (new_is_internet_stream) {
-                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
-                    m_new_stream_delay_active = true;  // Set flag to prevent override
-                    
-                    // Update tracking variables before returning
-                    m_last_update_track = track;
-                    m_last_update_content = current_content;
-                    m_last_update_timestamp = current_time;
-                    return;  // Never allow immediate searches for internet streams
-                }
-                
-                // Force immediate artwork search after clearing (for LOCAL FILES ONLY)
-                // This ensures search happens even if metadata extraction cached old values
+                // Update tracking variables before returning
+                m_last_update_track = track;
+                m_last_update_content = current_content;
+                m_last_update_timestamp = current_time;
+                return;  // Don't search immediately for new streams
+            } else if (!new_is_internet_stream) {
+                // For local files, proceed with immediate artwork search
                 m_current_track = track;
                 pfc::string8 fresh_artist, fresh_title;
                 extract_metadata_for_search(track, fresh_artist, fresh_title);
@@ -697,7 +683,7 @@ public:
         // Check if this is a new internet radio stream that should use delay
         if (track.is_valid()) {
             pfc::string8 path = track->get_path();
-            bool new_is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
             
             // Check if this is a new stream (different from last track)
             bool is_new_stream_connection = false;
@@ -706,17 +692,17 @@ public:
                 bool old_is_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
                 
                 // New stream if transitioning TO internet stream or different stream URL
-                if (!old_is_internet_stream && new_is_internet_stream) {
+                if (!old_is_internet_stream && is_internet_stream) {
                     is_new_stream_connection = true;  // Local file -> Internet stream
-                } else if (new_is_internet_stream && (path != old_path)) {
+                } else if (is_internet_stream && (path != old_path)) {
                     is_new_stream_connection = true;  // Different internet stream
                 }
-            } else if (new_is_internet_stream) {
+            } else if (is_internet_stream) {
                 is_new_stream_connection = true;  // First track is internet stream
             }
             
             // Use nuanced delay approach for internet streams
-            if (new_is_internet_stream) {
+            if (is_internet_stream) {
                 
                 if (is_new_stream_connection) {
                     // Initial stream connection: Use full configurable stream delay
@@ -1040,7 +1026,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         pThis->m_status_text = "Waiting for stream delay before searching...";
                         if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                         
-                        pThis->clear_artwork();
+                        // DON'T clear artwork - keep existing artwork visible during stream transitions
                         // Use stream delay for internet streams even during UI initialization
                         SetTimer(hwnd, 9, cfg_stream_delay * 1000, NULL);
                         pThis->m_new_stream_delay_active = true;  // Set flag to prevent override
@@ -1048,7 +1034,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         pThis->m_status_text = "Searching for artwork...";
                         if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                         
-                        pThis->clear_artwork();
+                        // DON'T clear artwork - keep existing artwork visible during transitions
                         pThis->update_track(current_track);
                     }
                 } else {
@@ -1080,7 +1066,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         pThis->m_status_text = "Waiting for stream delay before searching...";
                         if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                         
-                        pThis->clear_artwork();
+                        // DON'T clear artwork - keep existing artwork visible during stream transitions
                         
                         // Clear search cache to bypass any cached failures
                         {
@@ -1097,7 +1083,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         pThis->m_status_text = "Searching for artwork...";
                         if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                         
-                        pThis->clear_artwork();
+                        // DON'T clear artwork - keep existing artwork visible during stream transitions
                         
                         // Clear search cache to bypass any cached failures
                         {
@@ -1139,7 +1125,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                         
                         // Clear ALL cached search state for final retry
-                        pThis->clear_artwork();
+                        // DON'T clear artwork - keep existing artwork visible during stream transitions
                         
                         // Force bypass of search cache
                         {
@@ -1157,7 +1143,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                         
                         // Clear ALL cached search state for final retry
-                        pThis->clear_artwork();
+                        // DON'T clear artwork - keep existing artwork visible during stream transitions
                         
                         // Force bypass of search cache
                         {
@@ -1330,6 +1316,8 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
     FillRect(hdc, &clientRect, bgBrush);
     DeleteObject(bgBrush);
     
+    // ALWAYS show artwork if we have any bitmap, regardless of search state
+    // This ensures smooth transitions without blank screens
     if (m_artwork_bitmap) {
         // Get bitmap dimensions
         BITMAP bm;
@@ -1397,10 +1385,15 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
             DeleteDC(memDC);
         }
     } else {
-        // Draw status text
-        SetBkColor(hdc, bg_color);
-        SetTextColor(hdc, text_color);
-        DrawTextA(hdc, m_status_text.c_str(), -1, &clientRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        // Never show blank screen - always keep the last artwork visible
+        // If no artwork exists, show a subtle placeholder instead of blank screen
+        if (!m_status_text.is_empty()) {
+            // Only show status text if we have something meaningful to display
+            SetBkColor(hdc, bg_color);
+            SetTextColor(hdc, text_color);
+            DrawTextA(hdc, m_status_text.c_str(), -1, &clientRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        // If no status text and no artwork, just show the background color (no blank screen)
     }
 }
 
@@ -3224,7 +3217,7 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
     
     // Keep reference to old bitmap to avoid white flash
     HBITMAP old_bitmap = m_artwork_bitmap;
-    m_artwork_bitmap = NULL;  // Clear the member variable
+    // DON'T clear m_artwork_bitmap yet - keep old artwork visible until new one is ready
     
     // Create memory stream from data using fixed memory (more efficient)
     IStream* pStream = NULL;
@@ -3380,11 +3373,55 @@ void artwork_ui_element::queue_image_for_processing(const std::vector<BYTE>& ima
 // Clear artwork and reset search state
 void artwork_ui_element::clear_artwork() {
     
-    // Clear artwork bitmap
-    if (m_artwork_bitmap) {
-        DeleteObject(m_artwork_bitmap);
-        m_artwork_bitmap = NULL;
+    // DON'T clear artwork bitmap during transitions - only clear search state
+    // The bitmap will be replaced when new artwork loads
+    // This prevents blank screens during stream transitions
+    
+    // Only clear bitmap when playback actually stops (not during transitions)
+    // if (m_artwork_bitmap) {
+    //     DeleteObject(m_artwork_bitmap);
+    //     m_artwork_bitmap = NULL;
+    // }
+    
+    // Reset artwork found flag and search state
+    {
+        std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
+        m_artwork_found = false;
+        m_current_search_key = "";
+        m_last_search_key = "";
     }
+    
+    // Clear pending image data
+    {
+        std::lock_guard<std::mutex> lock(m_image_data_mutex);
+        m_pending_image_data.clear();
+    }
+    
+    // Clear search metadata cache
+    m_last_search_artist = "";
+    m_last_search_title = "";
+    m_current_priority_position = 0;
+    
+    // Reset search timestamp to allow immediate new search
+    m_last_search_timestamp = 0;
+    
+    // Update status text
+    m_status_text = "";
+    
+    // Invalidate window to redraw
+    if (m_hWnd) {
+        InvalidateRect(m_hWnd, NULL, TRUE);
+    }
+}
+
+// Actually clear the bitmap - only used when playback stops
+void artwork_ui_element::clear_artwork_bitmap() {
+    // NEVER clear artwork bitmap - keep last artwork visible always
+    // This prevents blank screens in ALL scenarios including playback stop
+    // if (m_artwork_bitmap) {
+    //     DeleteObject(m_artwork_bitmap);
+    //     m_artwork_bitmap = NULL;
+    // }
     
     // Reset artwork found flag and search state
     {
@@ -3438,7 +3475,7 @@ public:
     void on_playback_stop(play_control::t_stop_reason p_reason) override {
         // Clear artwork from all UI elements when playback stops
         for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
-            g_artwork_ui_elements[i]->clear_artwork();
+            g_artwork_ui_elements[i]->clear_artwork_bitmap();  // Actually clear bitmap on stop
             g_artwork_ui_elements[i]->m_status_text = "";
             g_artwork_ui_elements[i]->m_current_track.release();
             g_artwork_ui_elements[i]->m_playback_stopped = true;  // Mark playback as stopped
