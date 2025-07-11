@@ -1,11 +1,18 @@
 #include "stdafx.h"
 #include "resource.h"
+#include <commdlg.h>  // For file save dialog
+#include <shlobj.h>   // For folder browser dialog (still needed for directory extraction)
+
+// Forward declarations no longer needed - using simpler logging approach
 
 // Reference to configuration variables defined in sdk_main.cpp
 extern cfg_bool cfg_enable_itunes, cfg_enable_discogs, cfg_enable_lastfm, cfg_enable_deezer, cfg_enable_musicbrainz;
 extern cfg_string cfg_discogs_key, cfg_discogs_consumer_key, cfg_discogs_consumer_secret, cfg_lastfm_key;
-extern cfg_int cfg_priority_1, cfg_priority_2, cfg_priority_3, cfg_priority_4, cfg_priority_5;
+extern cfg_int cfg_search_order_1, cfg_search_order_2, cfg_search_order_3, cfg_search_order_4, cfg_search_order_5;
 extern cfg_int cfg_stream_delay;
+
+// Reference to current artwork source for logging
+extern pfc::string8 g_current_artwork_source;
 
 // External declaration from sdk_main.cpp
 extern HINSTANCE g_hIns;
@@ -24,6 +31,7 @@ private:
     preferences_page_callback::ptr m_callback;
     bool m_has_changes;
     fb2k::CCoreDarkModeHooks m_darkMode;
+    static pfc::string8 s_log_directory;  // Static to persist across instances
     
 public:
     artwork_preferences(preferences_page_callback::ptr callback);
@@ -43,7 +51,11 @@ private:
     void apply_settings();
     void reset_settings();
     void update_controls();
+    void write_log();
 };
+
+// Initialize static variable
+pfc::string8 artwork_preferences::s_log_directory;
 
 artwork_preferences::artwork_preferences(preferences_page_callback::ptr callback) 
     : m_hwnd(nullptr), m_callback(callback), m_has_changes(false) {
@@ -81,6 +93,18 @@ static const char* get_api_name(int api_index) {
         case 2: return "Last.fm";
         case 3: return "MusicBrainz";
         case 4: return "Discogs";
+        default: return "Unknown";
+    }
+}
+
+// Helper to get search order position name
+static const char* get_position_name(int position) {
+    switch (position) {
+        case 0: return "1st";
+        case 1: return "2nd"; 
+        case 2: return "3rd";
+        case 3: return "4th";
+        case 4: return "5th";
         default: return "Unknown";
     }
 }
@@ -137,23 +161,13 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_4));
         populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_5));
         
-        // Set current priority selections
-        // Convert from "What position is API X in?" to "Which API is at position Y?"
-        int apis_at_position[5] = {-1, -1, -1, -1, -1};
-        
-        // Map each API to its position
-        if (cfg_priority_2 >= 0 && cfg_priority_2 < 5) apis_at_position[cfg_priority_2] = 0; // iTunes
-        if (cfg_priority_1 >= 0 && cfg_priority_1 < 5) apis_at_position[cfg_priority_1] = 1; // Deezer
-        if (cfg_priority_3 >= 0 && cfg_priority_3 < 5) apis_at_position[cfg_priority_3] = 2; // LastFm
-        if (cfg_priority_4 >= 0 && cfg_priority_4 < 5) apis_at_position[cfg_priority_4] = 3; // MusicBrainz
-        if (cfg_priority_5 >= 0 && cfg_priority_5 < 5) apis_at_position[cfg_priority_5] = 4; // Discogs
-        
-        // Set dropdown selections
-        if (apis_at_position[0] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_1), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[0]), 0);
-        if (apis_at_position[1] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_2), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[1]), 0);
-        if (apis_at_position[2] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_3), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[2]), 0);
-        if (apis_at_position[3] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_4), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[3]), 0);
-        if (apis_at_position[4] >= 0) SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_5), CB_SETCURSEL, api_value_to_dropdown_index(apis_at_position[4]), 0);
+        // Set current search order selections (NEW SIMPLE SYSTEM)
+        // Each dropdown shows which API is at that position
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_1), CB_SETCURSEL, cfg_search_order_1, 0);  // 1st choice
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_2), CB_SETCURSEL, cfg_search_order_2, 0);  // 2nd choice
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_3), CB_SETCURSEL, cfg_search_order_3, 0);  // 3rd choice
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_4), CB_SETCURSEL, cfg_search_order_4, 0);  // 4th choice
+        SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_5), CB_SETCURSEL, cfg_search_order_5, 0);  // 5th choice
         
         // Set stream delay value
         SetDlgItemInt(hwnd, IDC_STREAM_DELAY, cfg_stream_delay, FALSE);
@@ -192,6 +206,8 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
                                                   LOWORD(wp) == IDC_PRIORITY_4 ||
                                                   LOWORD(wp) == IDC_PRIORITY_5)) {
             p_this->on_changed();
+        } else if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_WRITE_LOG) {
+            p_this->write_log();
         }
         break;
         
@@ -243,27 +259,18 @@ bool artwork_preferences::has_changed() {
     GetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, buffer, sizeof(buffer));
     bool lastfm_key_changed = strcmp(buffer, cfg_lastfm_key) != 0;
     
-    // Check priority comboboxes
-    // Convert current UI state to config format and compare
-    int current_positions[5] = {-1, -1, -1, -1, -1}; // iTunes, Deezer, LastFm, MusicBrainz, Discogs
+    // Check search order comboboxes (NEW SIMPLE SYSTEM)
+    int current_order_1 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0);
+    int current_order_2 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0);
+    int current_order_3 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0);
+    int current_order_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);
+    int current_order_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);
     
-    int current_api_at_pos0 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0));
-    int current_api_at_pos1 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0));
-    int current_api_at_pos2 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0));
-    int current_api_at_pos3 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0));
-    int current_api_at_pos4 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0));
-    
-    if (current_api_at_pos0 >= 0 && current_api_at_pos0 < 5) current_positions[current_api_at_pos0] = 0;
-    if (current_api_at_pos1 >= 0 && current_api_at_pos1 < 5) current_positions[current_api_at_pos1] = 1;
-    if (current_api_at_pos2 >= 0 && current_api_at_pos2 < 5) current_positions[current_api_at_pos2] = 2;
-    if (current_api_at_pos3 >= 0 && current_api_at_pos3 < 5) current_positions[current_api_at_pos3] = 3;
-    if (current_api_at_pos4 >= 0 && current_api_at_pos4 < 5) current_positions[current_api_at_pos4] = 4;
-    
-    bool priority1_changed = current_positions[1] != cfg_priority_1; // Deezer
-    bool priority2_changed = current_positions[0] != cfg_priority_2; // iTunes
-    bool priority3_changed = current_positions[2] != cfg_priority_3; // LastFm
-    bool priority4_changed = current_positions[3] != cfg_priority_4; // MusicBrainz
-    bool priority5_changed = current_positions[4] != cfg_priority_5; // Discogs
+    bool order1_changed = current_order_1 != cfg_search_order_1;
+    bool order2_changed = current_order_2 != cfg_search_order_2;
+    bool order3_changed = current_order_3 != cfg_search_order_3;
+    bool order4_changed = current_order_4 != cfg_search_order_4;
+    bool order5_changed = current_order_5 != cfg_search_order_5;
     
     // Check stream delay
     BOOL success;
@@ -273,7 +280,7 @@ bool artwork_preferences::has_changed() {
     return itunes_changed || discogs_changed || lastfm_changed || deezer_changed || musicbrainz_changed ||
            discogs_key_changed || discogs_consumer_key_changed || 
            discogs_consumer_secret_changed || lastfm_key_changed ||
-           priority1_changed || priority2_changed || priority3_changed || priority4_changed || priority5_changed ||
+           order1_changed || order2_changed || order3_changed || order4_changed || order5_changed ||
            stream_delay_changed;
 }
 
@@ -299,32 +306,13 @@ void artwork_preferences::apply_settings() {
         GetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, buffer, sizeof(buffer));
         cfg_lastfm_key = buffer;
         
-        // Save priority combobox selections 
-        // The UI shows: Priority 1 = "Which API is first?", Priority 2 = "Which API is second?", etc.
-        // We need to convert this to: cfg_priority_X = "What position is API X in?"
-        
-        int priority_positions[5] = {-1, -1, -1, -1, -1}; // iTunes, Deezer, LastFm, MusicBrainz, Discogs
-        
-        // Get which API is selected for each priority position
-        int api_at_pos0 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0));
-        int api_at_pos1 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0));
-        int api_at_pos2 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0));
-        int api_at_pos3 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0));
-        int api_at_pos4 = dropdown_index_to_api_value(SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0));
-        
-        // Set the position for each API
-        if (api_at_pos0 >= 0 && api_at_pos0 < 5) priority_positions[api_at_pos0] = 0;
-        if (api_at_pos1 >= 0 && api_at_pos1 < 5) priority_positions[api_at_pos1] = 1;
-        if (api_at_pos2 >= 0 && api_at_pos2 < 5) priority_positions[api_at_pos2] = 2;
-        if (api_at_pos3 >= 0 && api_at_pos3 < 5) priority_positions[api_at_pos3] = 3;
-        if (api_at_pos4 >= 0 && api_at_pos4 < 5) priority_positions[api_at_pos4] = 4;
-        
-        // Save to config variables
-        cfg_priority_2 = priority_positions[0]; // iTunes position
-        cfg_priority_1 = priority_positions[1]; // Deezer position  
-        cfg_priority_3 = priority_positions[2]; // LastFm position
-        cfg_priority_4 = priority_positions[3]; // MusicBrainz position
-        cfg_priority_5 = priority_positions[4]; // Discogs position
+        // Save search order selections (NEW SIMPLE SYSTEM)
+        // Each dropdown directly represents the search position
+        cfg_search_order_1 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0);  // 1st choice
+        cfg_search_order_2 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0);  // 2nd choice
+        cfg_search_order_3 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0);  // 3rd choice
+        cfg_search_order_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);  // 4th choice
+        cfg_search_order_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);  // 5th choice
         
         // Save stream delay
         BOOL success;
@@ -349,18 +337,134 @@ void artwork_preferences::reset_settings() {
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_SECRET, "");
         SetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, "");
         
-        // Reset priority comboboxes to default order
-        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_SETCURSEL, 1, 0);  // Deezer
-        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_SETCURSEL, 0, 0);  // iTunes
-        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_SETCURSEL, 2, 0);  // Last.fm
-        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_SETCURSEL, 3, 0);  // MusicBrainz
-        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_SETCURSEL, 4, 0);  // Discogs
+        // Reset search order to default order (NEW SIMPLE SYSTEM)
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_SETCURSEL, 1, 0);  // 1st: Deezer
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_SETCURSEL, 0, 0);  // 2nd: iTunes
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_SETCURSEL, 2, 0);  // 3rd: Last.fm
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_SETCURSEL, 3, 0);  // 4th: MusicBrainz
+        SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_SETCURSEL, 4, 0);  // 5th: Discogs
         
         // Reset stream delay to default (1 second)
         SetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, 1, FALSE);
         SendMessage(GetDlgItem(m_hwnd, IDC_STREAM_DELAY_SPIN), UDM_SETPOS, 0, 1);
         
         update_controls();
+    }
+}
+
+void artwork_preferences::write_log() {
+    if (!m_hwnd) return;
+    
+    // Generate unique filename with timestamp
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    pfc::string8 filename;
+    filename << "foo_artwork_debug_" 
+             << pfc::format_uint(st.wYear, 4) << "-"
+             << pfc::format_uint(st.wMonth, 2) << "-" 
+             << pfc::format_uint(st.wDay, 2) << "_"
+             << pfc::format_uint(st.wHour, 2) << "-"
+             << pfc::format_uint(st.wMinute, 2) << "-"
+             << pfc::format_uint(st.wSecond, 2) << ".log";
+    
+    pfc::string8 log_file_path;
+    
+    // Show file save dialog
+    OPENFILENAMEA ofn = {};
+    char file_path[MAX_PATH] = {};
+    
+    // Set default filename
+    strcpy_s(file_path, sizeof(file_path), filename.c_str());
+    
+    ofn.lStructSize = sizeof(OPENFILENAMEA);
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFile = file_path;
+    ofn.nMaxFile = sizeof(file_path);
+    ofn.lpstrFilter = "Log Files (*.log)\0*.log\0All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFileTitle = nullptr;
+    ofn.nMaxFileTitle = 0;
+    ofn.lpstrInitialDir = s_log_directory.is_empty() ? nullptr : s_log_directory.c_str();
+    ofn.lpstrTitle = "Save Debug Log";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
+    ofn.lpstrDefExt = "log";
+    
+    if (!GetSaveFileNameA(&ofn)) {
+        return; // User cancelled
+    }
+    
+    log_file_path = file_path;
+    
+    // Remember the directory for future saves
+    char* last_slash = strrchr(file_path, '\\');
+    if (last_slash) {
+        *last_slash = '\0';
+        s_log_directory = file_path;
+    }
+    
+    // Create log content with current settings
+    pfc::string8 log_content;
+    log_content << "foo_artwork Debug Log - " << pfc::format_time(filetimestamp_from_system_timer()) << "\n\n";
+    
+    // API Services status
+    log_content << "=== API Services ===\n";
+    log_content << "iTunes: " << (cfg_enable_itunes ? "Enabled" : "Disabled") << "\n";
+    log_content << "Deezer: " << (cfg_enable_deezer ? "Enabled" : "Disabled") << "\n";
+    log_content << "Last.fm: " << (cfg_enable_lastfm ? "Enabled" : "Disabled") << "\n";
+    log_content << "MusicBrainz: " << (cfg_enable_musicbrainz ? "Enabled" : "Disabled") << "\n";
+    log_content << "Discogs: " << (cfg_enable_discogs ? "Enabled" : "Disabled") << "\n\n";
+    
+    // API Keys status (don't log actual keys for security)
+    log_content << "=== API Keys ===\n";
+    log_content << "Discogs API Key: " << (cfg_discogs_key.is_empty() ? "Not set" : "Set") << "\n";
+    log_content << "Discogs Consumer Key: " << (cfg_discogs_consumer_key.is_empty() ? "Not set" : "Set") << "\n";
+    log_content << "Discogs Consumer Secret: " << (cfg_discogs_consumer_secret.is_empty() ? "Not set" : "Set") << "\n";
+    log_content << "Last.fm API Key: " << (cfg_lastfm_key.is_empty() ? "Not set" : "Set") << "\n\n";
+    
+    // Current artwork source information
+    log_content << "=== Current Artwork Source ===\n";
+    if (!g_current_artwork_source.is_empty()) {
+        log_content << "Current artwork: " << g_current_artwork_source.c_str() << "\n";
+    } else {
+        log_content << "No artwork currently loaded\n";
+    }
+    log_content << "Note: This shows the source of the most recently loaded artwork.\n\n";
+    
+    // Search order settings (NEW CLEAR SYSTEM)
+    log_content << "=== Search Order ===\n";
+    log_content << "1st choice: " << get_api_name(cfg_search_order_1) << "\n";
+    log_content << "2nd choice: " << get_api_name(cfg_search_order_2) << "\n";
+    log_content << "3rd choice: " << get_api_name(cfg_search_order_3) << "\n";
+    log_content << "4th choice: " << get_api_name(cfg_search_order_4) << "\n";
+    log_content << "5th choice: " << get_api_name(cfg_search_order_5) << "\n\n";
+    
+    // Stream delay
+    log_content << "=== Stream Settings ===\n";
+    log_content << "Stream Delay: " << cfg_stream_delay << " seconds\n\n";
+    
+    // System info
+    log_content << "=== System Information ===\n";
+    log_content << "foobar2000 Version: " << core_version_info::g_get_version_string() << "\n";
+    log_content << "Profile Path: " << core_api::get_profile_path() << "\n";
+    log_content << "Log Directory: " << s_log_directory << "\n";
+    
+    // Write to file
+    try {
+        HANDLE hFile = CreateFileA(log_file_path.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD bytes_written;
+            WriteFile(hFile, log_content.c_str(), static_cast<DWORD>(log_content.length()), &bytes_written, NULL);
+            CloseHandle(hFile);
+            
+            // Show success message with filename
+            pfc::string8 message = "Debug log written to:\n";
+            message << log_file_path;
+            MessageBoxA(m_hwnd, message.c_str(), "Log Written", MB_OK | MB_ICONINFORMATION);
+        } else {
+            MessageBoxA(m_hwnd, "Failed to create log file", "Error", MB_OK | MB_ICONERROR);
+        }
+    } catch (...) {
+        MessageBoxA(m_hwnd, "Error writing log file", "Error", MB_OK | MB_ICONERROR);
     }
 }
 
