@@ -174,7 +174,7 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         
         // Initialize spin control for stream delay
         HWND spin_hwnd = GetDlgItem(hwnd, IDC_STREAM_DELAY_SPIN);
-        SendMessage(spin_hwnd, UDM_SETRANGE, 0, MAKELPARAM(30, 1));  // Range: 1-30 seconds
+        SendMessage(spin_hwnd, UDM_SETRANGE, 0, MAKELPARAM(10, 0));  // Range: 0-10 seconds
         SendMessage(spin_hwnd, UDM_SETPOS, 0, cfg_stream_delay);
         
         p_this->update_controls();
@@ -317,7 +317,7 @@ void artwork_preferences::apply_settings() {
         // Save stream delay
         BOOL success;
         int stream_delay_value = GetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, &success, FALSE);
-        if (success && stream_delay_value >= 1 && stream_delay_value <= 30) {
+        if (success && stream_delay_value >= 0 && stream_delay_value <= 10) {
             cfg_stream_delay = stream_delay_value;
         }
     }
@@ -325,17 +325,30 @@ void artwork_preferences::apply_settings() {
 
 void artwork_preferences::reset_settings() {
     if (m_hwnd) {
-        // Reset to default values
-        CheckDlgButton(m_hwnd, IDC_ENABLE_ITUNES, BST_CHECKED);
-        CheckDlgButton(m_hwnd, IDC_ENABLE_DISCOGS, BST_CHECKED);
-        CheckDlgButton(m_hwnd, IDC_ENABLE_LASTFM, BST_CHECKED);
+        // Reset to default values (only Deezer enabled)
+        CheckDlgButton(m_hwnd, IDC_ENABLE_ITUNES, BST_UNCHECKED);
+        CheckDlgButton(m_hwnd, IDC_ENABLE_DISCOGS, BST_UNCHECKED);
+        CheckDlgButton(m_hwnd, IDC_ENABLE_LASTFM, BST_UNCHECKED);
         CheckDlgButton(m_hwnd, IDC_ENABLE_DEEZER, BST_CHECKED);
-        CheckDlgButton(m_hwnd, IDC_ENABLE_MUSICBRAINZ, BST_CHECKED);
+        CheckDlgButton(m_hwnd, IDC_ENABLE_MUSICBRAINZ, BST_UNCHECKED);
+        
+        // Actually apply the reset values to the configuration variables
+        cfg_enable_itunes = false;
+        cfg_enable_discogs = false;
+        cfg_enable_lastfm = false;
+        cfg_enable_deezer = true;
+        cfg_enable_musicbrainz = false;
         
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_KEY, "");
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_KEY, "");
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_SECRET, "");
         SetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, "");
+        
+        // Actually apply the reset values to configuration variables
+        cfg_discogs_key = "";
+        cfg_discogs_consumer_key = "";
+        cfg_discogs_consumer_secret = "";
+        cfg_lastfm_key = "";
         
         // Reset search order to default order (NEW SIMPLE SYSTEM)
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_SETCURSEL, 1, 0);  // 1st: Deezer
@@ -344,9 +357,19 @@ void artwork_preferences::reset_settings() {
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_SETCURSEL, 3, 0);  // 4th: MusicBrainz
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_SETCURSEL, 4, 0);  // 5th: Discogs
         
-        // Reset stream delay to default (1 second)
-        SetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, 1, FALSE);
-        SendMessage(GetDlgItem(m_hwnd, IDC_STREAM_DELAY_SPIN), UDM_SETPOS, 0, 1);
+        // Actually apply the reset search order values
+        cfg_search_order_1 = 1;  // 1st choice: Deezer
+        cfg_search_order_2 = 0;  // 2nd choice: iTunes
+        cfg_search_order_3 = 2;  // 3rd choice: Last.fm
+        cfg_search_order_4 = 3;  // 4th choice: MusicBrainz
+        cfg_search_order_5 = 4;  // 5th choice: Discogs
+        
+        // Reset stream delay to default (0 seconds - no delay)
+        SetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, 0, FALSE);
+        SendMessage(GetDlgItem(m_hwnd, IDC_STREAM_DELAY_SPIN), UDM_SETPOS, 0, 0);
+        
+        // Actually apply the reset stream delay value
+        cfg_stream_delay = 0;
         
         update_controls();
     }
