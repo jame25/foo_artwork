@@ -40,11 +40,14 @@ cfg_bool cfg_fill_mode(guid_cfg_fill_mode, false);  // true = fill window (crop)
 
 // API Priority order (0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs)
 // Default order: Deezer > iTunes > Last.fm > MusicBrainz > Discogs
-cfg_int cfg_priority_1(guid_cfg_priority_1, 1);  // Deezer
-cfg_int cfg_priority_2(guid_cfg_priority_2, 0);  // iTunes  
-cfg_int cfg_priority_3(guid_cfg_priority_3, 2);  // Last.fm
-cfg_int cfg_priority_4(guid_cfg_priority_4, 3);  // MusicBrainz
-cfg_int cfg_priority_5(guid_cfg_priority_5, 4);  // Discogs
+// NEW SIMPLE PRIORITY SYSTEM
+// Each variable represents a search position (1st, 2nd, 3rd, etc.)
+// Values: 0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs
+cfg_int cfg_search_order_1(guid_cfg_priority_1, 1);  // 1st choice: Deezer (default)
+cfg_int cfg_search_order_2(guid_cfg_priority_2, 0);  // 2nd choice: iTunes (default)
+cfg_int cfg_search_order_3(guid_cfg_priority_3, 2);  // 3rd choice: Last.fm (default)
+cfg_int cfg_search_order_4(guid_cfg_priority_4, 3);  // 4th choice: MusicBrainz (default)
+cfg_int cfg_search_order_5(guid_cfg_priority_5, 4);  // 5th choice: Discogs (default)
 
 // Stream delay setting (in seconds, default 1 second)
 cfg_int cfg_stream_delay(guid_cfg_stream_delay, 1);
@@ -74,7 +77,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.1.8",
+    "1.1.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -138,6 +141,9 @@ artwork_manager* artwork_manager::instance = nullptr;
 // Global list to track artwork UI elements
 static pfc::list_t<artwork_ui_element*> g_artwork_ui_elements;
 
+// Global artwork source for logging (accessible from preferences)
+pfc::string8 g_current_artwork_source;
+
 // Artwork initialization handler
 class artwork_init : public initquit {
 private:
@@ -171,28 +177,30 @@ enum class ApiType {
     Discogs = 4
 };
 
-struct ApiPriority {
-    ApiType api;
-    int priority_position;
-};
 
 static std::vector<ApiType> get_api_search_order() {
-    std::vector<ApiPriority> priorities = {
-        {ApiType::Deezer, cfg_priority_1},       
-        {ApiType::iTunes, cfg_priority_2},       
-        {ApiType::LastFm, cfg_priority_3},       
-        {ApiType::MusicBrainz, cfg_priority_4},  
-        {ApiType::Discogs, cfg_priority_5}       
+    // NEW SIMPLE SYSTEM: Direct mapping from search position to API
+    // cfg_search_order_X contains the API index for each position
+    // 0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs
+    std::vector<ApiType> ordered_apis(5);
+    
+    // Convert API indices to ApiType enum values
+    auto index_to_api = [](int index) -> ApiType {
+        switch (index) {
+            case 0: return ApiType::iTunes;
+            case 1: return ApiType::Deezer;
+            case 2: return ApiType::LastFm;
+            case 3: return ApiType::MusicBrainz;
+            case 4: return ApiType::Discogs;
+            default: return ApiType::Deezer; // Fallback
+        }
     };
     
-    
-    // Find which API is assigned to each priority position (1st, 2nd, 3rd, 4th, 5th)
-    std::vector<ApiType> ordered_apis(5);
-    for (const auto& priority : priorities) {
-        if (priority.priority_position >= 0 && priority.priority_position < 5) {
-            ordered_apis[priority.priority_position] = priority.api;
-        }
-    }
+    ordered_apis[0] = index_to_api(cfg_search_order_1);  // 1st choice
+    ordered_apis[1] = index_to_api(cfg_search_order_2);  // 2nd choice
+    ordered_apis[2] = index_to_api(cfg_search_order_3);  // 3rd choice
+    ordered_apis[3] = index_to_api(cfg_search_order_4);  // 4th choice
+    ordered_apis[4] = index_to_api(cfg_search_order_5);  // 5th choice
     
     return ordered_apis;
 }
@@ -219,6 +227,7 @@ public:
     pfc::string8 m_current_search_key;  // Current search in progress
     pfc::string8 m_last_search_artist;  // Cache artist metadata between API searches
     pfc::string8 m_last_search_title;   // Cache title metadata between API searches
+    pfc::string8 m_artwork_source;      // Track source of current artwork (Local, iTunes, Deezer, etc.)
     DWORD m_last_update_timestamp;  // Timestamp for debouncing updates
     DWORD m_last_search_timestamp;  // Timestamp for search cooldown
     metadb_handle_ptr m_last_update_track;  // Track handle for smart debouncing
@@ -228,6 +237,7 @@ public:
     // Thread-safe image data storage
     std::mutex m_image_data_mutex;
     std::vector<BYTE> m_pending_image_data;
+    pfc::string8 m_pending_artwork_source;
     std::mutex m_artwork_found_mutex;  // Protect artwork found flag
     bool m_artwork_found;  // Track whether artwork has been found
     bool m_new_stream_delay_active;  // Track when Timer 9 is active for new stream delay
@@ -243,11 +253,12 @@ private:
     void load_artwork_for_track(metadb_handle_ptr track);
     void load_artwork_for_track_with_metadata(metadb_handle_ptr track, const pfc::string8& artist, const pfc::string8& title);
     void process_downloaded_image_data();  // Process image data on main thread
-    void queue_image_for_processing(const std::vector<BYTE>& image_data);  // Thread-safe image queuing
+    void queue_image_for_processing(const std::vector<BYTE>& image_data, const char* source = "Unknown");  // Thread-safe image queuing
     
 public:
     void clear_artwork();  // Clear search state only (keep bitmap visible)
     void clear_artwork_bitmap();  // Actually clear bitmap (only for playback stop)
+    pfc::string8 get_artwork_source() const { return m_artwork_source; }  // Get current artwork source
     void search_itunes_artwork(metadb_handle_ptr track);
     void search_itunes_background(pfc::string8 artist, pfc::string8 title);
     void search_discogs_artwork(metadb_handle_ptr track);
@@ -287,7 +298,7 @@ public:
     // GUID for our element
     static const GUID g_guid;
     artwork_ui_element(HWND parent, ui_element_config::ptr config, ui_element_instance_callback::ptr callback)
-        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_found(false), m_current_priority_position(0), m_new_stream_delay_active(false), m_playback_stopped(true) {
+        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_source(""), m_artwork_found(false), m_current_priority_position(0), m_new_stream_delay_active(false), m_playback_stopped(true) {
         
         // Remove jarring "No track playing" message
         // m_status_text = "No track playing";
@@ -1530,6 +1541,8 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
                 if (create_bitmap_from_data(image_data)) {
                     complete_artwork_search();
                     m_status_text = "Local artwork loaded";
+                    m_artwork_source = "Local file";
+                    g_current_artwork_source = "Local file";
                     if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
                     return;
                 }
@@ -1897,7 +1910,7 @@ void artwork_ui_element::search_itunes_background(pfc::string8 artist, pfc::stri
                     }
                     
                     // Queue image data for processing on main thread (safer)
-                    queue_image_for_processing(image_data);
+                    queue_image_for_processing(image_data, "iTunes");
                     return;
                 }
             } else {
@@ -1964,7 +1977,7 @@ void artwork_ui_element::search_discogs_background(pfc::string8 artist, pfc::str
                     }
                     
                     // Queue image data for processing on main thread (safer)
-                    queue_image_for_processing(image_data);
+                    queue_image_for_processing(image_data, "Discogs");
                     return;
                 }
             } else {
@@ -2026,7 +2039,7 @@ void artwork_ui_element::search_lastfm_background(pfc::string8 artist, pfc::stri
                     }
                     
                     // Queue image data for processing on main thread (safer)
-                    queue_image_for_processing(image_data);
+                    queue_image_for_processing(image_data, "Last.fm");
                     return;
                 }
             }
@@ -2101,7 +2114,7 @@ void artwork_ui_element::search_deezer_background(pfc::string8 artist, pfc::stri
                     }
                     
                     // Queue image data for processing on main thread (safer)
-                    queue_image_for_processing(image_data);
+                    queue_image_for_processing(image_data, "Deezer");
                     return;
                 }
             }
@@ -2181,7 +2194,7 @@ void artwork_ui_element::search_musicbrainz_background(pfc::string8 artist, pfc:
                         }
                         
                         // Queue image data for processing on main thread (safer)
-                        queue_image_for_processing(image_data);
+                        queue_image_for_processing(image_data, "MusicBrainz");
                         return;
                     }
                 }
@@ -3331,6 +3344,7 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
 // Process downloaded image data on main thread (thread-safe)
 void artwork_ui_element::process_downloaded_image_data() {
     std::vector<BYTE> image_data;
+    pfc::string8 source;
     
     // Thread-safe retrieval of image data
     {
@@ -3339,12 +3353,18 @@ void artwork_ui_element::process_downloaded_image_data() {
             return; // No data to process
         }
         image_data = std::move(m_pending_image_data);
+        source = m_pending_artwork_source;
         m_pending_image_data.clear();
+        m_pending_artwork_source = "";
     }
     
     // Create bitmap from data on main thread (safe for GDI+)
     if (create_bitmap_from_data(image_data)) {
         complete_artwork_search();
+        m_artwork_source = source;  // Store the source of successful artwork
+        g_current_artwork_source = source;  // Update global source for logging
+        m_status_text = "Artwork loaded from ";
+        m_status_text << source;
         InvalidateRect(m_hWnd, NULL, TRUE);
     } else {
         // Bitmap creation failed
@@ -3355,13 +3375,14 @@ void artwork_ui_element::process_downloaded_image_data() {
 }
 
 // Queue image data for processing on main thread (thread-safe)
-void artwork_ui_element::queue_image_for_processing(const std::vector<BYTE>& image_data) {
+void artwork_ui_element::queue_image_for_processing(const std::vector<BYTE>& image_data, const char* source) {
     if (image_data.empty()) return;
     
     // Thread-safe storage of image data
     {
         std::lock_guard<std::mutex> lock(m_image_data_mutex);
         m_pending_image_data = image_data;
+        m_pending_artwork_source = source;
     }
     
     // Signal main thread to process the data
