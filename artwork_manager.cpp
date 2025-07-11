@@ -3,6 +3,7 @@
 #include "preferences.h"
 #include <wininet.h>
 #include <shlwapi.h>
+#include <shlobj.h>
 
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "shlwapi.lib")
@@ -20,7 +21,8 @@ extern cfg_string cfg_lastfm_key;
 void artwork_manager::get_artwork_async(metadb_handle_ptr track, 
                                         artwork_result& result) {
     // Get track metadata
-    const file_info* info = &track->get_info_ref();
+    metadb_info_container::ptr info_container = track->get_info_ref();
+    const file_info* info = &info_container->info();
     pfc::string8 artist, album, file_path;
     
     if (!info->meta_get("ARTIST", 0)) {
