@@ -49,8 +49,8 @@ cfg_int cfg_search_order_3(guid_cfg_priority_3, 2);  // 3rd choice: Last.fm (def
 cfg_int cfg_search_order_4(guid_cfg_priority_4, 3);  // 4th choice: MusicBrainz (default)
 cfg_int cfg_search_order_5(guid_cfg_priority_5, 4);  // 5th choice: Discogs (default)
 
-// Stream delay setting (in seconds, default 1 second)
-cfg_int cfg_stream_delay(guid_cfg_stream_delay, 1);
+// Stream delay setting (in seconds, default 0 seconds - no delay)
+cfg_int cfg_stream_delay(guid_cfg_stream_delay, 0);
 
 // Global download throttle to prevent system freeze
 static std::mutex g_download_mutex;
@@ -77,7 +77,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.1.9",
+    "1.2.0",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -940,69 +940,8 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
     case WM_USER + 1: // Artwork found
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
-    case WM_USER + 2: // iTunes search failed - try Deezer
-        if (cfg_enable_deezer) {
-            // Use cached metadata from last search - no need to re-extract
-            pThis->search_deezer_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else if (cfg_enable_lastfm) {
-            // Skip Deezer, try Last.fm with cached metadata
-            pThis->search_lastfm_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else if (cfg_enable_musicbrainz) {
-            // Skip Deezer and Last.fm, try MusicBrainz with cached metadata
-            pThis->search_musicbrainz_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else if (cfg_enable_discogs) {
-            // Skip to Discogs with cached metadata
-            pThis->search_discogs_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else {
-            pThis->complete_artwork_search();  // Mark cache as completed
-            pThis->m_status_text = "No artwork found";
-            InvalidateRect(hwnd, NULL, TRUE);
-        }
-        return 0;
-    case WM_USER + 3: // Deezer search failed - try Last.fm
-        if (cfg_enable_lastfm) {
-            // Use cached metadata from last search - no need to re-extract
-            pThis->search_lastfm_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else if (cfg_enable_musicbrainz) {
-            // Skip Last.fm, try MusicBrainz with cached metadata
-            pThis->search_musicbrainz_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else if (cfg_enable_discogs) {
-            // Skip Last.fm and MusicBrainz, go directly to Discogs with cached metadata
-            pThis->search_discogs_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else {
-            pThis->complete_artwork_search();  // Mark cache as completed
-            pThis->m_status_text = "No artwork found";
-            InvalidateRect(hwnd, NULL, TRUE);
-        }
-        return 0;
-    case WM_USER + 4: // Last.fm search failed - try MusicBrainz
-        if (cfg_enable_musicbrainz) {
-            // Use cached metadata from last search - no need to re-extract
-            pThis->search_musicbrainz_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else if (cfg_enable_discogs) {
-            // Skip MusicBrainz, go directly to Discogs with cached metadata
-            pThis->search_discogs_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else {
-            pThis->complete_artwork_search();  // Mark cache as completed
-            pThis->m_status_text = "No artwork found";
-            InvalidateRect(hwnd, NULL, TRUE);
-        }
-        return 0;
-    case WM_USER + 5: // Discogs search failed
-        pThis->complete_artwork_search();  // Mark cache as completed
-        pThis->m_status_text = "No artwork found";
-        InvalidateRect(hwnd, NULL, TRUE);
-        return 0;
-    case WM_USER + 7: // MusicBrainz search failed - try Discogs
-        if (cfg_enable_discogs) {
-            // Use cached metadata from last search - no need to re-extract
-            pThis->search_discogs_background(pThis->m_last_search_artist, pThis->m_last_search_title);
-        } else {
-            pThis->complete_artwork_search();  // Mark cache as completed
-            pThis->m_status_text = "No artwork found";
-            InvalidateRect(hwnd, NULL, TRUE);
-        }
-        return 0;
+    // OLD MESSAGE HANDLERS REMOVED - Now using priority-based search system
+    // OLD WM_USER + 7 HANDLER REMOVED - Now using priority-based search system
     case WM_USER + 6: // Create bitmap from downloaded data
         pThis->process_downloaded_image_data();
         return 0;
@@ -2085,13 +2024,21 @@ void artwork_ui_element::search_deezer_background(pfc::string8 artist, pfc::stri
         if (artist.is_empty()) {
             search_query = title;
         } else {
-            search_query = artist + " " + title;
+            // Clean metadata for better search results
+            pfc::string8 clean_artist = clean_metadata_text(artist);
+            pfc::string8 clean_title = clean_metadata_text(title);
+            
+            // Try artist + track format for better matching
+            search_query = clean_artist + " " + clean_title;
         }
         pfc::string8 encoded_search = url_encode(search_query);
         
         pfc::string8 search_url = "https://api.deezer.com/search/track?q=";
         search_url << encoded_search << "&limit=10";
         
+        // Update status
+        m_status_text = "Searching Deezer...";
+        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
         
         // Make HTTP request
         pfc::string8 response;
@@ -2100,6 +2047,7 @@ void artwork_ui_element::search_deezer_background(pfc::string8 artist, pfc::stri
             // Parse JSON response and extract artwork URL
             pfc::string8 artwork_url;
             if (parse_deezer_response(response, artwork_url)) {
+                
                 // Download the artwork image
                 std::vector<BYTE> image_data;
                 if (download_image(artwork_url, image_data)) {
@@ -2122,6 +2070,7 @@ void artwork_ui_element::search_deezer_background(pfc::string8 artist, pfc::stri
         
         // Failed to get artwork - continue fallback chain
         m_status_text = "Deezer search failed";
+        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
         search_next_api_in_priority(m_last_search_artist, m_last_search_title, m_current_priority_position + 1);
         
     } catch (...) {
@@ -3699,6 +3648,11 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
         // Store current position for fallback
         m_current_priority_position = current_position;
         
+        // Debug: Update status to show which API is being tried
+        pfc::string8 debug_status = "Searching ";
+        debug_status << api_name << " (priority " << (current_position + 1) << ")...";
+        m_status_text = debug_status;
+        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
         
         // Start the API search
         switch (current_api) {
