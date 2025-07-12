@@ -34,16 +34,19 @@
 // GDI+ namespace usage
 using namespace Gdiplus;
 
-// Include the full foobar2000 SDK
-#include "lib/foobar2000_SDK/foobar2000/SDK/foobar2000.h"
-#include "lib/foobar2000_SDK/foobar2000/SDK/playback_control.h"
-#include "lib/foobar2000_SDK/foobar2000/SDK/play_callback.h"
-#include "lib/foobar2000_SDK/foobar2000/SDK/metadb_handle.h"
-#include "lib/foobar2000_SDK/foobar2000/SDK/file_info.h"
-#include "lib/foobar2000_SDK/foobar2000/SDK/file_info_impl.h"
-#include "lib/foobar2000_SDK/foobar2000/SDK/album_art.h"
-#include "lib/foobar2000_SDK/foobar2000/SDK/coreDarkMode.h"
-#include "lib/foobar2000_SDK/foobar2000/SDK/titleformat.h"
-#include "lib/foobar2000_SDK/foobar2000/SDK/ui_element.h"
+// Define CUI support - enables Columns UI integration
+#define COLUMNS_UI_AVAILABLE
+
+// Include the foobar2000 SDK from CUI (which includes the same SDK)
+#include "columns_ui/foobar2000/SDK/foobar2000.h"
+#include "columns_ui/foobar2000/SDK/playback_control.h"
+#include "columns_ui/foobar2000/SDK/play_callback.h"
+#include "columns_ui/foobar2000/SDK/metadb_handle.h"
+#include "columns_ui/foobar2000/SDK/file_info.h"
+#include "columns_ui/foobar2000/SDK/file_info_impl.h"
+#include "columns_ui/foobar2000/SDK/album_art.h"
+#include "columns_ui/foobar2000/SDK/coreDarkMode.h"
+#include "columns_ui/foobar2000/SDK/titleformat.h"
+#include "columns_ui/foobar2000/SDK/ui_element.h"
 
 #include "resource.h"
