@@ -25,6 +25,7 @@ static constexpr GUID guid_cfg_priority_3 = { 0x12345684, 0x1234, 0x1234, { 0x12
 static constexpr GUID guid_cfg_priority_4 = { 0x12345685, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfd } };
 static constexpr GUID guid_cfg_priority_5 = { 0x12345686, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
 static constexpr GUID guid_cfg_stream_delay = { 0x12345687, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xff } };
+static constexpr GUID guid_cfg_show_osd = { 0x12345688, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
 
 // Configuration variables with default values
 cfg_bool cfg_enable_itunes(guid_cfg_enable_itunes, false);
@@ -52,6 +53,9 @@ cfg_int cfg_search_order_5(guid_cfg_priority_5, 4);  // 5th choice: Discogs (def
 // Stream delay setting (in seconds, default 0 seconds - no delay)
 cfg_int cfg_stream_delay(guid_cfg_stream_delay, 0);
 
+// OSD display setting (default enabled)
+cfg_bool cfg_show_osd(guid_cfg_show_osd, true);
+
 // Global download throttle to prevent system freeze
 static std::mutex g_download_mutex;
 
@@ -77,7 +81,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 // Component version declaration using the proper SDK macro
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.2.0",
+    "1.2.1",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -244,6 +248,16 @@ public:
     bool m_playback_stopped;  // Track when playback is stopped to detect initial connections
     pfc::string8 m_pending_timer_artist;  // Store artist for Timer 9 delayed search
     pfc::string8 m_pending_timer_title;   // Store title for Timer 9 delayed search
+    
+    // OSD (On-Screen Display) for artwork source
+    bool m_osd_visible;           // Whether OSD is currently visible
+    pfc::string8 m_osd_text;      // Text to display in OSD
+    DWORD m_osd_start_time;       // When OSD was shown (GetTickCount)
+    int m_osd_slide_offset;       // Current slide offset for animation (0 = fully visible)
+    int m_last_osd_slide_offset;  // Previous slide offset for optimized repainting
+    static const int OSD_DISPLAY_DURATION = 5000;  // 5 seconds in milliseconds
+    static const int OSD_SLIDE_IN_DURATION = 300;  // 0.3 seconds slide-in animation
+    static const int OSD_SLIDE_OUT_DURATION = 500; // 0.5 seconds slide-out animation
 
 public:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -294,11 +308,16 @@ public:
     pfc::string8 clean_metadata_text(const pfc::string8& text);
     void complete_artwork_search();  // Helper to complete cache management
     
+    // OSD (On-Screen Display) methods
+    void show_osd(const pfc::string8& source_name);
+    void update_osd_animation();
+    void paint_osd(HDC hdc, const RECT& client_rect);
+    
 public:
     // GUID for our element
     static const GUID g_guid;
     artwork_ui_element(HWND parent, ui_element_config::ptr config, ui_element_instance_callback::ptr callback)
-        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_source(""), m_artwork_found(false), m_current_priority_position(0), m_new_stream_delay_active(false), m_playback_stopped(true) {
+        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_source(""), m_artwork_found(false), m_current_priority_position(0), m_new_stream_delay_active(false), m_playback_stopped(true), m_osd_visible(false), m_osd_start_time(0), m_osd_slide_offset(0) {
         
         // Remove jarring "No track playing" message
         // m_status_text = "No track playing";
@@ -1218,6 +1237,8 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                     pThis->m_pending_timer_title = "";
                 }
             }
+        } else if (wParam == 10) {  // Timer ID 10 - OSD animation
+            pThis->update_osd_animation();
         }
         return 0;
     default:
@@ -1344,6 +1365,11 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
             DrawTextA(hdc, m_status_text.c_str(), -1, &clientRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         // If no status text and no artwork, just show the background color (no blank screen)
+    }
+    
+    // Paint OSD overlay (always on top)
+    if (m_osd_visible) {
+        paint_osd(hdc, clientRect);
     }
 }
 
@@ -3314,6 +3340,10 @@ void artwork_ui_element::process_downloaded_image_data() {
         g_current_artwork_source = source;  // Update global source for logging
         m_status_text = "Artwork loaded from ";
         m_status_text << source;
+        
+        // Show OSD with artwork source
+        show_osd(source);
+        
         InvalidateRect(m_hWnd, NULL, TRUE);
     } else {
         // Bitmap creation failed
@@ -3711,6 +3741,316 @@ public:
         return true;
     }
 };
+
+//=============================================================================
+// OSD (On-Screen Display) Implementation
+//=============================================================================
+
+// Show OSD with artwork source information
+void artwork_ui_element::show_osd(const pfc::string8& source_name) {
+    // Check if OSD is enabled in preferences
+    if (!cfg_show_osd) {
+        return;
+    }
+    
+    m_osd_visible = true;
+    m_osd_text = "Artwork from ";
+    m_osd_text << source_name;
+    m_osd_start_time = GetTickCount();
+    m_osd_slide_offset = 200;  // Start fully off-screen to the right
+    m_last_osd_slide_offset = 200;  // Initialize tracking variable
+    
+    // Start OSD animation timer (120 FPS = ~8ms intervals)
+    SetTimer(m_hWnd, 10, 8, NULL);
+    
+    // Force immediate repaint - only invalidate OSD region
+    if (m_hWnd) {
+        RECT client_rect;
+        GetClientRect(m_hWnd, &client_rect);
+        
+        // Calculate initial OSD position for invalidation
+        SIZE text_size;
+        HDC hdc = GetDC(m_hWnd);
+        HFONT old_font = (HFONT)SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT));
+        GetTextExtentPoint32A(hdc, m_osd_text.c_str(), m_osd_text.length(), &text_size);
+        SelectObject(hdc, old_font);
+        ReleaseDC(m_hWnd, hdc);
+        
+        const int padding = 8;
+        const int osd_width = text_size.cx + (padding * 2);
+        const int osd_height = text_size.cy + (padding * 2);
+        
+        // Calculate potential OSD region (include slide area)
+        int osd_x_start = client_rect.right - osd_width - 10;  // Final position
+        int osd_x_end = osd_x_start + 200;  // Starting position (off-screen)
+        int osd_y = client_rect.bottom - osd_height - 10;
+        
+        RECT invalidate_rect = { 
+            (osd_x_start - 5) > 0 ? (osd_x_start - 5) : 0, 
+            (osd_y - 5) > 0 ? (osd_y - 5) : 0, 
+            (osd_x_end + osd_width + 5) < client_rect.right ? (osd_x_end + osd_width + 5) : client_rect.right, 
+            (osd_y + osd_height + 5) < client_rect.bottom ? (osd_y + osd_height + 5) : client_rect.bottom 
+        };
+        
+        InvalidateRect(m_hWnd, &invalidate_rect, TRUE);
+    }
+}
+
+// Update OSD animation state
+void artwork_ui_element::update_osd_animation() {
+    if (!m_osd_visible) {
+        KillTimer(m_hWnd, 10);
+        return;
+    }
+    
+    DWORD current_time = GetTickCount();
+    DWORD elapsed = current_time - m_osd_start_time;
+    
+    // Store previous offset for optimized repainting
+    int previous_offset = m_osd_slide_offset;
+    
+    if (elapsed < OSD_SLIDE_IN_DURATION) {
+        // Slide-in animation: from 200 pixels offset to 0 (fully visible)
+        DWORD slide_progress = elapsed;
+        m_osd_slide_offset = 200 - (int)((slide_progress * 200) / OSD_SLIDE_IN_DURATION);
+        
+    } else if (elapsed < (OSD_SLIDE_IN_DURATION + OSD_DISPLAY_DURATION)) {
+        // Display phase: fully visible (offset = 0)
+        m_osd_slide_offset = 0;
+        
+    } else {
+        // Slide-out animation
+        DWORD slide_out_start = OSD_SLIDE_IN_DURATION + OSD_DISPLAY_DURATION;
+        DWORD slide_elapsed = elapsed - slide_out_start;
+        
+        if (slide_elapsed >= OSD_SLIDE_OUT_DURATION) {
+            // Animation complete - hide OSD
+            m_osd_visible = false;
+            KillTimer(m_hWnd, 10);
+            
+            // Only invalidate the final OSD region to clear it
+            if (m_hWnd) {
+                RECT client_rect;
+                GetClientRect(m_hWnd, &client_rect);
+                
+                // Calculate final OSD position to invalidate
+                SIZE text_size;
+                HDC hdc = GetDC(m_hWnd);
+                HFONT old_font = (HFONT)SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT));
+                GetTextExtentPoint32A(hdc, m_osd_text.c_str(), m_osd_text.length(), &text_size);
+                SelectObject(hdc, old_font);
+                ReleaseDC(m_hWnd, hdc);
+                
+                const int padding = 8;
+                const int osd_width = text_size.cx + (padding * 2);
+                const int osd_height = text_size.cy + (padding * 2);
+                
+                int osd_x = client_rect.right - osd_width - 10 + previous_offset;
+                int osd_y = client_rect.bottom - osd_height - 10;
+                
+                RECT invalidate_rect = { 
+                    (osd_x - 5) > 0 ? (osd_x - 5) : 0, 
+                    (osd_y - 5) > 0 ? (osd_y - 5) : 0, 
+                    (osd_x + osd_width + 5) < client_rect.right ? (osd_x + osd_width + 5) : client_rect.right, 
+                    (osd_y + osd_height + 5) < client_rect.bottom ? (osd_y + osd_height + 5) : client_rect.bottom 
+                };
+                
+                InvalidateRect(m_hWnd, &invalidate_rect, TRUE);
+            }
+            return;
+        } else {
+            // Calculate slide-out offset (0 to 200 pixels)
+            m_osd_slide_offset = (int)((slide_elapsed * 200) / OSD_SLIDE_OUT_DURATION);
+        }
+    }
+    
+    // Only invalidate specific regions if offset has changed
+    if (m_hWnd && previous_offset != m_osd_slide_offset) {
+        RECT client_rect;
+        GetClientRect(m_hWnd, &client_rect);
+        
+        // Calculate text size for positioning
+        SIZE text_size;
+        HDC hdc = GetDC(m_hWnd);
+        HFONT old_font = (HFONT)SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT));
+        GetTextExtentPoint32A(hdc, m_osd_text.c_str(), m_osd_text.length(), &text_size);
+        SelectObject(hdc, old_font);
+        ReleaseDC(m_hWnd, hdc);
+        
+        const int padding = 8;
+        const int osd_width = text_size.cx + (padding * 2);
+        const int osd_height = text_size.cy + (padding * 2);
+        
+        // Calculate both old and new OSD positions
+        int old_osd_x = client_rect.right - osd_width - 10 + previous_offset;
+        int new_osd_x = client_rect.right - osd_width - 10 + m_osd_slide_offset;
+        int osd_y = client_rect.bottom - osd_height - 10;
+        
+        // Create a combined invalidation rectangle that covers both positions
+        int min_x = (old_osd_x < new_osd_x ? old_osd_x : new_osd_x) - 5;  // Extra padding for smooth animation
+        int max_x = ((old_osd_x + osd_width) > (new_osd_x + osd_width) ? (old_osd_x + osd_width) : (new_osd_x + osd_width)) + 5;
+        
+        RECT invalidate_rect = { 
+            min_x > 0 ? min_x : 0, 
+            (osd_y - 5) > 0 ? (osd_y - 5) : 0, 
+            max_x < client_rect.right ? max_x : client_rect.right, 
+            (osd_y + osd_height + 5) < client_rect.bottom ? (osd_y + osd_height + 5) : client_rect.bottom 
+        };
+        
+        // Only invalidate the specific region containing the OSD
+        InvalidateRect(m_hWnd, &invalidate_rect, TRUE);
+    }
+    
+    // Update last offset tracking
+    m_last_osd_slide_offset = m_osd_slide_offset;
+}
+
+// Paint OSD overlay
+void artwork_ui_element::paint_osd(HDC hdc, const RECT& client_rect) {
+    if (!m_osd_visible || m_osd_text.is_empty()) return;
+    
+    // Save the current GDI state
+    int saved_dc = SaveDC(hdc);
+    
+    // Calculate OSD dimensions
+    SIZE text_size;
+    HFONT old_font = (HFONT)SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT));
+    GetTextExtentPoint32A(hdc, m_osd_text.c_str(), m_osd_text.length(), &text_size);
+    
+    const int padding = 8;
+    const int osd_width = text_size.cx + (padding * 2);
+    const int osd_height = text_size.cy + (padding * 2);
+    
+    // Position in bottom-right corner with slide offset
+    int osd_x = client_rect.right - osd_width - 10 + m_osd_slide_offset;
+    int osd_y = client_rect.bottom - osd_height - 10;
+    
+    // Don't draw if completely slid off screen
+    if (osd_x >= client_rect.right) {
+        RestoreDC(hdc, saved_dc);
+        return;
+    }
+    
+    // Create OSD rectangle
+    RECT osd_rect = { osd_x, osd_y, osd_x + osd_width, osd_y + osd_height };
+    
+    // Get foobar2000 UI colors for OSD background
+    COLORREF osd_bg_color, osd_border_color;
+    
+    try {
+        t_ui_color ui_bg_color;
+        
+        // Try to get foobar2000 UI element background color
+        if (m_callback.is_valid() && m_callback->query_color(ui_color_background, ui_bg_color)) {
+            // Use foobar2000 background color but make it slightly darker for OSD
+            BYTE r = GetRValue(ui_bg_color);
+            BYTE g = GetGValue(ui_bg_color);
+            BYTE b = GetBValue(ui_bg_color);
+            
+            // Darken the color by reducing RGB values by 30% for better contrast
+            r = (BYTE)(r * 0.7);
+            g = (BYTE)(g * 0.7);
+            b = (BYTE)(b * 0.7);
+            
+            osd_bg_color = RGB(r, g, b);
+            
+            // Create border color by making it slightly lighter than background
+            r = (BYTE)(r * 1.3 > 255 ? 255 : r * 1.3);
+            g = (BYTE)(g * 1.3 > 255 ? 255 : g * 1.3);
+            b = (BYTE)(b * 1.3 > 255 ? 255 : b * 1.3);
+            
+            osd_border_color = RGB(r, g, b);
+        } else {
+            // Fallback: get standard colors using helper method
+            if (m_callback.is_valid()) {
+                COLORREF base_color = m_callback->query_std_color(ui_color_background);
+                
+                BYTE r = GetRValue(base_color);
+                BYTE g = GetGValue(base_color);
+                BYTE b = GetBValue(base_color);
+                
+                // Darken for background
+                r = (BYTE)(r * 0.7);
+                g = (BYTE)(g * 0.7);
+                b = (BYTE)(b * 0.7);
+                osd_bg_color = RGB(r, g, b);
+                
+                // Lighten for border
+                r = (BYTE)(r * 1.3 > 255 ? 255 : r * 1.3);
+                g = (BYTE)(g * 1.3 > 255 ? 255 : g * 1.3);
+                b = (BYTE)(b * 1.3 > 255 ? 255 : b * 1.3);
+                osd_border_color = RGB(r, g, b);
+            } else {
+                // Final fallback to dark blue
+                osd_bg_color = RGB(30, 50, 100);
+                osd_border_color = RGB(60, 80, 140);
+            }
+        }
+    } catch (...) {
+        // Fallback to dark blue if any foobar2000 API calls fail
+        osd_bg_color = RGB(30, 50, 100);
+        osd_border_color = RGB(60, 80, 140);
+    }
+    
+    // Create background brush and border pen using foobar2000 colors
+    HBRUSH bg_brush = CreateSolidBrush(osd_bg_color);
+    HBRUSH old_brush = (HBRUSH)SelectObject(hdc, bg_brush);
+    
+    // Set pen for border
+    HPEN border_pen = CreatePen(PS_SOLID, 1, osd_border_color);
+    HPEN old_pen = (HPEN)SelectObject(hdc, border_pen);
+    
+    // Draw filled rectangle with border
+    Rectangle(hdc, osd_rect.left, osd_rect.top, osd_rect.right, osd_rect.bottom);
+    
+    // Set text properties
+    SetBkMode(hdc, TRANSPARENT);
+    
+    // Get text color that contrasts well with the background
+    COLORREF text_color;
+    try {
+        t_ui_color ui_text_color;
+        
+        // Try to get foobar2000 UI element text color
+        if (m_callback.is_valid() && m_callback->query_color(ui_color_text, ui_text_color)) {
+            text_color = ui_text_color;
+        } else {
+            // Fallback: get standard text color
+            if (m_callback.is_valid()) {
+                text_color = m_callback->query_std_color(ui_color_text);
+            } else {
+                // Final fallback to white text
+                text_color = RGB(255, 255, 255);
+            }
+        }
+    } catch (...) {
+        // Fallback to white text if any foobar2000 API calls fail
+        text_color = RGB(255, 255, 255);
+    }
+    
+    SetTextColor(hdc, text_color);
+    
+    // Calculate centered text position
+    RECT text_rect = { 
+        osd_rect.left + padding, 
+        osd_rect.top + padding, 
+        osd_rect.right - padding, 
+        osd_rect.bottom - padding 
+    };
+    
+    // Draw the text
+    DrawTextA(hdc, m_osd_text.c_str(), -1, &text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+    
+    // Clean up GDI objects
+    SelectObject(hdc, old_brush);
+    SelectObject(hdc, old_pen);
+    SelectObject(hdc, old_font);
+    DeleteObject(bg_brush);
+    DeleteObject(border_pen);
+    
+    // Restore original DC state
+    RestoreDC(hdc, saved_dc);
+}
 
 // Service factory registrations
 static initquit_factory_t<artwork_init> g_artwork_init_factory;
