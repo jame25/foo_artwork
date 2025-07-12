@@ -20,7 +20,7 @@
 #define IDC_PRIORITY_5                 1015
 #define IDC_STREAM_DELAY               1016
 #define IDC_STREAM_DELAY_SPIN          1017
-#define IDC_WRITE_LOG                  1018
+#define IDC_SHOW_SOURCE                1018
 
 // Next default values for new objects
 // 
