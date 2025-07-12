@@ -98,16 +98,16 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>lib/foobar2000_SDK/foobar2000;lib/foobar2000_SDK;lib/foobar2000_SDK/pfc</AdditionalIncludeDirectories>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>lib/foobar2000_SDK/foobar2000/SDK/Win32/$(Configuration);lib/foobar2000_SDK/pfc/Win32/$(Configuration);lib/foobar2000_SDK/foobar2000/shared/Win32/$(Configuration)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/Win32/foobar2000_SDK;columns_ui/pfc/Win32/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/Win32/columns_ui_sdk</AdditionalLibraryDirectories>
+      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-Win32.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
     <ResourceCompile>
@@ -124,8 +124,8 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>lib/foobar2000_SDK/foobar2000;lib/foobar2000_SDK;lib/foobar2000_SDK/pfc</AdditionalIncludeDirectories>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <StringPooling>true</StringPooling>
@@ -137,8 +137,8 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>lib/foobar2000_SDK/foobar2000/SDK/Win32/$(Configuration);lib/foobar2000_SDK/pfc/Win32/$(Configuration);lib/foobar2000_SDK/foobar2000/shared/Win32/$(Configuration)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/Win32/foobar2000_SDK;columns_ui/pfc/Win32/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/Win32/columns_ui_sdk</AdditionalLibraryDirectories>
+      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-Win32.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
     <ResourceCompile>
@@ -153,16 +153,16 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>lib/foobar2000_SDK/foobar2000;lib/foobar2000_SDK;lib/foobar2000_SDK/pfc</AdditionalIncludeDirectories>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>lib/foobar2000_SDK/foobar2000/SDK/x64/$(Configuration);lib/foobar2000_SDK/pfc/x64/$(Configuration);lib/foobar2000_SDK/foobar2000/shared/x64/$(Configuration)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/x64/foobar2000_SDK;columns_ui/pfc/x64/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/x64/columns_ui_sdk</AdditionalLibraryDirectories>
+      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-x64.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
     <ResourceCompile>
@@ -179,8 +179,8 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>lib/foobar2000_SDK/foobar2000;lib/foobar2000_SDK;lib/foobar2000_SDK/pfc</AdditionalIncludeDirectories>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <StringPooling>true</StringPooling>
@@ -192,8 +192,8 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>lib/foobar2000_SDK/foobar2000/SDK/x64/$(Configuration);lib/foobar2000_SDK/pfc/x64/$(Configuration);lib/foobar2000_SDK/foobar2000/shared/x64/$(Configuration)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/x64/foobar2000_SDK;columns_ui/pfc/x64/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/x64/columns_ui_sdk</AdditionalLibraryDirectories>
+      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-x64.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
     <ResourceCompile>
@@ -226,13 +226,19 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Use</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Use</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="artwork_panel_cui.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
-    <ClCompile Include="lib\foobar2000_SDK\foobar2000\foobar2000_component_client\component_client.cpp">
+    <ClCompile Include="columns_ui\foobar2000\foobar2000_component_client\component_client.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
