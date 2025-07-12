@@ -62,40 +62,58 @@ bool artwork_manager::find_local_artwork(const char* file_path, artwork_result& 
     pfc::string8 directory = get_file_directory(file_path);
     if (directory.is_empty()) return false;
     
-    // Common artwork filenames to search for
-    const char* artwork_names[] = {
-        "cover.jpg", "cover.jpeg", "cover.png",
-        "folder.jpg", "folder.jpeg", "folder.png",
-        "album.jpg", "album.jpeg", "album.png",
-        "front.jpg", "front.jpeg", "front.png",
-        "artwork.jpg", "artwork.jpeg", "artwork.png"
-    };
+    // Search for ANY .jpg, .jpeg, or .png file in the directory
+    pfc::string8 search_pattern = directory;
+    search_pattern << "\\*";
     
-    for (const char* name : artwork_names) {
-        pfc::string8 full_path = directory;
-        full_path << "\\" << name;
-        
-        if (PathFileExistsA(full_path.get_ptr())) {
-            // Try to load the file
-            HANDLE hFile = CreateFileA(full_path.get_ptr(), GENERIC_READ, FILE_SHARE_READ, NULL, 
-                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (hFile != INVALID_HANDLE_VALUE) {
-                DWORD size = GetFileSize(hFile, NULL);
-                if (size > 0 && size < 10 * 1024 * 1024) { // Max 10MB
-                    result.data.set_size(size);
-                    DWORD bytes_read;
-                    if (ReadFile(hFile, result.data.get_ptr(), size, &bytes_read, NULL) && bytes_read == size) {
-                        if (is_valid_image_data(result.data.get_ptr(), size)) {
-                            result.mime_type = detect_mime_type(result.data.get_ptr(), size);
-                            result.success = true;
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(search_pattern.get_ptr(), &findData);
+    
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            // Skip directories
+            if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                continue;
+            }
+            
+            // Check if file has image extension
+            const char* filename = findData.cFileName;
+            const char* ext = strrchr(filename, '.');
+            if (ext) {
+                if (_stricmp(ext, ".jpg") == 0 || 
+                    _stricmp(ext, ".jpeg") == 0 || 
+                    _stricmp(ext, ".png") == 0) {
+                    
+                    pfc::string8 full_path = directory;
+                    full_path << "\\" << filename;
+                    
+                    if (PathFileExistsA(full_path.get_ptr())) {
+                        // Try to load the file
+                        HANDLE hFile = CreateFileA(full_path.get_ptr(), GENERIC_READ, FILE_SHARE_READ, NULL, 
+                                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                        if (hFile != INVALID_HANDLE_VALUE) {
+                            DWORD size = GetFileSize(hFile, NULL);
+                            if (size > 0 && size < 10 * 1024 * 1024) { // Max 10MB
+                                result.data.set_size(size);
+                                DWORD bytes_read;
+                                if (ReadFile(hFile, result.data.get_ptr(), size, &bytes_read, NULL) && bytes_read == size) {
+                                    if (is_valid_image_data(result.data.get_ptr(), size)) {
+                                        result.mime_type = detect_mime_type(result.data.get_ptr(), size);
+                                        result.success = true;
+                                        CloseHandle(hFile);
+                                        FindClose(hFind);
+                                        return true;
+                                    }
+                                }
+                            }
                             CloseHandle(hFile);
-                            return true;
                         }
                     }
                 }
-                CloseHandle(hFile);
             }
-        }
+        } while (FindNextFileA(hFind, &findData));
+        
+        FindClose(hFind);
     }
     
     return false;
