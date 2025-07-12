@@ -86,6 +86,7 @@ extern HBITMAP g_shared_artwork_bitmap;
 // External functions for triggering main component search
 extern void trigger_main_component_search(metadb_handle_ptr track);
 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
+extern void trigger_main_component_local_search(metadb_handle_ptr track);
 
 //=============================================================================
 // CUI Artwork Panel Class Definition - Full Implementation
@@ -454,8 +455,39 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
     try {
         if (data.is_valid() && data->get_size() > 0) {
             OutputDebugStringA("ARTWORK: CUI Panel - Valid artwork data received\n");
-            load_artwork_from_data(data);
-            m_artwork_source = "Album data";
+            
+            // PRIORITY CHECK: For local files, prefer local artwork files over embedded artwork
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            bool should_prefer_local = false;
+            
+            if (pc->get_now_playing(current_track) && current_track.is_valid()) {
+                pfc::string8 file_path = current_track->get_path();
+                bool is_local_file = !(strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
+                
+                if (is_local_file) {
+                    // Check if main component already found local artwork
+                    HBITMAP main_bitmap = get_main_component_artwork_bitmap();
+                    if (main_bitmap) {
+                        OutputDebugStringA("ARTWORK: CUI Panel - Local artwork available, preferring over embedded artwork\n");
+                        should_prefer_local = true;
+                        
+                        if (copy_bitmap_from_main_component(main_bitmap)) {
+                            m_artwork_source = "Local file";
+                            // No OSD for local files - they should load silently
+                            InvalidateRect(m_hWnd, NULL, FALSE);
+                            return;
+                        }
+                    }
+                }
+            }
+            
+            // If no local artwork found or this is a stream, use embedded artwork
+            if (!should_prefer_local) {
+                OutputDebugStringA("ARTWORK: CUI Panel - Using embedded artwork\n");
+                load_artwork_from_data(data);
+                m_artwork_source = "Album data";
+            }
         } else {
             OutputDebugStringA("ARTWORK: CUI Panel - No artwork data received\n");
             // Keep previous artwork visible - don't clear
@@ -482,6 +514,18 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
     if (p_track.is_valid()) {
         OutputDebugStringA("ARTWORK: CUI Panel - New track, checking main component artwork\n");
         
+        // PRIORITY FIX: For local files, immediately trigger main component local artwork search
+        // This ensures local files are found before embedded artwork loads
+        pfc::string8 file_path = p_track->get_path();
+        bool is_local_file = (strstr(file_path.c_str(), "file://") == file_path.c_str()) || 
+                            !(strstr(file_path.c_str(), "://"));
+        
+        if (is_local_file) {
+            OutputDebugStringA("ARTWORK: CUI Panel - Local file detected, triggering immediate local artwork search\n");
+            // Force main component to search for local artwork immediately
+            trigger_main_component_local_search(p_track);
+        }
+        
         // Check if main component's artwork manager has artwork for this track
         HBITMAP main_bitmap = get_main_component_artwork_bitmap();
         
@@ -490,7 +534,7 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
             if (copy_bitmap_from_main_component(main_bitmap)) {
                 m_last_checked_bitmap = main_bitmap;
                 m_artwork_source = "Local file";
-                show_osd("Artwork from " + m_artwork_source);
+                // No OSD for local files - they should load silently
                 InvalidateRect(m_hWnd, NULL, FALSE);
                 return;
             }
@@ -782,6 +826,31 @@ void CUIArtworkPanel::paint_loading(HDC hdc) {
 //=============================================================================
 
 void CUIArtworkPanel::show_osd(const std::string& text) {
+    // DEBUG: Log all OSD calls to trace where they're coming from
+    char debug_msg[512];
+    sprintf_s(debug_msg, "ARTWORK: CUI Panel - show_osd() called with text: '%s'\n", text.c_str());
+    OutputDebugStringA(debug_msg);
+    
+    // Check if this is a local file OSD call that should be blocked
+    if (text.find("Local file") != std::string::npos || 
+        text.find("local") != std::string::npos) {
+        OutputDebugStringA("ARTWORK: CUI Panel - Blocking OSD for local file\n");
+        return;
+    }
+    
+    // Also check if current track is a local file - if so, block all OSD
+    static_api_ptr_t<playback_control> pc;
+    metadb_handle_ptr current_track;
+    if (pc->get_now_playing(current_track) && current_track.is_valid()) {
+        pfc::string8 current_path = current_track->get_path();
+        bool is_current_local = (strstr(current_path.c_str(), "file://") == current_path.c_str()) || 
+                               !(strstr(current_path.c_str(), "://"));
+        if (is_current_local) {
+            OutputDebugStringA("ARTWORK: CUI Panel - Blocking OSD because current track is local file\n");
+            return;
+        }
+    }
+    
     // Check global preference setting first
     if (!cfg_show_osd) return;
     
@@ -1090,6 +1159,7 @@ void CUIArtworkPanel::check_for_new_artwork() {
     OutputDebugStringA(debug_msg);
     
     if (active_bitmap && active_bitmap != m_last_checked_bitmap) {
+        // Determine artwork source first
         if (main_bitmap) {
             OutputDebugStringA("ARTWORK: CUI Panel - New artwork bitmap detected from main component\n");
             m_artwork_source = "Local file";
@@ -1113,7 +1183,10 @@ void CUIArtworkPanel::check_for_new_artwork() {
         
         // Copy the bitmap from main component or standalone search
         if (copy_bitmap_from_main_component(active_bitmap)) {
-            show_osd("Artwork from " + m_artwork_source);
+            // Only show OSD for online sources, not local files
+            if (m_artwork_source != "Local file") {
+                show_osd("Artwork from " + m_artwork_source);
+            }
             InvalidateRect(m_hWnd, NULL, FALSE);
         }
     } else if (!active_bitmap && m_last_checked_bitmap) {
