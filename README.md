@@ -2,7 +2,7 @@
 
 A comprehensive foobar2000 component that displays cover artwork for currently playing tracks and internet radio streams with intelligent API fallback support. 
 
-<img width="742" height="552" alt="foo_artwork" src="https://github.com/user-attachments/assets/281ff94f-dbcc-453a-88d6-00144298b067" />
+<img width="742" height="550" alt="foo_artwork" src="https://github.com/user-attachments/assets/d9a495bc-34d4-48cf-9cb9-684f4cde2a7a" />
 
 ## Features
 
