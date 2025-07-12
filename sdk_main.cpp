@@ -131,7 +131,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.0",
+    "1.3.1",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -357,6 +357,10 @@ public:
     // Priority-based search
     void start_priority_search(const pfc::string8& artist, const pfc::string8& title);
     void search_next_api_in_priority(const pfc::string8& artist, const pfc::string8& title, int current_position = 0);
+    
+    // Local artwork search
+    bool search_local_artwork();
+    bool load_local_artwork_file(const pfc::string8& file_path);
     
     // Helper functions for APIs
     pfc::string8 url_encode(const pfc::string8& str);
@@ -1027,6 +1031,7 @@ bool bridge_search_lastfm(const std::string& artist, const std::string& title);
 bool bridge_search_musicbrainz(const std::string& artist, const std::string& title);
 
 // Bridge helper functions
+bool load_local_artwork_into_shared_bitmap(const pfc::string8& file_path);
 bool parse_deezer_json_response(const std::string& json, std::string& artwork_url);
 bool parse_itunes_json_response(const std::string& json, std::string& artwork_url);
 bool parse_lastfm_json_response(const std::string& json, std::string& artwork_url);
@@ -1127,6 +1132,217 @@ void trigger_main_component_search(metadb_handle_ptr track) {
                 g_artwork_loading = false;
             }
         }).detach();
+    }
+}
+
+// Function to trigger LOCAL artwork search specifically (for CUI panel priority)
+void trigger_main_component_local_search(metadb_handle_ptr track) {
+    OutputDebugStringA("ARTWORK: Triggering local artwork search for CUI panel\n");
+    
+    if (!track.is_valid()) {
+        return;
+    }
+    
+    // Check if this is a local file
+    pfc::string8 file_path = track->get_path();
+    bool is_local_file = !(strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
+    
+    if (!is_local_file) {
+        OutputDebugStringA("ARTWORK: Not a local file, skipping local search\n");
+        return;
+    }
+    
+    // Remove file:// prefix if present
+    if (strstr(file_path.c_str(), "file://") == file_path.c_str()) {
+        file_path = pfc::string8(file_path.c_str() + 7); // Skip "file://"
+        char clean_path_debug[512];
+        sprintf_s(clean_path_debug, "ARTWORK: Cleaned file path: %s\n", file_path.c_str());
+        OutputDebugStringA(clean_path_debug);
+    }
+    
+    // If we have a main UI element, trigger its local search directly
+    if (g_main_ui_element) {
+        OutputDebugStringA("ARTWORK: Using main UI element for local search\n");
+        if (g_main_ui_element->search_local_artwork()) {
+            OutputDebugStringA("ARTWORK: Main UI element found local artwork\n");
+            return;
+        }
+    }
+    
+    // If no main UI element or local search failed, search manually
+    OutputDebugStringA("ARTWORK: Performing manual local artwork search\n");
+    
+    // Get directory of the music file
+    char path_debug[512];
+    sprintf_s(path_debug, "ARTWORK: Processing file path: %s\n", file_path.c_str());
+    OutputDebugStringA(path_debug);
+    
+    pfc::string8 directory;
+    t_size last_slash = file_path.find_last('\\');
+    if (last_slash == pfc_infinite) {
+        last_slash = file_path.find_last('/');
+    }
+    
+    if (last_slash != pfc_infinite) {
+        directory = pfc::string8(file_path.c_str(), last_slash);
+        char dir_debug[512];
+        sprintf_s(dir_debug, "ARTWORK: Extracted directory: %s\n", directory.c_str());
+        OutputDebugStringA(dir_debug);
+    } else {
+        OutputDebugStringA("ARTWORK: Could not extract directory from file path\n");
+        return;
+    }
+    
+    // Search for ANY .jpg, .jpeg, or .png file in the directory
+    pfc::string8 search_pattern = directory;
+    search_pattern << "\\*";
+    
+    char search_debug[512];
+    sprintf_s(search_debug, "ARTWORK: Searching pattern: %s\n", search_pattern.c_str());
+    OutputDebugStringA(search_debug);
+    
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(search_pattern.c_str(), &findData);
+    
+    if (hFind != INVALID_HANDLE_VALUE) {
+        OutputDebugStringA("ARTWORK: Successfully opened directory for search\n");
+        int file_count = 0;
+        do {
+            file_count++;
+            char file_debug[512];
+            sprintf_s(file_debug, "ARTWORK: Found file #%d: %s (attributes: %lu)\n", 
+                     file_count, findData.cFileName, findData.dwFileAttributes);
+            OutputDebugStringA(file_debug);
+            
+            // Skip directories
+            if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                OutputDebugStringA("ARTWORK: Skipping directory\n");
+                continue;
+            }
+            
+            // Check if file has image extension
+            const char* filename = findData.cFileName;
+            const char* ext = strrchr(filename, '.');
+            if (ext) {
+                char ext_debug[256];
+                sprintf_s(ext_debug, "ARTWORK: File extension: %s\n", ext);
+                OutputDebugStringA(ext_debug);
+                
+                if (_stricmp(ext, ".jpg") == 0 || 
+                    _stricmp(ext, ".jpeg") == 0 || 
+                    _stricmp(ext, ".png") == 0) {
+                    
+                    pfc::string8 full_path = directory;
+                    full_path << "\\" << filename;
+                    
+                    char debug_msg[512];
+                    sprintf_s(debug_msg, "ARTWORK: Found image file for CUI: %s\n", full_path.c_str());
+                    OutputDebugStringA(debug_msg);
+                    
+                    // Try to load the file directly into shared bitmap
+                    if (load_local_artwork_into_shared_bitmap(full_path)) {
+                        char success_msg[512];
+                        sprintf_s(success_msg, "ARTWORK: Successfully loaded local artwork: %s\n", filename);
+                        OutputDebugStringA(success_msg);
+                        FindClose(hFind);
+                        return;
+                    } else {
+                        OutputDebugStringA("ARTWORK: Failed to load image file into bitmap\n");
+                    }
+                } else {
+                    OutputDebugStringA("ARTWORK: File extension not an image format\n");
+                }
+            } else {
+                OutputDebugStringA("ARTWORK: File has no extension\n");
+            }
+        } while (FindNextFileA(hFind, &findData));
+        
+        char count_debug[256];
+        sprintf_s(count_debug, "ARTWORK: Processed %d total files in directory\n", file_count);
+        OutputDebugStringA(count_debug);
+        
+        FindClose(hFind);
+    } else {
+        DWORD error = GetLastError();
+        char error_debug[256];
+        sprintf_s(error_debug, "ARTWORK: Failed to open directory, error code: %lu\n", error);
+        OutputDebugStringA(error_debug);
+    }
+    
+    OutputDebugStringA("ARTWORK: No local artwork files found\n");
+}
+
+// Helper function to load local artwork into shared bitmap for CUI panel
+bool load_local_artwork_into_shared_bitmap(const pfc::string8& file_path) {
+    try {
+        // Open file
+        HANDLE hFile = CreateFileA(file_path.c_str(), GENERIC_READ, FILE_SHARE_READ, 
+                                  NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+        
+        DWORD file_size = GetFileSize(hFile, NULL);
+        if (file_size == 0 || file_size > 10 * 1024 * 1024) {  // Max 10MB
+            CloseHandle(hFile);
+            return false;
+        }
+        
+        // Read file data
+        std::vector<BYTE> file_data(file_size);
+        DWORD bytes_read = 0;
+        if (!ReadFile(hFile, file_data.data(), file_size, &bytes_read, NULL) || bytes_read != file_size) {
+            CloseHandle(hFile);
+            return false;
+        }
+        CloseHandle(hFile);
+        
+        // Create GDI+ bitmap from file data
+        HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, file_size);
+        if (!hGlobal) return false;
+        
+        void* pBuffer = GlobalLock(hGlobal);
+        if (!pBuffer) {
+            GlobalFree(hGlobal);
+            return false;
+        }
+        
+        memcpy(pBuffer, file_data.data(), file_size);
+        GlobalUnlock(hGlobal);
+        
+        IStream* pStream = nullptr;
+        if (FAILED(CreateStreamOnHGlobal(hGlobal, TRUE, &pStream))) {
+            GlobalFree(hGlobal);
+            return false;
+        }
+        
+        Gdiplus::Bitmap* pBitmap = new Gdiplus::Bitmap(pStream);
+        pStream->Release();
+        
+        if (!pBitmap || pBitmap->GetLastStatus() != Gdiplus::Ok) {
+            if (pBitmap) delete pBitmap;
+            return false;
+        }
+        
+        // Convert to HBITMAP
+        HBITMAP hBitmap = NULL;
+        if (pBitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBitmap) == Gdiplus::Ok) {
+            // Clean up old shared bitmap
+            if (g_shared_artwork_bitmap) {
+                DeleteObject(g_shared_artwork_bitmap);
+            }
+            
+            // Set new shared bitmap
+            g_shared_artwork_bitmap = hBitmap;
+            delete pBitmap;
+            return true;
+        }
+        
+        delete pBitmap;
+        return false;
+        
+    } catch (...) {
+        return false;
     }
 }
 
@@ -1616,8 +1832,20 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     bool retry_timeout_passed = (current_time - m_last_search_timestamp) > retry_timeout;
     
     // Don't search if already in progress or recently attempted without success
-    if (search_key == m_current_search_key || 
-        (search_key == m_last_search_key && !m_artwork_bitmap && !retry_timeout_passed)) {
+    // EXCEPTION: Always force search when switching from stream to local file
+    bool force_local_search = false;
+    if (!is_internet_stream && m_current_track.is_valid()) {
+        pfc::string8 old_path = m_current_track->get_path();
+        bool old_was_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
+        if (old_was_stream) {
+            force_local_search = true;
+            OutputDebugStringA("ARTWORK: Stream-to-local transition detected, forcing local artwork search\n");
+        }
+    }
+    
+    if (!force_local_search && 
+        (search_key == m_current_search_key || 
+         (search_key == m_last_search_key && !m_artwork_bitmap && !retry_timeout_passed))) {
         return;
     }
     
@@ -1820,13 +2048,25 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     bool retry_timeout_passed = (current_time - m_last_search_timestamp) > retry_timeout;
     
     // Don't search if already in progress or recently attempted without success
-    if (search_key == m_current_search_key || 
-        (search_key == m_last_search_key && !m_artwork_bitmap && !retry_timeout_passed)) {
+    // EXCEPTION: Always force search when switching from stream to local file
+    bool force_local_search = false;
+    if (!is_internet_stream && m_current_track.is_valid()) {
+        pfc::string8 old_path = m_current_track->get_path();
+        bool old_was_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
+        if (old_was_stream) {
+            force_local_search = true;
+            OutputDebugStringA("ARTWORK: Stream-to-local transition detected in metadata function, forcing local artwork search\n");
+        }
+    }
+    
+    if (!force_local_search && 
+        (search_key == m_current_search_key || 
+         (search_key == m_last_search_key && !m_artwork_bitmap && !retry_timeout_passed))) {
         return;
     }
     
-    // Don't override higher priority artwork with lower priority
-    if (search_priority < last_search_priority && !retry_timeout_passed) {
+    // Don't override higher priority artwork with lower priority (unless forcing local search)
+    if (!force_local_search && search_priority < last_search_priority && !retry_timeout_passed) {
         return;
     }
     
@@ -3846,7 +4086,170 @@ void artwork_ui_element::start_priority_search(const pfc::string8& artist, const
         }
     }
     
+    // First, try to find local artwork files before searching online
+    if (search_local_artwork()) {
+        OutputDebugStringA("ARTWORK: Local artwork found, skipping online search\n");
+        return;  // Found local artwork, no need to search online
+    }
+    
+    // No local artwork found, proceed with online API search
     search_next_api_in_priority(artist, title, 0);
+}
+
+// Local artwork search implementation
+bool artwork_ui_element::search_local_artwork() {
+    // Get current track to find file path
+    static_api_ptr_t<playback_control> pc;
+    metadb_handle_ptr current_track;
+    if (!pc->get_now_playing(current_track) || !current_track.is_valid()) {
+        return false;
+    }
+    
+    pfc::string8 file_path = current_track->get_path();
+    
+    // Skip if this is an internet stream
+    if (strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://")) {
+        OutputDebugStringA("ARTWORK: Internet stream detected, skipping local artwork search\n");
+        return false;
+    }
+    
+    // Remove file:// prefix if present
+    if (strstr(file_path.c_str(), "file://") == file_path.c_str()) {
+        file_path = pfc::string8(file_path.c_str() + 7); // Skip "file://"
+        OutputDebugStringA("ARTWORK: Cleaned file:// prefix from path\n");
+    }
+    
+    // Get directory of the music file
+    pfc::string8 directory;
+    t_size last_slash = file_path.find_last('\\');
+    if (last_slash == pfc_infinite) {
+        last_slash = file_path.find_last('/');
+    }
+    
+    if (last_slash != pfc_infinite) {
+        directory = pfc::string8(file_path.c_str(), last_slash);
+    } else {
+        OutputDebugStringA("ARTWORK: Could not extract directory from file path\n");
+        return false;
+    }
+    
+    // Search for ANY .jpg, .jpeg, or .png file in the directory
+    pfc::string8 search_pattern = directory;
+    search_pattern << "\\*";
+    
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(search_pattern.c_str(), &findData);
+    
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            // Skip directories
+            if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                continue;
+            }
+            
+            // Check if file has image extension
+            const char* filename = findData.cFileName;
+            const char* ext = strrchr(filename, '.');
+            if (ext) {
+                if (_stricmp(ext, ".jpg") == 0 || 
+                    _stricmp(ext, ".jpeg") == 0 || 
+                    _stricmp(ext, ".png") == 0) {
+                    
+                    pfc::string8 full_path = directory;
+                    full_path << "\\" << filename;
+                    
+                    char debug_msg[512];
+                    sprintf_s(debug_msg, "ARTWORK: Found image file: %s\n", full_path.c_str());
+                    OutputDebugStringA(debug_msg);
+                    
+                    if (load_local_artwork_file(full_path)) {
+                        char success_msg[512];
+                        sprintf_s(success_msg, "ARTWORK: Successfully loaded local artwork: %s\n", filename);
+                        OutputDebugStringA(success_msg);
+                        m_artwork_source = "Local file";
+                        // No OSD for local files - they should load silently
+                        complete_artwork_search();  // Mark search as complete
+                        if (m_hWnd) InvalidateRect(m_hWnd, NULL, FALSE);
+                        FindClose(hFind);
+                        return true;
+                    }
+                }
+            }
+        } while (FindNextFileA(hFind, &findData));
+        
+        FindClose(hFind);
+    }
+    
+    OutputDebugStringA("ARTWORK: No local artwork files found\n");
+    return false;
+}
+
+// Helper function to load local artwork file
+bool artwork_ui_element::load_local_artwork_file(const pfc::string8& file_path) {
+    try {
+        // Open file
+        HANDLE hFile = CreateFileA(file_path.c_str(), GENERIC_READ, FILE_SHARE_READ, 
+                                  NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile == INVALID_HANDLE_VALUE) {
+            OutputDebugStringA("ARTWORK: Could not open local artwork file\n");
+            return false;
+        }
+        
+        DWORD file_size = GetFileSize(hFile, NULL);
+        if (file_size == 0 || file_size > 10 * 1024 * 1024) {  // Max 10MB
+            CloseHandle(hFile);
+            OutputDebugStringA("ARTWORK: Local artwork file size invalid\n");
+            return false;
+        }
+        
+        // Read file data
+        std::vector<BYTE> file_data(file_size);
+        DWORD bytes_read = 0;
+        if (!ReadFile(hFile, file_data.data(), file_size, &bytes_read, NULL) || bytes_read != file_size) {
+            CloseHandle(hFile);
+            OutputDebugStringA("ARTWORK: Could not read local artwork file\n");
+            return false;
+        }
+        CloseHandle(hFile);
+        
+        // Validate image data
+        if (file_data.size() < 4) {
+            OutputDebugStringA("ARTWORK: Local artwork file too small\n");
+            return false;
+        }
+        
+        // Check image format signatures
+        const BYTE* data = file_data.data();
+        bool valid_format = false;
+        
+        // JPEG
+        if (data[0] == 0xFF && data[1] == 0xD8) valid_format = true;
+        // PNG  
+        else if (data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') valid_format = true;
+        // GIF
+        else if (file_data.size() >= 6 && 
+                (memcmp(data, "GIF87a", 6) == 0 || memcmp(data, "GIF89a", 6) == 0)) valid_format = true;
+        // BMP
+        else if (data[0] == 'B' && data[1] == 'M') valid_format = true;
+        
+        if (!valid_format) {
+            OutputDebugStringA("ARTWORK: Local artwork file is not a valid image format\n");
+            return false;
+        }
+        
+        // Create bitmap from the image data
+        if (create_bitmap_from_data(file_data)) {
+            OutputDebugStringA("ARTWORK: Successfully loaded local artwork file\n");
+            return true;
+        } else {
+            OutputDebugStringA("ARTWORK: Failed to create bitmap from local artwork file\n");
+            return false;
+        }
+        
+    } catch (...) {
+        OutputDebugStringA("ARTWORK: Exception while loading local artwork file\n");
+        return false;
+    }
 }
 
 void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist, const pfc::string8& title, int current_position) {
