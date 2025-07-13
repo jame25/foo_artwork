@@ -140,7 +140,7 @@ private:
     // GDI+ objects for artwork rendering
     std::unique_ptr<Gdiplus::Graphics> m_graphics;
     std::unique_ptr<Gdiplus::Bitmap> m_artwork_bitmap;
-    std::unique_ptr<Gdiplus::Bitmap> m_scaled_bitmap;
+    HBITMAP m_scaled_gdi_bitmap; // GDI bitmap for rendering (like Default UI)
     
     // Artwork state
     std::wstring m_current_artwork_path;
@@ -152,6 +152,8 @@ private:
     bool m_show_osd;
     std::string m_osd_text;
     std::string m_artwork_source; // Track the source of current artwork
+    std::string m_delayed_search_artist; // Store artist for delayed search
+    std::string m_delayed_search_title; // Store title for delayed search
     DWORD m_osd_start_time;
     int m_osd_slide_offset;
     UINT_PTR m_osd_timer_id;
@@ -235,12 +237,17 @@ CUIArtworkPanel::CUIArtworkPanel()
     , m_osd_visible(false)
     , m_artwork_check_timer_id(0)
     , m_last_checked_bitmap(nullptr)
+    , m_scaled_gdi_bitmap(NULL)
 {
     OutputDebugStringA("ARTWORK: CUI Full Artwork Panel Constructor called\n");
     console::print("CUI Full Artwork Panel: Constructor called");
 }
 
 CUIArtworkPanel::~CUIArtworkPanel() {
+    if (m_scaled_gdi_bitmap) {
+        DeleteObject(m_scaled_gdi_bitmap);
+        m_scaled_gdi_bitmap = NULL;
+    }
     cleanup_gdiplus();
 }
 
@@ -428,9 +435,30 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (wParam == m_osd_timer_id) {
             update_osd_animation();
-        } else if (wParam == m_artwork_check_timer_id) {
-            // Check for new artwork from main component
+        } else if (wParam == 102) {
+            // Check for new artwork from main component (timer ID 102)
             check_for_new_artwork();
+        } else if (wParam == 101) {
+            // Stream delay timer fired - now do the delayed search
+            KillTimer(m_hWnd, 101);
+            OutputDebugStringA("ARTWORK: CUI Panel - Stream delay timer fired, starting delayed search\n");
+            
+            // Use stored metadata for delayed search
+            if (!m_delayed_search_title.empty()) {
+                char search_debug[512];
+                sprintf_s(search_debug, "ARTWORK: CUI Panel - Starting delayed search with stored metadata: artist='%s', title='%s'\n", 
+                         m_delayed_search_artist.c_str(), m_delayed_search_title.c_str());
+                OutputDebugStringA(search_debug);
+                
+                extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
+                trigger_main_component_search_with_metadata(m_delayed_search_artist, m_delayed_search_title);
+                
+                // Clear stored metadata
+                m_delayed_search_artist.clear();
+                m_delayed_search_title.clear();
+            } else {
+                OutputDebugStringA("ARTWORK: CUI Panel - No stored metadata for delayed search\n");
+            }
         }
         break;
         
@@ -476,6 +504,8 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
                             m_artwork_source = "Local file";
                             // No OSD for local files - they should load silently
                             InvalidateRect(m_hWnd, NULL, FALSE);
+                            UpdateWindow(m_hWnd); // Force immediate repaint
+                            OutputDebugStringA("ARTWORK: CUI Panel - Local artwork in album_art callback loaded, forced repaint\n");
                             return;
                         }
                     }
@@ -495,12 +525,15 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
         }
         
         InvalidateRect(m_hWnd, NULL, FALSE);
+        UpdateWindow(m_hWnd); // Force immediate repaint
+        OutputDebugStringA("ARTWORK: CUI Panel - on_album_art completed, forced repaint\n");
     } catch (...) {
         // Handle any exceptions gracefully
         OutputDebugStringA("ARTWORK: CUI Panel - Exception in on_album_art\n");
         // Keep previous artwork visible - don't clear
         m_artwork_source = "";
         InvalidateRect(m_hWnd, NULL, FALSE);
+        UpdateWindow(m_hWnd); // Force immediate repaint
     }
 }
 
@@ -524,6 +557,10 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
             OutputDebugStringA("ARTWORK: CUI Panel - Local file detected, triggering immediate local artwork search\n");
             // Force main component to search for local artwork immediately
             trigger_main_component_local_search(p_track);
+        } else {
+            OutputDebugStringA("ARTWORK: CUI Panel - Internet stream detected, respecting main component stream delay\n");
+            // For internet streams, let the main component handle the stream delay
+            // Don't trigger immediate search - the main component will handle it with proper delay
         }
         
         // Check if main component's artwork manager has artwork for this track
@@ -536,6 +573,8 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
                 m_artwork_source = "Local file";
                 // No OSD for local files - they should load silently
                 InvalidateRect(m_hWnd, NULL, FALSE);
+                UpdateWindow(m_hWnd); // Force immediate repaint
+                OutputDebugStringA("ARTWORK: CUI Panel - Local artwork loaded, forced repaint\n");
                 return;
             }
         }
@@ -583,15 +622,76 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     
     // If we have valid metadata and aren't already loading, trigger main component search
     if (!title.empty() && !g_artwork_loading) {
-        OutputDebugStringA("ARTWORK: CUI Panel - Starting search with dynamic metadata\n");
-        
-        // Get current track and call main component search directly
+        // Get current track to check if it's a stream
         auto pc = playback_control::get();
         metadb_handle_ptr current_track;
         if (pc->get_now_playing(current_track) && current_track.is_valid()) {
-            // Call the main component's search function with the metadata
-            extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
-            trigger_main_component_search_with_metadata(artist, title);
+            // Check if this is an internet stream
+            pfc::string8 file_path = current_track->get_path();
+            bool is_internet_stream = (strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
+            
+            if (is_internet_stream) {
+                // For internet streams, respect the stream delay configuration
+                extern cfg_int cfg_stream_delay;
+                int delay_seconds = (int)cfg_stream_delay;
+                
+                char debug_msg[256];
+                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Internet stream dynamic metadata - applying %d second delay\n", delay_seconds);
+                OutputDebugStringA(debug_msg);
+                
+                if (delay_seconds > 0) {
+                    // Clear any previous artwork to respect stream delay
+                    extern HBITMAP g_shared_artwork_bitmap;
+                    if (g_shared_artwork_bitmap) {
+                        DeleteObject(g_shared_artwork_bitmap);
+                        g_shared_artwork_bitmap = NULL;
+                        OutputDebugStringA("ARTWORK: CUI Panel - Cleared previous artwork to respect stream delay\n");
+                    }
+                    
+                    // Store metadata for delayed search
+                    m_delayed_search_artist = artist;
+                    m_delayed_search_title = title;
+                    char stored_debug[512];
+                    sprintf_s(stored_debug, "ARTWORK: CUI Panel - Stored metadata for delayed search: artist='%s', title='%s'\n", 
+                             m_delayed_search_artist.c_str(), m_delayed_search_title.c_str());
+                    OutputDebugStringA(stored_debug);
+                    
+                    // Set a timer to delay the search
+                    if (m_hWnd) {
+                        // Use timer ID 101 for stream delay
+                        SetTimer(m_hWnd, 101, delay_seconds * 1000, NULL);
+                        OutputDebugStringA("ARTWORK: CUI Panel - Set delay timer for internet stream\n");
+                        
+                        // Start polling timer immediately for stream delay case 
+                        // (it will check for artwork but won't find any until delay timer fires)
+                        m_artwork_check_timer_id = 102; // Use a specific timer ID
+                        SetTimer(m_hWnd, m_artwork_check_timer_id, 1000, NULL); // Poll every 1 second for artwork updates
+                        char timer_debug[256];
+                        sprintf_s(timer_debug, "ARTWORK: CUI Panel - Started polling timer for delayed stream, timer_id=%d, hWnd=%p\n", m_artwork_check_timer_id, m_hWnd);
+                        OutputDebugStringA(timer_debug);
+                    }
+                } else {
+                    // No delay configured, search immediately
+                    OutputDebugStringA("ARTWORK: CUI Panel - No delay configured, searching immediately\n");
+                    extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
+                    trigger_main_component_search_with_metadata(artist, title);
+                    
+                    // Start polling for artwork updates after immediate search
+                    if (m_hWnd) {
+                        m_artwork_check_timer_id = 102; // Use a specific timer ID
+                        SetTimer(m_hWnd, m_artwork_check_timer_id, 1000, NULL); // Poll every 1 second for artwork updates
+                        char timer_debug[256];
+                        sprintf_s(timer_debug, "ARTWORK: CUI Panel - Started polling timer for immediate search, timer_id=%d, hWnd=%p\n", m_artwork_check_timer_id, m_hWnd);
+                        OutputDebugStringA(timer_debug);
+                    }
+                }
+                return;
+            } else {
+                OutputDebugStringA("ARTWORK: CUI Panel - Local file dynamic metadata - starting search immediately\n");
+                // For local files, proceed with immediate search
+                extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
+                trigger_main_component_search_with_metadata(artist, title);
+            }
         }
     }
 }
@@ -684,7 +784,10 @@ void CUIArtworkPanel::load_artwork_from_file(const std::wstring& file_path) {
 
 void CUIArtworkPanel::clear_artwork() {
     m_artwork_bitmap.reset();
-    m_scaled_bitmap.reset();
+    if (m_scaled_gdi_bitmap) {
+        DeleteObject(m_scaled_gdi_bitmap);
+        m_scaled_gdi_bitmap = NULL;
+    }
     m_artwork_loaded = false;
     m_current_artwork_path.clear();
     m_current_artwork_source.clear();
@@ -708,82 +811,29 @@ void CUIArtworkPanel::paint_artwork(HDC hdc) {
     FillRect(hdc, &client_rect, bg_brush);
     DeleteObject(bg_brush);
     
-    // Check if we have artwork from main component
-    HBITMAP main_bitmap = get_main_component_artwork_bitmap();
-    if (!main_bitmap && g_shared_artwork_bitmap) {
-        main_bitmap = g_shared_artwork_bitmap;
-    }
-    
-    if (main_bitmap) {
-        // Use GDI for artwork drawing (like Default UI) to prevent OSD flickering
+    // Use our own stored artwork bitmap instead of asking main component each time
+    if (m_artwork_loaded && m_scaled_gdi_bitmap) {
+        // Use pure GDI rendering (like Default UI) to prevent OSD flickering
         BITMAP bm;
-        GetObject(main_bitmap, sizeof(bm), &bm);
+        GetObject(m_scaled_gdi_bitmap, sizeof(bm), &bm);
         
-        // Calculate window and image dimensions
-        int windowWidth = client_rect.right - client_rect.left;
-        int windowHeight = client_rect.bottom - client_rect.top;
+        // Center the artwork
+        int x = (client_rect.right - bm.bmWidth) / 2;
+        int y = (client_rect.bottom - bm.bmHeight) / 2;
         
-        // Avoid division by zero
-        if (windowWidth <= 0 || windowHeight <= 0 || bm.bmWidth <= 0 || bm.bmHeight <= 0) {
-            return;
-        }
-        
-        // Calculate scaling factors for fit mode (like Default UI)
-        double scaleX = (double)windowWidth / bm.bmWidth;
-        double scaleY = (double)windowHeight / bm.bmHeight;
-        double scale = (scaleX < scaleY) ? scaleX : scaleY;  // Fit mode
-        
-        // Apply reasonable scale limits
-        if (scale > 50.0) scale = 50.0;
-        if (scale < 0.01) scale = 0.01;
-        
-        // Calculate final dimensions
-        int scaledWidth = (int)(bm.bmWidth * scale + 0.5);
-        int scaledHeight = (int)(bm.bmHeight * scale + 0.5);
-        
-        // Ensure minimum size
-        if (scaledWidth < 1) scaledWidth = 1;
-        if (scaledHeight < 1) scaledHeight = 1;
-        
-        // Center the image
-        int x = (windowWidth - scaledWidth) / 2;
-        int y = (windowHeight - scaledHeight) / 2;
-        
-        // Create compatible DC and draw using GDI (like Default UI)
+        // Create memory DC for the bitmap
         HDC memDC = CreateCompatibleDC(hdc);
         if (memDC) {
-            HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, main_bitmap);
+            HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, m_scaled_gdi_bitmap);
             
-            // Set stretch mode for better quality
-            SetStretchBltMode(hdc, HALFTONE);
-            SetBrushOrgEx(hdc, 0, 0, NULL);
+            // Use BitBlt for fast, flicker-free drawing (like Default UI)
+            BitBlt(hdc, x, y, bm.bmWidth, bm.bmHeight, memDC, 0, 0, SRCCOPY);
             
-            // Draw the scaled bitmap using GDI
-            StretchBlt(hdc, x, y, scaledWidth, scaledHeight, memDC, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
-            
-            // Clean up
+            // Cleanup
             SelectObject(memDC, oldBitmap);
             DeleteDC(memDC);
         }
-    } else if (m_artwork_loaded && m_scaled_bitmap) {
-        // Fallback: Use GDI+ only if no main component artwork available
-        if (!m_graphics) {
-            m_graphics = std::make_unique<Gdiplus::Graphics>(hdc);
-            m_graphics->SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-            m_graphics->SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        } else {
-            m_graphics.reset(new Gdiplus::Graphics(hdc));
-            m_graphics->SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-            m_graphics->SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        }
-        
-        // Draw scaled artwork
-        int img_width = m_scaled_bitmap->GetWidth();
-        int img_height = m_scaled_bitmap->GetHeight();
-        int x = (client_rect.right - img_width) / 2;
-        int y = (client_rect.bottom - img_height) / 2;
-        
-        m_graphics->DrawImage(m_scaled_bitmap.get(), x, y, img_width, img_height);
+        return; // Early return when artwork is drawn
     } else {
         // Draw "no artwork" message using GDI (like Default UI)
         SetBkMode(hdc, TRANSPARENT);
@@ -954,19 +1004,29 @@ void CUIArtworkPanel::update_osd_animation() {
         int old_osd_x = client_rect.right - osd_width - 10 + previous_offset;
         int new_osd_x = client_rect.right - osd_width - 10 + m_osd_slide_offset;
         
-        // Create combined invalidation rectangle covering both positions (Default UI style)
-        int min_x = (old_osd_x < new_osd_x ? old_osd_x : new_osd_x) - 5;  // Extra padding for smooth animation
-        int max_x = ((old_osd_x + osd_width) > (new_osd_x + osd_width) ? (old_osd_x + osd_width) : (new_osd_x + osd_width)) + 5;
-        
-        RECT invalidate_rect = { 
-            min_x > 0 ? min_x : 0, 
-            (osd_y - 5) > 0 ? (osd_y - 5) : 0, 
-            max_x < client_rect.right ? max_x : client_rect.right, 
-            (osd_y + osd_height + 5) < client_rect.bottom ? (osd_y + osd_height + 5) : client_rect.bottom 
-        };
-        
-        // Only invalidate the specific region containing the OSD (Default UI style)
-        InvalidateRect(m_hWnd, &invalidate_rect, TRUE);
+        // Only invalidate if the OSD is actually visible on screen
+        if (new_osd_x < client_rect.right && osd_y >= 0) {
+            // Create minimal invalidation rectangle - just the exact area that changed
+            int min_x = (old_osd_x < new_osd_x ? old_osd_x : new_osd_x);
+            int max_x = (old_osd_x > new_osd_x ? old_osd_x : new_osd_x) + osd_width;
+            
+            // Clamp to client area bounds
+            min_x = min_x > 0 ? min_x : 0;
+            max_x = max_x < client_rect.right ? max_x : client_rect.right;
+            
+            // Only invalidate if there's actually an area to update
+            if (min_x < max_x) {
+                RECT invalidate_rect = { 
+                    min_x, 
+                    osd_y, 
+                    max_x, 
+                    osd_y + osd_height 
+                };
+                
+                // Simple solution: Just invalidate the minimal exact area
+                InvalidateRect(m_hWnd, &invalidate_rect, FALSE);
+            }
+        }
     }
 }
 
@@ -1115,17 +1175,33 @@ void CUIArtworkPanel::resize_artwork_to_fit() {
     if (new_width < 1) new_width = 1;
     if (new_height < 1) new_height = 1;
     
-    // Create scaled bitmap
+    // Create scaled GDI bitmap (like Default UI)
     try {
-        m_scaled_bitmap = std::make_unique<Gdiplus::Bitmap>(new_width, new_height);
-        if (m_scaled_bitmap && m_scaled_bitmap->GetLastStatus() == Gdiplus::Ok) {
-            Gdiplus::Graphics g(m_scaled_bitmap.get());
+        // Clean up old bitmap
+        if (m_scaled_gdi_bitmap) {
+            DeleteObject(m_scaled_gdi_bitmap);
+            m_scaled_gdi_bitmap = NULL;
+        }
+        
+        // Create temporary GDI+ scaled bitmap for conversion
+        auto temp_scaled = std::make_unique<Gdiplus::Bitmap>(new_width, new_height);
+        if (temp_scaled && temp_scaled->GetLastStatus() == Gdiplus::Ok) {
+            Gdiplus::Graphics g(temp_scaled.get());
             g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
             g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
             g.DrawImage(m_artwork_bitmap.get(), 0, 0, new_width, new_height);
+            
+            // Convert to GDI HBITMAP
+            Gdiplus::Color transparent(0, 0, 0, 0);
+            if (temp_scaled->GetHBITMAP(transparent, &m_scaled_gdi_bitmap) != Gdiplus::Ok) {
+                m_scaled_gdi_bitmap = NULL;
+            }
         }
     } catch (...) {
-        m_scaled_bitmap.reset();
+        if (m_scaled_gdi_bitmap) {
+            DeleteObject(m_scaled_gdi_bitmap);
+            m_scaled_gdi_bitmap = NULL;
+        }
     }
 }
 
@@ -1137,7 +1213,10 @@ void CUIArtworkPanel::initialize_gdiplus() {
 void CUIArtworkPanel::cleanup_gdiplus() {
     m_graphics.reset();
     m_artwork_bitmap.reset();
-    m_scaled_bitmap.reset();
+    if (m_scaled_gdi_bitmap) {
+        DeleteObject(m_scaled_gdi_bitmap);
+        m_scaled_gdi_bitmap = NULL;
+    }
 }
 
 void CUIArtworkPanel::check_for_new_artwork() {
@@ -1153,9 +1232,9 @@ void CUIArtworkPanel::check_for_new_artwork() {
     HBITMAP active_bitmap = main_bitmap ? main_bitmap : shared_bitmap;
     
     // Debug: Always log the current state  
-    char debug_msg[256];
-    sprintf_s(debug_msg, "ARTWORK: CUI Panel - Polling check: main=%p, shared=%p, active=%p, loading=%d\n", 
-             main_bitmap, shared_bitmap, active_bitmap, g_artwork_loading ? 1 : 0);
+    char debug_msg[512];
+    sprintf_s(debug_msg, "ARTWORK: CUI Panel - Polling check: main=%p, shared=%p, active=%p, loading=%d, last_checked=%p, artwork_loaded=%d, scaled_gdi_bitmap=%p\n", 
+             main_bitmap, shared_bitmap, active_bitmap, g_artwork_loading ? 1 : 0, m_last_checked_bitmap, m_artwork_loaded ? 1 : 0, m_scaled_gdi_bitmap);
     OutputDebugStringA(debug_msg);
     
     if (active_bitmap && active_bitmap != m_last_checked_bitmap) {
@@ -1187,7 +1266,19 @@ void CUIArtworkPanel::check_for_new_artwork() {
             if (m_artwork_source != "Local file") {
                 show_osd("Artwork from " + m_artwork_source);
             }
+            char invalidate_debug[256];
+            sprintf_s(invalidate_debug, "ARTWORK: CUI Panel - Calling InvalidateRect, hWnd=%p\n", m_hWnd);
+            OutputDebugStringA(invalidate_debug);
             InvalidateRect(m_hWnd, NULL, FALSE);
+            UpdateWindow(m_hWnd); // Force immediate repaint
+            OutputDebugStringA("ARTWORK: CUI Panel - Called UpdateWindow to force repaint\n");
+            
+            // Stop polling timer since we found artwork
+            if (m_artwork_check_timer_id == 102) {
+                KillTimer(m_hWnd, 102);
+                m_artwork_check_timer_id = 0;
+                OutputDebugStringA("ARTWORK: CUI Panel - Stopped polling timer - artwork found\n");
+            }
         }
     } else if (!active_bitmap && m_last_checked_bitmap) {
         // Main component cleared artwork - but keep previous artwork visible
