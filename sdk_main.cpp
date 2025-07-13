@@ -131,7 +131,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.4",
+    "1.3.5",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -2889,6 +2889,10 @@ bool artwork_ui_element::http_get_request(const pfc::string8& url, pfc::string8&
                                      WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return false;
     
+    // Set timeouts to prevent application freezing
+    // DNS resolution: 10s, Connect: 10s, Send: 15s, Receive: 30s
+    WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
+    
     // Connect to the server
     std::wstring hostname(urlComp.lpszHostName, urlComp.dwHostNameLength);
     HINTERNET hConnect = WinHttpConnect(hSession, hostname.c_str(), urlComp.nPort, 0);
@@ -3003,6 +3007,10 @@ bool artwork_ui_element::http_get_request_with_user_agent(const pfc::string8& ur
                                      WINHTTP_NO_PROXY_BYPASS,
                                      0);
     if (!hSession) return false;
+    
+    // Set timeouts to prevent application freezing
+    // DNS resolution: 10s, Connect: 10s, Send: 15s, Receive: 30s
+    WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
     
     // Connect to server
     HINTERNET hConnect = WinHttpConnect(hSession,
@@ -4778,6 +4786,9 @@ namespace standalone {
                                            WINHTTP_NO_PROXY_BYPASS, 0);
             
             if (hSession) {
+                // Set timeouts to prevent application freezing
+                // DNS resolution: 10s, Connect: 10s, Send: 15s, Receive: 30s
+                WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
                 std::wstring hostname(urlComp.lpszHostName, urlComp.dwHostNameLength);
                 
                 HINTERNET hConnect = WinHttpConnect(hSession, hostname.c_str(), 
@@ -4946,6 +4957,10 @@ namespace standalone {
             OutputDebugStringA("ARTWORK: WinHttpOpen failed\n");
             return false;
         }
+        
+        // Set timeouts to prevent application freezing
+        // DNS resolution: 10s, Connect: 10s, Send: 15s, Receive: 30s
+        WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
         
         OutputDebugStringA("ARTWORK: WinHTTP session opened\n");
         
@@ -6113,6 +6128,10 @@ bool bridge_http_get_request(const std::string& url, std::string& response) {
             return false;
         }
         
+        // Set timeouts to prevent application freezing
+        // DNS resolution: 10s, Connect: 10s, Send: 15s, Receive: 30s
+        WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
+        
         std::wstring hostname(urlComp.lpszHostName, urlComp.dwHostNameLength);
         HINTERNET hConnect = WinHttpConnect(hSession, hostname.c_str(), urlComp.nPort, 0);
         
@@ -6209,6 +6228,10 @@ bool bridge_http_get_request_with_useragent(const std::string& url, std::string&
             OutputDebugStringA("ARTWORK: Bridge HTTP with User-Agent - WinHttpOpen failed\n");
             return false;
         }
+        
+        // Set timeouts to prevent application freezing
+        // DNS resolution: 10s, Connect: 10s, Send: 15s, Receive: 30s
+        WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
         
         std::wstring hostname(urlComp.lpszHostName, urlComp.dwHostNameLength);
         HINTERNET hConnect = WinHttpConnect(hSession, hostname.c_str(), urlComp.nPort, 0);
@@ -6313,6 +6336,10 @@ bool bridge_download_image(const std::string& url, std::vector<BYTE>& data) {
             OutputDebugStringA("ARTWORK: Bridge download - WinHttpOpen failed\n");
             return false;
         }
+        
+        // Set timeouts to prevent application freezing
+        // DNS resolution: 10s, Connect: 10s, Send: 15s, Receive: 30s
+        WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
         
         OutputDebugStringA("ARTWORK: Bridge download - Session opened\n");
         
