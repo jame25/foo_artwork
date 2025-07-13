@@ -131,7 +131,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.1",
+    "1.3.3",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -148,7 +148,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.0",
+    "1.3.2",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -301,6 +301,7 @@ public:
     pfc::string8 m_last_search_artist;  // Cache artist metadata between API searches
     pfc::string8 m_last_search_title;   // Cache title metadata between API searches
     pfc::string8 m_artwork_source;      // Track source of current artwork (Local, iTunes, Deezer, etc.)
+    pfc::string8 m_current_artwork_path; // Path to currently loaded artwork file (for flicker prevention)
     DWORD m_last_update_timestamp;  // Timestamp for debouncing updates
     DWORD m_last_search_timestamp;  // Timestamp for search cooldown
     metadb_handle_ptr m_last_update_track;  // Track handle for smart debouncing
@@ -673,6 +674,9 @@ public:
             // For new internet radio streams, wait before checking metadata (regardless of clearing)
             if (is_new_stream) {
                 // Schedule delayed metadata check for new streams
+                char debug_msg[256];
+                sprintf_s(debug_msg, "ARTWORK: Setting stream delay timer for %d seconds (cfg_stream_delay=%d)\n", (int)cfg_stream_delay, (int)cfg_stream_delay);
+                OutputDebugStringA(debug_msg);
                 SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Timer ID 9 for new stream delay
                 m_new_stream_delay_active = true;  // Set flag to prevent override
                 
@@ -683,6 +687,7 @@ public:
                 return;  // Don't search immediately for new streams
             } else if (!new_is_internet_stream) {
                 // For local files, proceed with immediate artwork search
+                OutputDebugStringA("ARTWORK: Local file detected - bypassing stream delay, searching immediately\n");
                 m_current_track = track;
                 pfc::string8 fresh_artist, fresh_title;
                 extract_metadata_for_search(track, fresh_artist, fresh_title);
@@ -1624,6 +1629,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 }
             }
         } else if (wParam == 9) {  // Timer ID 9 - delayed metadata check for new streams
+            OutputDebugStringA("ARTWORK: Stream delay timer fired, proceeding with delayed artwork search\n");
             KillTimer(hwnd, 9);  // Kill the timer
             pThis->m_new_stream_delay_active = false;  // Clear the flag when timer fires
             
@@ -3752,6 +3758,9 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
         g_current_artwork_path.clear();
         g_artwork_loading = false;
         
+        // Clear instance path since this is not local artwork (prevents flicker prevention from interfering)
+        m_current_artwork_path.clear();
+        
     } else {
         DeleteObject(hBitmap);
         delete pBitmap;
@@ -3861,6 +3870,9 @@ void artwork_ui_element::clear_artwork() {
     m_last_search_artist = "";
     m_last_search_title = "";
     m_current_priority_position = 0;
+    
+    // Clear current artwork path to reset flicker prevention
+    m_current_artwork_path.clear();
     
     // Reset search timestamp to allow immediate new search
     m_last_search_timestamp = 0;
@@ -4186,6 +4198,13 @@ bool artwork_ui_element::search_local_artwork() {
 
 // Helper function to load local artwork file
 bool artwork_ui_element::load_local_artwork_file(const pfc::string8& file_path) {
+    // Check if this is the same file we already have loaded to prevent flicker
+    if (m_artwork_bitmap && !m_current_artwork_path.is_empty() && 
+        m_current_artwork_path == file_path) {
+        OutputDebugStringA("ARTWORK: Same local artwork file already loaded, skipping reload to prevent flicker\n");
+        return true;
+    }
+    
     try {
         // Open file
         HANDLE hFile = CreateFileA(file_path.c_str(), GENERIC_READ, FILE_SHARE_READ, 
@@ -4240,6 +4259,7 @@ bool artwork_ui_element::load_local_artwork_file(const pfc::string8& file_path) 
         // Create bitmap from the image data
         if (create_bitmap_from_data(file_data)) {
             OutputDebugStringA("ARTWORK: Successfully loaded local artwork file\n");
+            m_current_artwork_path = file_path; // Store path to prevent flicker on reload
             return true;
         } else {
             OutputDebugStringA("ARTWORK: Failed to create bitmap from local artwork file\n");
