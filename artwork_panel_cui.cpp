@@ -40,6 +40,7 @@ public:
 #include <mutex>
 #include <memory>
 #include <cmath>
+#include <regex>
 
 // Include CUI SDK headers directly - these contain their own foobar2000 SDK
 #include "columns_ui/columns_ui-sdk/ui_extension.h"
@@ -613,6 +614,167 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     sprintf_s(debug_msg, "ARTWORK: CUI Panel - Dynamic info received: artist='%s', title='%s'\n", 
              artist.c_str(), title.c_str());
     OutputDebugStringA(debug_msg);
+    
+    // Clean up metadata for better search results
+    std::string original_title = title;
+    std::string original_artist = artist;
+    
+    // Apply comprehensive metadata cleaning for radio streams
+    
+    // 1. Remove station identifiers and prefixes
+    // Remove patterns like "[WXYZ]", "(Radio Station)", "Now Playing:", "Live:", etc.
+    auto remove_prefixes = [](std::string& str) {
+        // Remove common prefixes
+        std::vector<std::string> prefixes = {
+            "Now Playing: ", "Now Playing:", "Live: ", "Live:", "Playing: ", "Playing:",
+            "Current: ", "Current:", "On Air: ", "On Air:", "♪ ", "♫ ", "🎵 ", "🎶 "
+        };
+        for (const auto& prefix : prefixes) {
+            if (str.find(prefix) == 0) {
+                str = str.substr(prefix.length());
+            }
+        }
+        
+        // Remove bracketed/parenthesized station info at start
+        while (!str.empty() && (str[0] == '[' || str[0] == '(')) {
+            size_t end = str.find(str[0] == '[' ? ']' : ')');
+            if (end != std::string::npos) {
+                str = str.substr(end + 1);
+                // Remove any leading spaces after removal
+                while (!str.empty() && str[0] == ' ') str = str.substr(1);
+            } else {
+                break;
+            }
+        }
+    };
+    
+    // 2. Remove bracketed information and quality indicators
+    auto remove_bracketed_info = [](std::string& str) {
+        std::vector<std::string> patterns = {
+            "[Live]", "[Explicit]", "[Remastered]", "[Radio Edit]", "[Extended]", "[Remix]",
+            "[HD]", "[HQ]", "[320kbps]", "[256kbps]", "[192kbps]", "[128kbps]",
+            "(Live)", "(Explicit)", "(Remastered)", "(Radio Edit)", "(Extended)", "(Remix)",
+            "(HD)", "(HQ)", "(320kbps)", "(256kbps)", "(192kbps)", "(128kbps)"
+        };
+        
+        for (const auto& pattern : patterns) {
+            size_t pos = 0;
+            while ((pos = str.find(pattern, pos)) != std::string::npos) {
+                str.erase(pos, pattern.length());
+                // Clean up any double spaces
+                while ((pos = str.find("  ", pos)) != std::string::npos) {
+                    str.replace(pos, 2, " ");
+                }
+            }
+        }
+    };
+    
+    // 3. Remove time/duration indicators
+    auto remove_duration_info = [](std::string& str) {
+        // Remove (MM:SS) or (M:SS) patterns
+        std::regex duration_regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*");
+        str = std::regex_replace(str, duration_regex, " ");
+        
+        // Remove " - X.XX" timestamp patterns at the end
+        size_t dash_pos = str.rfind(" - ");
+        if (dash_pos != std::string::npos) {
+            std::string suffix = str.substr(dash_pos + 3);
+            // Check if suffix is a number (with optional decimal point)
+            bool is_numeric = true;
+            bool has_dot = false;
+            for (char c : suffix) {
+                if (c == '.' && !has_dot) {
+                    has_dot = true;
+                } else if (!isdigit(c)) {
+                    is_numeric = false;
+                    break;
+                }
+            }
+            if (is_numeric && !suffix.empty()) {
+                str = str.substr(0, dash_pos);
+            }
+        }
+    };
+    
+    // 4. Normalize artist collaborations
+    auto normalize_collaborations = [](std::string& str) {
+        // Normalize featuring patterns
+        std::vector<std::pair<std::string, std::string>> feat_patterns = {
+            {" ft. ", " feat. "}, {" ft ", " feat. "}, {" featuring ", " feat. "},
+            {" Ft. ", " feat. "}, {" Ft ", " feat. "}, {" Featuring ", " feat. "},
+            {" FT. ", " feat. "}, {" FT ", " feat. "}, {" FEATURING ", " feat. "}
+        };
+        
+        for (const auto& pattern : feat_patterns) {
+            size_t pos = 0;
+            while ((pos = str.find(pattern.first, pos)) != std::string::npos) {
+                str.replace(pos, pattern.first.length(), pattern.second);
+                pos += pattern.second.length();
+            }
+        }
+        
+        // Normalize vs/versus patterns
+        std::vector<std::pair<std::string, std::string>> vs_patterns = {
+            {" vs. ", " vs "}, {" vs ", " vs "}, {" versus ", " vs "},
+            {" Vs. ", " vs "}, {" Vs ", " vs "}, {" Versus ", " vs "},
+            {" VS. ", " vs "}, {" VS ", " vs "}, {" VERSUS ", " vs "}
+        };
+        
+        for (const auto& pattern : vs_patterns) {
+            size_t pos = 0;
+            while ((pos = str.find(pattern.first, pos)) != std::string::npos) {
+                str.replace(pos, pattern.first.length(), pattern.second);
+                pos += pattern.second.length();
+            }
+        }
+        
+        // Normalize & patterns (be careful not to break band names)
+        str = std::regex_replace(str, std::regex("\\s+&\\s+"), " & ");
+    };
+    
+    // 5. Clean up encoding artifacts and normalize spacing
+    auto clean_encoding_artifacts = [](std::string& str) {
+        // Normalize quotes and apostrophes
+        std::vector<std::pair<std::string, std::string>> quote_patterns = {
+            {"\u201C", "\""}, {"\u201D", "\""}, {"\u2018", "'"}, {"\u2019", "'"},
+            {"\u201A", "'"}, {"\u201E", "\""}, {"\u2039", "<"}, {"\u203A", ">"}
+        };
+        
+        for (const auto& pattern : quote_patterns) {
+            size_t pos = 0;
+            while ((pos = str.find(pattern.first, pos)) != std::string::npos) {
+                str.replace(pos, pattern.first.length(), pattern.second);
+                pos += pattern.second.length();
+            }
+        }
+        
+        // Remove multiple consecutive spaces
+        std::regex multi_space("\\s{2,}");
+        str = std::regex_replace(str, multi_space, " ");
+        
+        // Trim leading and trailing spaces
+        str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
+    };
+    
+    // Apply all cleaning rules to title
+    remove_prefixes(title);
+    remove_bracketed_info(title);
+    remove_duration_info(title);
+    normalize_collaborations(title);
+    clean_encoding_artifacts(title);
+    
+    // Apply some cleaning rules to artist as well (but be more conservative)
+    remove_bracketed_info(artist);
+    normalize_collaborations(artist);
+    clean_encoding_artifacts(artist);
+    
+    // Log cleaning results if anything changed
+    if (title != original_title || artist != original_artist) {
+        char clean_debug[1024];
+        sprintf_s(clean_debug, "ARTWORK: CUI Panel - Cleaned metadata:\n  Artist: '%s' → '%s'\n  Title: '%s' → '%s'\n", 
+                 original_artist.c_str(), artist.c_str(), original_title.c_str(), title.c_str());
+        OutputDebugStringA(clean_debug);
+    }
     
     // Check for "adbreak" in title (radio advertisement breaks - no search needed)
     if (!title.empty() && strstr(title.c_str(), "adbreak")) {
