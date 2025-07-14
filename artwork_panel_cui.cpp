@@ -90,12 +90,59 @@ extern void trigger_main_component_search_with_metadata(const std::string& artis
 extern void trigger_main_component_local_search(metadb_handle_ptr track);
 
 //=============================================================================
+// Event-Driven Artwork System (Forward Declarations)
+//=============================================================================
+
+// Artwork event types
+enum class ArtworkEventType {
+    ARTWORK_LOADED,     // New artwork loaded successfully
+    ARTWORK_LOADING,    // Search started
+    ARTWORK_FAILED,     // Search failed
+    ARTWORK_CLEARED     // Artwork cleared
+};
+
+// Artwork event data
+struct ArtworkEvent {
+    ArtworkEventType type;
+    HBITMAP bitmap;
+    std::string source;
+    std::string artist;
+    std::string title;
+    
+    ArtworkEvent(ArtworkEventType t, HBITMAP bmp = nullptr, const std::string& src = "", 
+                 const std::string& art = "", const std::string& ttl = "")
+        : type(t), bitmap(bmp), source(src), artist(art), title(ttl) {}
+};
+
+// Artwork event listener interface
+class IArtworkEventListener {
+public:
+    virtual ~IArtworkEventListener() = default;
+    virtual void on_artwork_event(const ArtworkEvent& event) = 0;
+};
+
+// Forward declare the event manager (implemented in main component)
+class ArtworkEventManager {
+public:
+    static ArtworkEventManager& get();
+    void subscribe(IArtworkEventListener* listener);
+    void unsubscribe(IArtworkEventListener* listener);
+    void notify(const ArtworkEvent& event);
+};
+
+// External references to event manager methods (defined in sdk_main.cpp)
+extern ArtworkEventManager& get_artwork_event_manager();
+extern void subscribe_to_artwork_events(IArtworkEventListener* listener);
+extern void unsubscribe_from_artwork_events(IArtworkEventListener* listener);
+
+//=============================================================================
 // CUI Artwork Panel Class Definition - Full Implementation
 //=============================================================================
 
 class CUIArtworkPanel : public uie::window
                       , public now_playing_album_art_notify
                       , public play_callback
+                      , public IArtworkEventListener
 {
 public:
     CUIArtworkPanel();
@@ -132,6 +179,9 @@ public:
     void on_playback_dynamic_info_track(const file_info& p_info) override;
     void on_playback_time(double p_time) override {}
     void on_volume_change(float p_new_val) override {}
+    
+    // IArtworkEventListener implementation
+    void on_artwork_event(const ArtworkEvent& event) override;
 
 private:
     // Window state
@@ -160,9 +210,8 @@ private:
     UINT_PTR m_osd_timer_id;
     bool m_osd_visible;
     
-    // Artwork polling system
-    UINT_PTR m_artwork_check_timer_id;
-    HBITMAP m_last_checked_bitmap;
+    // Event-driven artwork system (replaces polling)
+    HBITMAP m_last_event_bitmap;
     
     // Window procedure and message handling
     static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -189,7 +238,6 @@ private:
     std::wstring get_formatted_text(const std::string& text);
     void initialize_gdiplus();
     void cleanup_gdiplus();
-    void check_for_new_artwork();
     bool copy_bitmap_from_main_component(HBITMAP source_bitmap);
     void search_artwork_for_track(metadb_handle_ptr track);
     void search_artwork_with_metadata(const std::string& artist, const std::string& title);
@@ -236,15 +284,22 @@ CUIArtworkPanel::CUIArtworkPanel()
     , m_osd_slide_offset(OSD_SLIDE_DISTANCE)
     , m_osd_timer_id(0)
     , m_osd_visible(false)
-    , m_artwork_check_timer_id(0)
-    , m_last_checked_bitmap(nullptr)
+    , m_last_event_bitmap(nullptr)
     , m_scaled_gdi_bitmap(NULL)
 {
     OutputDebugStringA("ARTWORK: CUI Full Artwork Panel Constructor called\n");
     console::print("CUI Full Artwork Panel: Constructor called");
+    
+    // Register for artwork events (replaces polling)
+    subscribe_to_artwork_events(this);
+    OutputDebugStringA("ARTWORK: CUI Panel registered for artwork events\n");
 }
 
 CUIArtworkPanel::~CUIArtworkPanel() {
+    // Unregister from artwork events
+    unsubscribe_from_artwork_events(this);
+    OutputDebugStringA("ARTWORK: CUI Panel unregistered from artwork events\n");
+    
     if (m_scaled_gdi_bitmap) {
         DeleteObject(m_scaled_gdi_bitmap);
         m_scaled_gdi_bitmap = NULL;
@@ -383,8 +438,7 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
             OutputDebugStringA("ARTWORK: CUI Panel callback registration failed\n");
         }
         
-        // Start artwork polling timer (check every 500ms)
-        m_artwork_check_timer_id = SetTimer(m_hWnd, 2, 500, nullptr);
+        // Note: No need for polling timer - using event-driven artwork updates
         break;
         
     case WM_DESTROY:
@@ -394,10 +448,7 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
             KillTimer(m_hWnd, m_osd_timer_id);
             m_osd_timer_id = 0;
         }
-        if (m_artwork_check_timer_id) {
-            KillTimer(m_hWnd, m_artwork_check_timer_id);
-            m_artwork_check_timer_id = 0;
-        }
+        // Note: No artwork polling timer to stop - using event-driven system
         
         // Unregister callbacks
         now_playing_album_art_notify_manager::get()->remove(this);
@@ -436,9 +487,6 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (wParam == m_osd_timer_id) {
             update_osd_animation();
-        } else if (wParam == 102) {
-            // Check for new artwork from main component (timer ID 102)
-            check_for_new_artwork();
         } else if (wParam == 101) {
             // Stream delay timer fired - now do the delayed search
             KillTimer(m_hWnd, 101);
@@ -459,6 +507,55 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
                 m_delayed_search_title.clear();
             } else {
                 OutputDebugStringA("ARTWORK: CUI Panel - No stored metadata for delayed search\n");
+            }
+        }
+        break;
+        
+    case WM_USER + 10: // Artwork event update (from background thread)
+        {
+            HBITMAP bitmap = (HBITMAP)wParam;
+            std::string* source_ptr = (std::string*)lParam;
+            
+            OutputDebugStringA("ARTWORK: CUI Panel - Processing artwork update on main thread\n");
+            
+            // Extract the source string from the message
+            std::string artwork_source = source_ptr ? *source_ptr : "";
+            
+            // Clean up the allocated source string
+            if (source_ptr) {
+                delete source_ptr;
+            }
+            
+            // Debug: Log the received artwork source
+            char source_debug[256];
+            sprintf_s(source_debug, "ARTWORK: CUI Panel - Received artwork source: '%s'\n", artwork_source.c_str());
+            OutputDebugStringA(source_debug);
+            
+            // Now it's safe to call UI functions since we're on the main thread
+            if (bitmap && copy_bitmap_from_main_component(bitmap)) {
+                // Update the member variable with the correct source
+                m_artwork_source = artwork_source;
+                
+                // Only show OSD for online sources, not local files
+                if (artwork_source != "Local file" && !artwork_source.empty()) {
+                    char osd_debug[256];
+                    sprintf_s(osd_debug, "ARTWORK: CUI Panel - About to show OSD with source: '%s'\n", artwork_source.c_str());
+                    OutputDebugStringA(osd_debug);
+                    show_osd("Artwork from " + artwork_source);
+                } else if (artwork_source.empty()) {
+                    OutputDebugStringA("ARTWORK: CUI Panel - Artwork source is empty, skipping OSD\n");
+                } else {
+                    OutputDebugStringA("ARTWORK: CUI Panel - Local file source, skipping OSD\n");
+                }
+                
+                InvalidateRect(m_hWnd, NULL, FALSE);
+                UpdateWindow(m_hWnd); // Force immediate repaint
+                OutputDebugStringA("ARTWORK: CUI Panel - Main thread artwork update complete\n");
+            } else {
+                // Clean up even if bitmap processing failed
+                if (source_ptr) {
+                    OutputDebugStringA("ARTWORK: CUI Panel - Bitmap processing failed, source was cleaned up\n");
+                }
             }
         }
         break;
@@ -570,7 +667,7 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
         if (main_bitmap) {
             OutputDebugStringA("ARTWORK: CUI Panel - Found artwork bitmap from main component\n");
             if (copy_bitmap_from_main_component(main_bitmap)) {
-                m_last_checked_bitmap = main_bitmap;
+                m_last_event_bitmap = main_bitmap;
                 m_artwork_source = "Local file";
                 // No OSD for local files - they should load silently
                 InvalidateRect(m_hWnd, NULL, FALSE);
@@ -824,13 +921,7 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                         SetTimer(m_hWnd, 101, delay_seconds * 1000, NULL);
                         OutputDebugStringA("ARTWORK: CUI Panel - Set delay timer for internet stream\n");
                         
-                        // Start polling timer immediately for stream delay case 
-                        // (it will check for artwork but won't find any until delay timer fires)
-                        m_artwork_check_timer_id = 102; // Use a specific timer ID
-                        SetTimer(m_hWnd, m_artwork_check_timer_id, 1000, NULL); // Poll every 1 second for artwork updates
-                        char timer_debug[256];
-                        sprintf_s(timer_debug, "ARTWORK: CUI Panel - Started polling timer for delayed stream, timer_id=%d, hWnd=%p\n", m_artwork_check_timer_id, m_hWnd);
-                        OutputDebugStringA(timer_debug);
+                        // Note: No polling timer needed - using event-driven updates
                     }
                 } else {
                     // No delay configured, search immediately
@@ -838,14 +929,7 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                     extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
                     trigger_main_component_search_with_metadata(artist, title);
                     
-                    // Start polling for artwork updates after immediate search
-                    if (m_hWnd) {
-                        m_artwork_check_timer_id = 102; // Use a specific timer ID
-                        SetTimer(m_hWnd, m_artwork_check_timer_id, 1000, NULL); // Poll every 1 second for artwork updates
-                        char timer_debug[256];
-                        sprintf_s(timer_debug, "ARTWORK: CUI Panel - Started polling timer for immediate search, timer_id=%d, hWnd=%p\n", m_artwork_check_timer_id, m_hWnd);
-                        OutputDebugStringA(timer_debug);
-                    }
+                    // Note: No polling timer needed - using event-driven updates
                 }
                 return;
             } else {
@@ -1381,72 +1465,61 @@ void CUIArtworkPanel::cleanup_gdiplus() {
     }
 }
 
-void CUIArtworkPanel::check_for_new_artwork() {
+//=============================================================================
+// Event-driven artwork update handler (replaces polling)
+//=============================================================================
+
+void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
     if (!m_hWnd) return;
     
-    // Check if main component has new artwork bitmap
-    HBITMAP main_bitmap = get_main_component_artwork_bitmap();
-    
-    // Also check shared standalone bitmap
-    HBITMAP shared_bitmap = g_shared_artwork_bitmap;
-    
-    // Use whichever bitmap is available (prefer main component)
-    HBITMAP active_bitmap = main_bitmap ? main_bitmap : shared_bitmap;
-    
-    // Debug: Always log the current state  
     char debug_msg[512];
-    sprintf_s(debug_msg, "ARTWORK: CUI Panel - Polling check: main=%p, shared=%p, active=%p, loading=%d, last_checked=%p, artwork_loaded=%d, scaled_gdi_bitmap=%p\n", 
-             main_bitmap, shared_bitmap, active_bitmap, g_artwork_loading ? 1 : 0, m_last_checked_bitmap, m_artwork_loaded ? 1 : 0, m_scaled_gdi_bitmap);
+    sprintf_s(debug_msg, "ARTWORK: CUI Panel - Event received: type=%d, bitmap=%p, source='%s'\n", 
+             (int)event.type, event.bitmap, event.source.c_str());
     OutputDebugStringA(debug_msg);
     
-    if (active_bitmap && active_bitmap != m_last_checked_bitmap) {
-        // Determine artwork source first
-        if (main_bitmap) {
-            OutputDebugStringA("ARTWORK: CUI Panel - New artwork bitmap detected from main component\n");
-            m_artwork_source = "Local file";
-        } else {
-            OutputDebugStringA("ARTWORK: CUI Panel - New artwork bitmap detected from standalone search\n");
-            // Get the actual source from the global variable set by bridge functions
-            extern pfc::string8 g_current_artwork_source;
-            if (!g_current_artwork_source.is_empty()) {
-                m_artwork_source = g_current_artwork_source.c_str();
+    // THREAD SAFETY: This event handler can be called from background threads
+    // We must NOT directly call UI functions like InvalidateRect or copy_bitmap_from_main_component
+    // Instead, post a message to the main thread to handle the update
+    
+    switch (event.type) {
+        case ArtworkEventType::ARTWORK_LOADED:
+            if (event.bitmap && event.bitmap != m_last_event_bitmap) {
+                OutputDebugStringA("ARTWORK: CUI Panel - Posting artwork update to main thread\n");
+                
+                // Store bitmap handle for comparison (this is thread-safe)
+                m_last_event_bitmap = event.bitmap;
+                
+                // Pass the source string through the message to avoid race conditions
+                // Allocate a copy of the source string that the main thread will free
+                std::string* source_copy = new std::string(event.source);
+                
                 char debug_msg[256];
-                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Source detected: %s\n", m_artwork_source.c_str());
+                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Posting event with source: '%s'\n", source_copy->c_str());
                 OutputDebugStringA(debug_msg);
-            } else {
-                m_artwork_source = "Online search"; // Fallback if source not set
-                OutputDebugStringA("ARTWORK: CUI Panel - No source info available, using fallback\n");
+                
+                // Post message to main thread to handle the UI update safely
+                // Use WM_USER + 10 for artwork event updates
+                // wParam = bitmap, lParam = source string pointer
+                PostMessage(m_hWnd, WM_USER + 10, (WPARAM)event.bitmap, (LPARAM)source_copy);
             }
-        }
-        
-        // Store bitmap handle for comparison
-        m_last_checked_bitmap = active_bitmap;
-        
-        // Copy the bitmap from main component or standalone search
-        if (copy_bitmap_from_main_component(active_bitmap)) {
-            // Only show OSD for online sources, not local files
-            if (m_artwork_source != "Local file") {
-                show_osd("Artwork from " + m_artwork_source);
-            }
-            char invalidate_debug[256];
-            sprintf_s(invalidate_debug, "ARTWORK: CUI Panel - Calling InvalidateRect, hWnd=%p\n", m_hWnd);
-            OutputDebugStringA(invalidate_debug);
-            InvalidateRect(m_hWnd, NULL, FALSE);
-            UpdateWindow(m_hWnd); // Force immediate repaint
-            OutputDebugStringA("ARTWORK: CUI Panel - Called UpdateWindow to force repaint\n");
+            break;
             
-            // Stop polling timer since we found artwork
-            if (m_artwork_check_timer_id == 102) {
-                KillTimer(m_hWnd, 102);
-                m_artwork_check_timer_id = 0;
-                OutputDebugStringA("ARTWORK: CUI Panel - Stopped polling timer - artwork found\n");
-            }
-        }
-    } else if (!active_bitmap && m_last_checked_bitmap) {
-        // Main component cleared artwork - but keep previous artwork visible
-        OutputDebugStringA("ARTWORK: CUI Panel - Main component cleared artwork (keeping previous visible)\n");
-        m_last_checked_bitmap = nullptr;
-        // Don't clear artwork or invalidate - keep previous artwork visible
+        case ArtworkEventType::ARTWORK_LOADING:
+            OutputDebugStringA("ARTWORK: CUI Panel - Artwork loading started\n");
+            // Could show a loading indicator here if desired
+            break;
+            
+        case ArtworkEventType::ARTWORK_FAILED:
+            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Artwork loading failed from %s\n", event.source.c_str());
+            OutputDebugStringA(debug_msg);
+            // Keep previous artwork visible - don't clear on failure
+            break;
+            
+        case ArtworkEventType::ARTWORK_CLEARED:
+            OutputDebugStringA("ARTWORK: CUI Panel - Artwork cleared\n");
+            m_last_event_bitmap = nullptr;
+            // Keep previous artwork visible - don't clear unless explicitly requested
+            break;
     }
 }
 
