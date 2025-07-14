@@ -86,8 +86,136 @@ cfg_int cfg_stream_delay(guid_cfg_stream_delay, 0);
 // OSD display setting (default enabled)
 cfg_bool cfg_show_osd(guid_cfg_show_osd, true);
 
-// Global download throttle to prevent system freeze
-static std::mutex g_download_mutex;
+//=============================================================================
+// Event-Driven Artwork System
+//=============================================================================
+
+// Artwork event types
+enum class ArtworkEventType {
+    ARTWORK_LOADED,     // New artwork loaded successfully
+    ARTWORK_LOADING,    // Search started
+    ARTWORK_FAILED,     // Search failed
+    ARTWORK_CLEARED     // Artwork cleared
+};
+
+// Artwork event data
+struct ArtworkEvent {
+    ArtworkEventType type;
+    HBITMAP bitmap;
+    std::string source;
+    std::string artist;
+    std::string title;
+    
+    ArtworkEvent(ArtworkEventType t, HBITMAP bmp = nullptr, const std::string& src = "", 
+                 const std::string& art = "", const std::string& ttl = "")
+        : type(t), bitmap(bmp), source(src), artist(art), title(ttl) {}
+};
+
+// Artwork event listener interface
+class IArtworkEventListener {
+public:
+    virtual ~IArtworkEventListener() = default;
+    virtual void on_artwork_event(const ArtworkEvent& event) = 0;
+};
+
+// Artwork event manager (singleton)
+class ArtworkEventManager {
+private:
+    std::vector<IArtworkEventListener*> m_listeners;
+    std::mutex m_listeners_mutex;
+    static std::unique_ptr<ArtworkEventManager> s_instance;
+    
+public:
+    static ArtworkEventManager& get() {
+        if (!s_instance) {
+            s_instance = std::make_unique<ArtworkEventManager>();
+        }
+        return *s_instance;
+    }
+    
+    void subscribe(IArtworkEventListener* listener) {
+        std::lock_guard<std::mutex> lock(m_listeners_mutex);
+        m_listeners.push_back(listener);
+    }
+    
+    void unsubscribe(IArtworkEventListener* listener) {
+        std::lock_guard<std::mutex> lock(m_listeners_mutex);
+        m_listeners.erase(std::remove(m_listeners.begin(), m_listeners.end(), listener), m_listeners.end());
+    }
+    
+    void notify(const ArtworkEvent& event) {
+        std::lock_guard<std::mutex> lock(m_listeners_mutex);
+        for (auto* listener : m_listeners) {
+            try {
+                listener->on_artwork_event(event);
+            } catch (...) {
+                // Continue notifying other listeners even if one fails
+            }
+        }
+    }
+};
+
+std::unique_ptr<ArtworkEventManager> ArtworkEventManager::s_instance;
+
+//=============================================================================
+// Per-Request HTTP Management System
+//=============================================================================
+
+// HTTP request manager for individual APIs
+class HttpRequestManager {
+private:
+    std::string m_api_name;
+    std::mutex m_request_mutex;
+    std::atomic<bool> m_request_active{false};
+    
+public:
+    HttpRequestManager(const std::string& api_name) : m_api_name(api_name) {}
+    
+    // RAII lock for HTTP requests
+    class RequestLock {
+    private:
+        HttpRequestManager* m_manager;
+        std::unique_lock<std::mutex> m_lock;
+        bool m_acquired;
+        
+    public:
+        RequestLock(HttpRequestManager* manager) 
+            : m_manager(manager), m_lock(manager->m_request_mutex), m_acquired(true) {
+            manager->m_request_active = true;
+        }
+        
+        ~RequestLock() {
+            if (m_acquired && m_manager) {
+                m_manager->m_request_active = false;
+            }
+        }
+        
+        bool is_acquired() const { return m_acquired; }
+    };
+    
+    bool is_busy() const { return m_request_active.load(); }
+    
+    RequestLock acquire_lock() {
+        return RequestLock(this);
+    }
+};
+
+// API-specific request managers
+static HttpRequestManager g_itunes_request_manager("iTunes");
+static HttpRequestManager g_deezer_request_manager("Deezer");
+static HttpRequestManager g_lastfm_request_manager("Last.fm");
+static HttpRequestManager g_musicbrainz_request_manager("MusicBrainz");
+static HttpRequestManager g_discogs_request_manager("Discogs");
+
+// Helper function to get request manager by API name
+HttpRequestManager* get_request_manager_for_api(const std::string& api_name) {
+    if (api_name.find("iTunes") != std::string::npos) return &g_itunes_request_manager;
+    if (api_name.find("Deezer") != std::string::npos) return &g_deezer_request_manager;
+    if (api_name.find("Last.fm") != std::string::npos || api_name.find("lastfm") != std::string::npos) return &g_lastfm_request_manager;
+    if (api_name.find("MusicBrainz") != std::string::npos || api_name.find("musicbrainz") != std::string::npos) return &g_musicbrainz_request_manager;
+    if (api_name.find("Discogs") != std::string::npos) return &g_discogs_request_manager;
+    return &g_deezer_request_manager; // Default fallback
+}
 
 // Forward declarations
 class artwork_ui_element;
@@ -98,6 +226,9 @@ std::unique_ptr<artwork_manager> g_artwork_manager;
 std::wstring g_current_artwork_path;
 bool g_artwork_loading = false;
 HBITMAP g_shared_artwork_bitmap = NULL;
+
+// Artwork source tracking
+pfc::string8 g_current_artwork_source;
 
 // Global reference to main UI element for artwork sharing
 static artwork_ui_element* g_main_ui_element = nullptr;
@@ -131,7 +262,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.5",
+    "1.3.6",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -214,8 +345,7 @@ artwork_manager* artwork_manager::instance = nullptr;
 // Global list to track artwork UI elements
 static pfc::list_t<artwork_ui_element*> g_artwork_ui_elements;
 
-// Global artwork source for logging (accessible from preferences)
-pfc::string8 g_current_artwork_source;
+// Note: g_current_artwork_source already declared above
 
 // Artwork initialization handler
 class artwork_init : public initquit {
@@ -462,6 +592,15 @@ public:
         if (m_artwork_bitmap) {
             DeleteObject(m_artwork_bitmap);
             m_artwork_bitmap = NULL;
+            
+            // Notify event system that artwork was cleared
+            ArtworkEventManager::get().notify(ArtworkEvent(
+                ArtworkEventType::ARTWORK_CLEARED, 
+                nullptr, 
+                "Component shutdown", 
+                "", 
+                ""
+            ));
         }
         
         // Destroy window
@@ -1047,6 +1186,19 @@ bool bridge_http_get_request(const std::string& url, std::string& response);
 bool bridge_http_get_request_with_useragent(const std::string& url, std::string& response, const std::string& user_agent);
 bool bridge_download_image(const std::string& url, std::vector<BYTE>& data);
 
+// External wrapper functions for event manager (for use by CUI panels)
+ArtworkEventManager& get_artwork_event_manager() {
+    return ArtworkEventManager::get();
+}
+
+void subscribe_to_artwork_events(IArtworkEventListener* listener) {
+    ArtworkEventManager::get().subscribe(listener);
+}
+
+void unsubscribe_from_artwork_events(IArtworkEventListener* listener) {
+    ArtworkEventManager::get().unsubscribe(listener);
+}
+
 // Function to trigger main component search from CUI panels with metadata
 void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title) {
     // Always use bridge functions for consistent behavior that respects API preferences
@@ -1339,6 +1491,17 @@ bool load_local_artwork_into_shared_bitmap(const pfc::string8& file_path) {
             
             // Set new shared bitmap
             g_shared_artwork_bitmap = hBitmap;
+            
+            // Notify event system that local artwork was loaded
+            ArtworkEventManager::get().notify(ArtworkEvent(
+                ArtworkEventType::ARTWORK_LOADED, 
+                hBitmap, 
+                "Local file", 
+                "", 
+                ""
+            ));
+            OutputDebugStringA("ARTWORK: Event notification sent for local artwork\n");
+            
             delete pBitmap;
             return true;
         }
@@ -3077,8 +3240,9 @@ bool artwork_ui_element::http_get_request_with_user_agent(const pfc::string8& ur
 
 // HTTP GET request for binary data (images) using WinHTTP
 bool artwork_ui_element::http_get_request_binary(const pfc::string8& url, std::vector<BYTE>& data) {
-    // Use global mutex to prevent multiple simultaneous downloads that can freeze the system
-    std::lock_guard<std::mutex> download_lock(g_download_mutex);
+    // Use per-request manager to prevent API interference without blocking other APIs
+    HttpRequestManager* request_manager = get_request_manager_for_api(url.c_str());
+    auto request_lock = request_manager->acquire_lock();
     
     bool success = false;
     data.clear();
@@ -3818,6 +3982,15 @@ void artwork_ui_element::process_downloaded_image_data() {
         m_status_text = "Artwork loaded from ";
         m_status_text << source;
         
+        // Notify event system that artwork was loaded successfully
+        ArtworkEventManager::get().notify(ArtworkEvent(
+            ArtworkEventType::ARTWORK_LOADED, 
+            m_artwork_bitmap, 
+            source.c_str(), 
+            m_last_search_artist.c_str(), 
+            m_last_search_title.c_str()
+        ));
+        
         // Show OSD with artwork source
         show_osd(source);
         
@@ -3826,6 +3999,16 @@ void artwork_ui_element::process_downloaded_image_data() {
         // Bitmap creation failed
         complete_artwork_search();
         m_status_text = "Failed to create artwork bitmap";
+        
+        // Notify event system that artwork loading failed
+        ArtworkEventManager::get().notify(ArtworkEvent(
+            ArtworkEventType::ARTWORK_FAILED, 
+            nullptr, 
+            source.c_str(), 
+            m_last_search_artist.c_str(), 
+            m_last_search_title.c_str()
+        ));
+        
         InvalidateRect(m_hWnd, NULL, TRUE);
     }
 }
@@ -3845,6 +4028,15 @@ void artwork_ui_element::queue_image_for_processing(const std::vector<BYTE>& ima
     if (m_hWnd) {
         PostMessage(m_hWnd, WM_USER + 6, 0, 0);
     }
+    
+    // Notify event system that artwork is loading
+    ArtworkEventManager::get().notify(ArtworkEvent(
+        ArtworkEventType::ARTWORK_LOADING, 
+        nullptr, 
+        source, 
+        m_last_search_artist.c_str(), 
+        m_last_search_title.c_str()
+    ));
 }
 
 // Clear artwork and reset search state
@@ -4765,8 +4957,9 @@ namespace standalone {
         response.clear();
         bool success = false;
         
-        // Use global mutex to prevent multiple simultaneous downloads
-        std::lock_guard<std::mutex> download_lock(g_download_mutex);
+        // Use per-request manager to prevent API interference without blocking other APIs
+        HttpRequestManager* request_manager = get_request_manager_for_api(url);
+        auto request_lock = request_manager->acquire_lock();
         
         // Convert URL to wide string
         std::wstring wide_url(url.begin(), url.end());
@@ -4927,8 +5120,9 @@ namespace standalone {
         
         OutputDebugStringA("ARTWORK: Standalone download_image started\n");
         
-        // Use global mutex to prevent multiple simultaneous downloads
-        std::lock_guard<std::mutex> download_lock(g_download_mutex);
+        // Use per-request manager to prevent API interference without blocking other APIs
+        HttpRequestManager* request_manager = get_request_manager_for_api(url);
+        auto request_lock = request_manager->acquire_lock();
         
         // Convert URL to wide string
         std::wstring wide_url(url.begin(), url.end());
@@ -5087,6 +5281,16 @@ namespace standalone {
             DeleteObject(::g_shared_artwork_bitmap);
         }
         ::g_shared_artwork_bitmap = hBitmap;
+        
+        // Notify event system that artwork was loaded successfully
+        ::ArtworkEventManager::get().notify(::ArtworkEvent(
+            ::ArtworkEventType::ARTWORK_LOADED, 
+            hBitmap, 
+            ::g_current_artwork_source.c_str(), 
+            "", 
+            ""
+        ));
+        OutputDebugStringA("ARTWORK: Event notification sent for standalone bitmap\n");
         
         OutputDebugStringA("ARTWORK: Bitmap created and stored globally\n");
         return true;
@@ -5266,10 +5470,12 @@ bool bridge_search_deezer(const std::string& artist, const std::string& title) {
                     sprintf_s(debug_msg, "ARTWORK: Deezer artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
                     
+                    // Set source before creating bitmap so event notification has correct source
+                    g_current_artwork_source = "Deezer";
+                    
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
                         OutputDebugStringA("ARTWORK: Deezer artwork bitmap created successfully\n");
-                        g_current_artwork_source = "Deezer";
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
@@ -5396,10 +5602,12 @@ bool bridge_search_discogs(const std::string& artist, const std::string& title) 
                     sprintf_s(debug_msg, "ARTWORK: Discogs artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
                     
+                    // Set source before creating bitmap so event notification has correct source
+                    g_current_artwork_source = "Discogs";
+                    
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
                         OutputDebugStringA("ARTWORK: Discogs artwork bitmap created successfully\n");
-                        g_current_artwork_source = "Discogs";
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
@@ -5479,10 +5687,12 @@ bool bridge_search_itunes(const std::string& artist, const std::string& title) {
                     sprintf_s(debug_msg, "ARTWORK: iTunes artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
                     
+                    // Set source before creating bitmap so event notification has correct source
+                    g_current_artwork_source = "iTunes";
+                    
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
                         OutputDebugStringA("ARTWORK: iTunes artwork bitmap created successfully\n");
-                        g_current_artwork_source = "iTunes";
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
@@ -5575,10 +5785,12 @@ bool bridge_search_lastfm(const std::string& artist, const std::string& title) {
                     sprintf_s(debug_msg, "ARTWORK: Last.fm artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
                     
+                    // Set source before creating bitmap so event notification has correct source
+                    g_current_artwork_source = "Last.fm";
+                    
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
                         OutputDebugStringA("ARTWORK: Last.fm artwork bitmap created successfully\n");
-                        g_current_artwork_source = "Last.fm";
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
@@ -5670,10 +5882,12 @@ bool bridge_search_musicbrainz(const std::string& artist, const std::string& tit
                     sprintf_s(debug_msg, "ARTWORK: MusicBrainz artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
                     
+                    // Set source before creating bitmap so event notification has correct source
+                    g_current_artwork_source = "MusicBrainz";
+                    
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
                         OutputDebugStringA("ARTWORK: MusicBrainz artwork bitmap created successfully\n");
-                        g_current_artwork_source = "MusicBrainz";
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
@@ -6079,6 +6293,17 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
             
             g_shared_artwork_bitmap = hBitmap;
             OutputDebugStringA("ARTWORK: Bitmap created and stored in shared bitmap\n");
+            
+            // Notify event system that artwork was loaded successfully
+            ArtworkEventManager::get().notify(ArtworkEvent(
+                ArtworkEventType::ARTWORK_LOADED, 
+                hBitmap, 
+                g_current_artwork_source.c_str(), 
+                "", 
+                ""
+            ));
+            OutputDebugStringA("ARTWORK: Event notification sent for shared bitmap\n");
+            
             delete bitmap;
             return true;
         }
@@ -6099,8 +6324,9 @@ bool bridge_http_get_request(const std::string& url, std::string& response) {
     try {
         response.clear();
         
-        // Use global mutex to prevent multiple simultaneous downloads
-        std::lock_guard<std::mutex> download_lock(g_download_mutex);
+        // Determine which API this request is for and use appropriate manager
+        HttpRequestManager* request_manager = get_request_manager_for_api(url);
+        auto request_lock = request_manager->acquire_lock();
         
         // Convert URL to wide string
         std::wstring wide_url(url.begin(), url.end());
@@ -6200,8 +6426,9 @@ bool bridge_http_get_request_with_useragent(const std::string& url, std::string&
     try {
         response.clear();
         
-        // Use global mutex to prevent multiple simultaneous downloads
-        std::lock_guard<std::mutex> download_lock(g_download_mutex);
+        // Determine which API this request is for and use appropriate manager
+        HttpRequestManager* request_manager = get_request_manager_for_api(url);
+        auto request_lock = request_manager->acquire_lock();
         
         // Convert URL to wide string
         std::wstring wide_url(url.begin(), url.end());
@@ -6306,8 +6533,9 @@ bool bridge_download_image(const std::string& url, std::vector<BYTE>& data) {
         OutputDebugStringA("ARTWORK: Bridge download starting\n");
         data.clear();
         
-        // Use global mutex to prevent multiple simultaneous downloads
-        std::lock_guard<std::mutex> download_lock(g_download_mutex);
+        // Determine which API this request is for and use appropriate manager
+        HttpRequestManager* request_manager = get_request_manager_for_api(url);
+        auto request_lock = request_manager->acquire_lock();
         
         // Convert URL to wide string
         std::wstring wide_url(url.begin(), url.end());
