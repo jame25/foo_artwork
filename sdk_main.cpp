@@ -10,10 +10,12 @@
 static class debug_init {
 public:
     debug_init() {
+#ifdef _DEBUG
 #ifdef COLUMNS_UI_AVAILABLE
         OutputDebugStringA("ARTWORK: COLUMNS_UI_AVAILABLE is defined\n");
 #else
         OutputDebugStringA("ARTWORK: COLUMNS_UI_AVAILABLE is NOT defined\n");
+#endif
 #endif
     }
 } g_debug_init;
@@ -26,7 +28,9 @@ public:
     static class cui_debug_init {
     public:
         cui_debug_init() {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Main component CUI support compiled in\n");
+#endif
             console::print("Main component: CUI support compiled in");
         }
     } g_cui_debug;
@@ -240,19 +244,27 @@ HINSTANCE g_hIns = NULL;
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH: {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: DllMain - DLL_PROCESS_ATTACH\n");
+#endif
         // Also try creating a file to verify this code runs
         FILE* f = fopen("c:\\temp\\artwork_debug.txt", "a");
         if (f) {
             fprintf(f, "DLL loaded at %s\n", __TIMESTAMP__);
             fclose(f);
         }
+#endif
         g_hIns = hModule;
         DisableThreadLibraryCalls(hModule);
         break;
     }
     case DLL_PROCESS_DETACH:
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: DllMain - DLL_PROCESS_DETACH\n");
+#endif
+#endif
         break;
     }
     return TRUE;
@@ -262,7 +274,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.6",
+    "1.3.8",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -279,7 +291,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.2",
+    "1.3.8",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -512,6 +524,7 @@ public:
     bool create_bitmap_from_data(const std::vector<BYTE>& data);
     pfc::string8 clean_metadata_text(const pfc::string8& text);
     void complete_artwork_search();  // Helper to complete cache management
+    bool is_station_name(const pfc::string8& artist, const pfc::string8& title);  // Station name detection helper
     
     // OSD (On-Screen Display) methods
     void show_osd(const pfc::string8& source_name);
@@ -564,12 +577,15 @@ public:
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
             if (pc->get_now_playing(current_track)) {
-                // Schedule initial artwork load after a longer delay
+                // Schedule initial artwork load using configured stream delay
                 // This handles cases where foobar2000 has resumed playback state
                 // but stream metadata takes time to populate
                 m_status_text = "Detected resumed playback - scheduling artwork load...";
                 InvalidateRect(m_hWnd, NULL, TRUE);
-                SetTimer(m_hWnd, 3, 3000, NULL);  // Timer ID 3, 3 second delay
+                
+                // Use configurable stream delay instead of hardcoded 3 seconds
+                int delay_ms = cfg_stream_delay > 0 ? cfg_stream_delay * 1000 : 100;  // Minimum 100ms for responsiveness
+                SetTimer(m_hWnd, 3, delay_ms, NULL);  // Timer ID 3, configurable delay
             } else {
                 // No track playing during initialization
                 
@@ -677,7 +693,9 @@ public:
         
         bool content_changed = (current_content != m_last_update_content);
         
-        bool enough_time_passed = (current_time - m_last_update_timestamp) > 1000; // 1 second
+        // Use configurable debounce time based on stream delay preference  
+        int debounce_time = cfg_stream_delay > 0 ? 1000 : 50; // Minimal debounce when no delay configured
+        bool enough_time_passed = (current_time - m_last_update_timestamp) > debounce_time;
         
         // Detect transition from empty metadata (ads) to populated metadata (music resumes)
         bool had_empty_metadata = (m_last_update_content == "|" || m_last_update_content.is_empty());
@@ -813,9 +831,13 @@ public:
             // For new internet radio streams, wait before checking metadata (regardless of clearing)
             if (is_new_stream) {
                 // Schedule delayed metadata check for new streams
+#ifdef _DEBUG
+#ifdef _DEBUG
                 char debug_msg[256];
                 sprintf_s(debug_msg, "ARTWORK: Setting stream delay timer for %d seconds (cfg_stream_delay=%d)\n", (int)cfg_stream_delay, (int)cfg_stream_delay);
                 OutputDebugStringA(debug_msg);
+#endif
+#endif
                 SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Timer ID 9 for new stream delay
                 m_new_stream_delay_active = true;  // Set flag to prevent override
                 
@@ -826,7 +848,11 @@ public:
                 return;  // Don't search immediately for new streams
             } else if (!new_is_internet_stream) {
                 // For local files, proceed with immediate artwork search
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Local file detected - bypassing stream delay, searching immediately\n");
+#endif
+#endif
                 m_current_track = track;
                 pfc::string8 fresh_artist, fresh_title;
                 extract_metadata_for_search(track, fresh_artist, fresh_title);
@@ -884,8 +910,13 @@ public:
                 } else {
                     // Check if Timer 9 is already running for a new stream delay - don't override it
                     if (!m_new_stream_delay_active) {
-                        // Normal track change: Use short delay for responsiveness
-                        SetTimer(m_hWnd, 9, 500, NULL);
+                        // Normal track change: Use short delay for responsiveness (or immediate if stream delay is 0)
+                        if (cfg_stream_delay > 0) {
+                            SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for responsiveness
+                        } else {
+                            // No delay configured - search immediately
+                            load_artwork_for_track(track);
+                        }
                     }
                 }
                 
@@ -970,7 +1001,12 @@ public:
                     // Normal track changes within stream: Use short delay for responsiveness
                     // Only set if new stream delay is not already active
                     if (!m_new_stream_delay_active) {
-                        SetTimer(m_hWnd, 9, 500, NULL);  // 0.5 second delay for track changes
+                        if (cfg_stream_delay > 0) {
+                            SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for responsiveness
+                        } else {
+                            // No delay configured - search immediately
+                            load_artwork_for_track(track);
+                        }
                     }
                 }
                 
@@ -1010,7 +1046,12 @@ public:
                 } else {
                     // Only set short delay if new stream delay is not already active
                     if (!m_new_stream_delay_active) {
-                        SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for track changes
+                        if (cfg_stream_delay > 0) {
+                            SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for responsiveness
+                        } else {
+                            // No delay configured - search immediately
+                            load_artwork_for_track(track);
+                        }
                     }
                 }
                 
@@ -1044,7 +1085,9 @@ public:
         // Smart debouncing - only update if content actually changed
         DWORD current_time = GetTickCount();
         bool content_changed = (current_content != m_last_update_content);
-        bool enough_time_passed = (current_time - m_last_update_timestamp) > 3000; // 3 second debounce
+        // Use configurable debounce time based on stream delay preference
+        int debounce_time = cfg_stream_delay > 0 ? cfg_stream_delay * 1000 : 100; // Minimal debounce when no delay configured
+        bool enough_time_passed = (current_time - m_last_update_timestamp) > debounce_time;
         
         
         // Skip if no changes and not enough time passed
@@ -1203,12 +1246,20 @@ void unsubscribe_from_artwork_events(IArtworkEventListener* listener) {
 void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title) {
     // Always use bridge functions for consistent behavior that respects API preferences
     // This ensures the CUI panel always gets the same search logic regardless of main UI element presence
+#ifdef _DEBUG
+#ifdef _DEBUG
     OutputDebugStringA("ARTWORK: Using bridge functions for consistent API preference handling\n");
+#endif
+#endif
     g_artwork_loading = true;
         
         std::thread([artist, title]() {
             try {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: No main UI element - using search bridge functions\n");
+#endif
+#endif
                 // Use search bridge functions that call the main component's API methods
                 // without needing a full UI element instance
                 
@@ -1219,42 +1270,70 @@ void trigger_main_component_search_with_metadata(const std::string& artist, cons
                     switch (api_type) {
                         case 0: // iTunes
                             if (cfg_enable_itunes) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                                 OutputDebugStringA("ARTWORK: Trying iTunes via bridge\n");
+#endif
+#endif
                                 if (bridge_search_itunes(artist, title)) return;
                             }
                             break;
                         case 1: // Deezer  
                             if (cfg_enable_deezer) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                                 OutputDebugStringA("ARTWORK: Trying Deezer via bridge\n");
+#endif
+#endif
                                 if (bridge_search_deezer(artist, title)) return;
                             }
                             break;
                         case 2: // Last.fm
                             if (cfg_enable_lastfm) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                                 OutputDebugStringA("ARTWORK: Trying Last.fm via bridge\n");
+#endif
+#endif
                                 if (bridge_search_lastfm(artist, title)) return;
                             }
                             break;
                         case 3: // MusicBrainz
                             if (cfg_enable_musicbrainz) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                                 OutputDebugStringA("ARTWORK: Trying MusicBrainz via bridge\n");
+#endif
+#endif
                                 if (bridge_search_musicbrainz(artist, title)) return;
                             }
                             break;
                         case 4: // Discogs
                             if (cfg_enable_discogs) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                                 OutputDebugStringA("ARTWORK: Trying Discogs via bridge\n");
+#endif
+#endif
                                 if (bridge_search_discogs(artist, title)) return;
                             }
                             break;
                     }
                 }
                 
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: All bridge searches completed - no results\n");
+#endif
+#endif
                 g_artwork_loading = false;
                 
             } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Exception in bridge search\n");
+#endif
+#endif
                 g_artwork_loading = false;
             }
         }).detach();
@@ -1263,7 +1342,11 @@ void trigger_main_component_search_with_metadata(const std::string& artist, cons
 // Legacy function (kept for compatibility)
 void trigger_main_component_search(metadb_handle_ptr track) {
     // Always use consistent bridge-based search for API preference respect
+#ifdef _DEBUG
+#ifdef _DEBUG
     OutputDebugStringA("ARTWORK: Using consistent bridge-based search for API preferences\n");
+#endif
+#endif
     if (track.is_valid()) {
         g_artwork_loading = true;
         
@@ -1285,7 +1368,11 @@ void trigger_main_component_search(metadb_handle_ptr track) {
                 trigger_main_component_search_with_metadata(artist, title);
                 
             } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Exception in standalone priority search\n");
+#endif
+#endif
                 g_artwork_loading = false;
             }
         }).detach();
@@ -1294,7 +1381,11 @@ void trigger_main_component_search(metadb_handle_ptr track) {
 
 // Function to trigger LOCAL artwork search specifically (for CUI panel priority)
 void trigger_main_component_local_search(metadb_handle_ptr track) {
+#ifdef _DEBUG
+#ifdef _DEBUG
     OutputDebugStringA("ARTWORK: Triggering local artwork search for CUI panel\n");
+#endif
+#endif
     
     if (!track.is_valid()) {
         return;
@@ -1305,34 +1396,58 @@ void trigger_main_component_local_search(metadb_handle_ptr track) {
     bool is_local_file = !(strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
     
     if (!is_local_file) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Not a local file, skipping local search\n");
+#endif
+#endif
         return;
     }
     
     // Remove file:// prefix if present
     if (strstr(file_path.c_str(), "file://") == file_path.c_str()) {
         file_path = pfc::string8(file_path.c_str() + 7); // Skip "file://"
+#ifdef _DEBUG
         char clean_path_debug[512];
         sprintf_s(clean_path_debug, "ARTWORK: Cleaned file path: %s\n", file_path.c_str());
+#ifdef _DEBUG
         OutputDebugStringA(clean_path_debug);
+#endif
+#endif
     }
     
     // If we have a main UI element, trigger its local search directly
     if (g_main_ui_element) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Using main UI element for local search\n");
+#endif
+#endif
         if (g_main_ui_element->search_local_artwork()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Main UI element found local artwork\n");
+#endif
+#endif
             return;
         }
     }
     
     // If no main UI element or local search failed, search manually
+#ifdef _DEBUG
+#ifdef _DEBUG
     OutputDebugStringA("ARTWORK: Performing manual local artwork search\n");
+#endif
+#endif
     
     // Get directory of the music file
+#ifdef _DEBUG
     char path_debug[512];
     sprintf_s(path_debug, "ARTWORK: Processing file path: %s\n", file_path.c_str());
+#ifdef _DEBUG
     OutputDebugStringA(path_debug);
+#endif
+#endif
     
     pfc::string8 directory;
     t_size last_slash = file_path.find_last('\\');
@@ -1342,11 +1457,17 @@ void trigger_main_component_local_search(metadb_handle_ptr track) {
     
     if (last_slash != pfc_infinite) {
         directory = pfc::string8(file_path.c_str(), last_slash);
+#ifdef _DEBUG
         char dir_debug[512];
         sprintf_s(dir_debug, "ARTWORK: Extracted directory: %s\n", directory.c_str());
+#ifdef _DEBUG
         OutputDebugStringA(dir_debug);
+#endif
+#endif
     } else {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Could not extract directory from file path\n");
+#endif
         return;
     }
     
@@ -1354,26 +1475,34 @@ void trigger_main_component_local_search(metadb_handle_ptr track) {
     pfc::string8 search_pattern = directory;
     search_pattern << "\\*";
     
+#ifdef _DEBUG
     char search_debug[512];
     sprintf_s(search_debug, "ARTWORK: Searching pattern: %s\n", search_pattern.c_str());
     OutputDebugStringA(search_debug);
+#endif
     
     WIN32_FIND_DATAA findData;
     HANDLE hFind = FindFirstFileA(search_pattern.c_str(), &findData);
     
     if (hFind != INVALID_HANDLE_VALUE) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Successfully opened directory for search\n");
+#endif
         int file_count = 0;
         do {
             file_count++;
+#ifdef _DEBUG
             char file_debug[512];
             sprintf_s(file_debug, "ARTWORK: Found file #%d: %s (attributes: %lu)\n", 
                      file_count, findData.cFileName, findData.dwFileAttributes);
             OutputDebugStringA(file_debug);
+#endif
             
             // Skip directories
             if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Skipping directory\n");
+#endif
                 continue;
             }
             
@@ -1381,9 +1510,11 @@ void trigger_main_component_local_search(metadb_handle_ptr track) {
             const char* filename = findData.cFileName;
             const char* ext = strrchr(filename, '.');
             if (ext) {
+#ifdef _DEBUG
                 char ext_debug[256];
                 sprintf_s(ext_debug, "ARTWORK: File extension: %s\n", ext);
                 OutputDebugStringA(ext_debug);
+#endif
                 
                 if (_stricmp(ext, ".jpg") == 0 || 
                     _stricmp(ext, ".jpeg") == 0 || 
@@ -1393,40 +1524,56 @@ void trigger_main_component_local_search(metadb_handle_ptr track) {
                     full_path << "\\" << filename;
                     
                     char debug_msg[512];
+#ifdef _DEBUG
                     sprintf_s(debug_msg, "ARTWORK: Found image file for CUI: %s\n", full_path.c_str());
                     OutputDebugStringA(debug_msg);
+#endif
                     
                     // Try to load the file directly into shared bitmap
                     if (load_local_artwork_into_shared_bitmap(full_path)) {
+#ifdef _DEBUG
                         char success_msg[512];
                         sprintf_s(success_msg, "ARTWORK: Successfully loaded local artwork: %s\n", filename);
                         OutputDebugStringA(success_msg);
+#endif
                         FindClose(hFind);
                         return;
                     } else {
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Failed to load image file into bitmap\n");
+#endif
                     }
                 } else {
+#ifdef _DEBUG
                     OutputDebugStringA("ARTWORK: File extension not an image format\n");
+#endif
                 }
             } else {
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: File has no extension\n");
+#endif
             }
         } while (FindNextFileA(hFind, &findData));
         
         char count_debug[256];
+#ifdef _DEBUG
         sprintf_s(count_debug, "ARTWORK: Processed %d total files in directory\n", file_count);
         OutputDebugStringA(count_debug);
+#endif
         
         FindClose(hFind);
     } else {
         DWORD error = GetLastError();
         char error_debug[256];
+#ifdef _DEBUG
         sprintf_s(error_debug, "ARTWORK: Failed to open directory, error code: %lu\n", error);
         OutputDebugStringA(error_debug);
+#endif
     }
     
+#ifdef _DEBUG
     OutputDebugStringA("ARTWORK: No local artwork files found\n");
+#endif
 }
 
 // Helper function to load local artwork into shared bitmap for CUI panel
@@ -1500,7 +1647,11 @@ bool load_local_artwork_into_shared_bitmap(const pfc::string8& file_path) {
                 "", 
                 ""
             ));
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Event notification sent for local artwork\n");
+#endif
+#endif
             
             delete pBitmap;
             return true;
@@ -1598,7 +1749,9 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                     pThis->m_status_text = "Waiting for track metadata...";
                     if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                     
-                    SetTimer(hwnd, 4, 2000, NULL);  // Timer ID 4, retry in 2 seconds
+                    // Use configurable stream delay instead of hardcoded 2 seconds
+                    int delay_ms = cfg_stream_delay > 0 ? cfg_stream_delay * 1000 : 500;  // Minimum 500ms for retry
+                    SetTimer(hwnd, 4, delay_ms, NULL);  // Timer ID 4, configurable retry delay
                 }
             }
         } else if (wParam == 4) {  // Timer ID 4 - retry for resume scenarios
@@ -1656,7 +1809,9 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                     pThis->m_status_text = "Still waiting for metadata...";
                     if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                     
-                    SetTimer(hwnd, 5, 3000, NULL);  // Timer ID 5, final retry in 3 seconds
+                    // Use configurable stream delay instead of hardcoded 3 seconds
+                    int delay_ms = cfg_stream_delay > 0 ? cfg_stream_delay * 1000 : 1000;  // Minimum 1 second for final retry
+                    SetTimer(hwnd, 5, delay_ms, NULL);  // Timer ID 5, configurable final retry delay
                 }
             }
         } else if (wParam == 5) {  // Timer ID 5 - final retry for resume scenarios
@@ -1728,7 +1883,9 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 pThis->m_status_text = "Playback detected - scheduling artwork load...";
                 if (pThis->m_hWnd) InvalidateRect(pThis->m_hWnd, NULL, TRUE);
                 
-                SetTimer(hwnd, 3, 3000, NULL);  // Timer ID 3, 3 second delay
+                // Use configurable stream delay instead of hardcoded 3 seconds
+                int delay_ms = cfg_stream_delay > 0 ? cfg_stream_delay * 1000 : 100;  // Minimum 100ms for responsiveness
+                SetTimer(hwnd, 3, delay_ms, NULL);  // Timer ID 3, configurable delay
             } else {
                 // Still no playback, but limit the checking to avoid infinite loop
                 static int check_count = 0;
@@ -1792,7 +1949,11 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 }
             }
         } else if (wParam == 9) {  // Timer ID 9 - delayed metadata check for new streams
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Stream delay timer fired, proceeding with delayed artwork search\n");
+#endif
+#endif
             KillTimer(hwnd, 9);  // Kill the timer
             pThis->m_new_stream_delay_active = false;  // Clear the flag when timer fires
             
@@ -2008,7 +2169,11 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
         bool old_was_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
         if (old_was_stream) {
             force_local_search = true;
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Stream-to-local transition detected, forcing local artwork search\n");
+#endif
+#endif
         }
     }
     
@@ -2096,6 +2261,17 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
         try {
             auto result = aaer->query(album_art_ids::cover_front, fb2k::noAbort);
             if (result.is_valid()) {
+                // CRITICAL: Check if this embedded artwork is for a station name
+                // This fixes SomaFM Icecast streams with embedded station artwork
+                pfc::string8 artist, title;
+                extract_metadata_for_search(track, artist, title);
+                
+                // Check if this is embedded artwork for a station name
+                if (is_station_name(artist, title)) {
+                    // Block the embedded station artwork
+                    return;
+                }
+                
                 // Convert album art data to bitmap using GDI+
                 auto data = result->get_ptr();
                 auto size = result->get_size();
@@ -2224,7 +2400,11 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
         bool old_was_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
         if (old_was_stream) {
             force_local_search = true;
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Stream-to-local transition detected in metadata function, forcing local artwork search\n");
+#endif
+#endif
         }
     }
     
@@ -2309,7 +2489,9 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
         // Use priority-based search order
         // Set global loading flag for CUI panel communication
         g_artwork_loading = true;
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Main component starting priority search\n");
+#endif
         
         start_priority_search(artist, title);
     } else {
@@ -4300,7 +4482,11 @@ void artwork_ui_element::start_priority_search(const pfc::string8& artist, const
     
     // First, try to find local artwork files before searching online
     if (search_local_artwork()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Local artwork found, skipping online search\n");
+#endif
+#endif
         return;  // Found local artwork, no need to search online
     }
     
@@ -4321,14 +4507,22 @@ bool artwork_ui_element::search_local_artwork() {
     
     // Skip if this is an internet stream
     if (strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://")) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Internet stream detected, skipping local artwork search\n");
+#endif
+#endif
         return false;
     }
     
     // Remove file:// prefix if present
     if (strstr(file_path.c_str(), "file://") == file_path.c_str()) {
         file_path = pfc::string8(file_path.c_str() + 7); // Skip "file://"
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Cleaned file:// prefix from path\n");
+#endif
+#endif
     }
     
     // Get directory of the music file
@@ -4341,7 +4535,9 @@ bool artwork_ui_element::search_local_artwork() {
     if (last_slash != pfc_infinite) {
         directory = pfc::string8(file_path.c_str(), last_slash);
     } else {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Could not extract directory from file path\n");
+#endif
         return false;
     }
     
@@ -4371,13 +4567,17 @@ bool artwork_ui_element::search_local_artwork() {
                     full_path << "\\" << filename;
                     
                     char debug_msg[512];
+#ifdef _DEBUG
                     sprintf_s(debug_msg, "ARTWORK: Found image file: %s\n", full_path.c_str());
                     OutputDebugStringA(debug_msg);
+#endif
                     
                     if (load_local_artwork_file(full_path)) {
+#ifdef _DEBUG
                         char success_msg[512];
                         sprintf_s(success_msg, "ARTWORK: Successfully loaded local artwork: %s\n", filename);
                         OutputDebugStringA(success_msg);
+#endif
                         m_artwork_source = "Local file";
                         // No OSD for local files - they should load silently
                         complete_artwork_search();  // Mark search as complete
@@ -4392,7 +4592,9 @@ bool artwork_ui_element::search_local_artwork() {
         FindClose(hFind);
     }
     
+#ifdef _DEBUG
     OutputDebugStringA("ARTWORK: No local artwork files found\n");
+#endif
     return false;
 }
 
@@ -4401,7 +4603,11 @@ bool artwork_ui_element::load_local_artwork_file(const pfc::string8& file_path) 
     // Check if this is the same file we already have loaded to prevent flicker
     if (m_artwork_bitmap && !m_current_artwork_path.is_empty() && 
         m_current_artwork_path == file_path) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Same local artwork file already loaded, skipping reload to prevent flicker\n");
+#endif
+#endif
         return true;
     }
     
@@ -4410,14 +4616,22 @@ bool artwork_ui_element::load_local_artwork_file(const pfc::string8& file_path) 
         HANDLE hFile = CreateFileA(file_path.c_str(), GENERIC_READ, FILE_SHARE_READ, 
                                   NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile == INVALID_HANDLE_VALUE) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Could not open local artwork file\n");
+#endif
+#endif
             return false;
         }
         
         DWORD file_size = GetFileSize(hFile, NULL);
         if (file_size == 0 || file_size > 10 * 1024 * 1024) {  // Max 10MB
             CloseHandle(hFile);
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Local artwork file size invalid\n");
+#endif
+#endif
             return false;
         }
         
@@ -4426,14 +4640,22 @@ bool artwork_ui_element::load_local_artwork_file(const pfc::string8& file_path) 
         DWORD bytes_read = 0;
         if (!ReadFile(hFile, file_data.data(), file_size, &bytes_read, NULL) || bytes_read != file_size) {
             CloseHandle(hFile);
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Could not read local artwork file\n");
+#endif
+#endif
             return false;
         }
         CloseHandle(hFile);
         
         // Validate image data
         if (file_data.size() < 4) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Local artwork file too small\n");
+#endif
+#endif
             return false;
         }
         
@@ -4452,22 +4674,38 @@ bool artwork_ui_element::load_local_artwork_file(const pfc::string8& file_path) 
         else if (data[0] == 'B' && data[1] == 'M') valid_format = true;
         
         if (!valid_format) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Local artwork file is not a valid image format\n");
+#endif
+#endif
             return false;
         }
         
         // Create bitmap from the image data
         if (create_bitmap_from_data(file_data)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Successfully loaded local artwork file\n");
+#endif
+#endif
             m_current_artwork_path = file_path; // Store path to prevent flicker on reload
             return true;
         } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to create bitmap from local artwork file\n");
+#endif
+#endif
             return false;
         }
         
     } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Exception while loading local artwork file\n");
+#endif
+#endif
         return false;
     }
 }
@@ -4909,7 +5147,11 @@ void artwork_ui_element::paint_osd(HDC hdc, const RECT& client_rect) {
 static class ui_element_debug {
 public:
     ui_element_debug() {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: UI element factory about to register\n");
+#endif
+#endif
     }
 } g_ui_element_debug;
 
@@ -4922,7 +5164,11 @@ static service_factory_single_t<artwork_ui_element_factory> g_ui_element_factory
 static class ui_element_post_debug {
 public:
     ui_element_post_debug() {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: UI element factory registered successfully\n");
+#endif
+#endif
     }
 } g_ui_element_post_debug;
 
@@ -5118,7 +5364,11 @@ namespace standalone {
     bool download_image(const std::string& url, std::vector<BYTE>& data) {
         data.clear();
         
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Standalone download_image started\n");
+#endif
+#endif
         
         // Use per-request manager to prevent API interference without blocking other APIs
         HttpRequestManager* request_manager = get_request_manager_for_api(url);
@@ -5136,11 +5386,19 @@ namespace standalone {
         urlComp.dwExtraInfoLength = -1;
         
         if (!WinHttpCrackUrl(wide_url.c_str(), 0, 0, &urlComp)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: WinHttpCrackUrl failed\n");
+#endif
+#endif
             return false;
         }
         
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: URL cracked successfully\n");
+#endif
+#endif
         
         HINTERNET hSession = WinHttpOpen(L"foobar2000-artwork/1.0",
                                        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -5148,7 +5406,11 @@ namespace standalone {
                                        WINHTTP_NO_PROXY_BYPASS, 0);
         
         if (!hSession) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: WinHttpOpen failed\n");
+#endif
+#endif
             return false;
         }
         
@@ -5156,7 +5418,11 @@ namespace standalone {
         // DNS resolution: 10s, Connect: 10s, Send: 15s, Receive: 30s
         WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
         
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: WinHTTP session opened\n");
+#endif
+#endif
         
         std::wstring hostname(urlComp.lpszHostName, urlComp.dwHostNameLength);
         
@@ -5164,7 +5430,11 @@ namespace standalone {
                                           urlComp.nPort, 0);
         
         if (hConnect) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Connected to host\n");
+#endif
+#endif
             std::wstring path(urlComp.lpszUrlPath, urlComp.dwUrlPathLength);
             if (urlComp.lpszExtraInfo) {
                 path += std::wstring(urlComp.lpszExtraInfo, urlComp.dwExtraInfoLength);
@@ -5177,13 +5447,25 @@ namespace standalone {
                                                   WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
             
             if (hRequest) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: HTTP request opened\n");
+#endif
+#endif
                 if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                                      WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                     OutputDebugStringA("ARTWORK: HTTP request sent\n");
+#endif
+#endif
                     
                     if (WinHttpReceiveResponse(hRequest, NULL)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: HTTP response received\n");
+#endif
+#endif
                         DWORD dwSize = 0;
                         do {
                             DWORD dwDownloaded = 0;
@@ -5207,17 +5489,29 @@ namespace standalone {
                 }
                 WinHttpCloseHandle(hRequest);
             } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Failed to open HTTP request\n");
+#endif
+#endif
             }
             WinHttpCloseHandle(hConnect);
         } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to connect to host\n");
+#endif
+#endif
         }
         WinHttpCloseHandle(hSession);
         
         char result_msg[256];
+#ifdef _DEBUG
         sprintf_s(result_msg, "ARTWORK: Download completed, data size: %zu bytes\n", data.size());
+#ifdef _DEBUG
         OutputDebugStringA(result_msg);
+#endif
+#endif
         
         return !data.empty();
     }
@@ -5225,24 +5519,40 @@ namespace standalone {
     // Create bitmap from image data and make it available globally
     bool create_bitmap_from_data(const std::vector<BYTE>& data) {
         if (data.empty()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: create_bitmap_from_data - no data\n");
+#endif
+#endif
             return false;
         }
         
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Creating bitmap from image data...\n");
+#endif
+#endif
         
         // Create memory stream from data
         IStream* pStream = NULL;
         HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, data.size());
         if (!hGlobal) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to allocate global memory\n");
+#endif
+#endif
             return false;
         }
         
         void* pData = GlobalLock(hGlobal);
         if (!pData) {
             GlobalFree(hGlobal);
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to lock global memory\n");
+#endif
+#endif
             return false;
         }
         
@@ -5251,7 +5561,11 @@ namespace standalone {
         
         if (CreateStreamOnHGlobal(hGlobal, TRUE, &pStream) != S_OK) {
             GlobalFree(hGlobal);
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to create stream\n");
+#endif
+#endif
             return false;
         }
         
@@ -5261,7 +5575,11 @@ namespace standalone {
         
         if (!pBitmap || pBitmap->GetLastStatus() != Gdiplus::Ok) {
             if (pBitmap) delete pBitmap;
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to create GDI+ bitmap\n");
+#endif
+#endif
             return false;
         }
         
@@ -5269,7 +5587,11 @@ namespace standalone {
         HBITMAP hBitmap = NULL;
         if (pBitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBitmap) != Gdiplus::Ok) {
             delete pBitmap;
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to convert to HBITMAP\n");
+#endif
+#endif
             return false;
         }
         
@@ -5290,9 +5612,17 @@ namespace standalone {
             "", 
             ""
         ));
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Event notification sent for standalone bitmap\n");
+#endif
+#endif
         
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Bitmap created and stored globally\n");
+#endif
+#endif
         return true;
     }
     
@@ -5305,7 +5635,11 @@ void standalone_deezer_search(metadb_handle_ptr track) {
     }
     
     try {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Starting standalone Deezer search\n");
+#endif
+#endif
         
         // Extract metadata (same as main component)
         const file_info& info = track->get_info_ref()->info();
@@ -5319,12 +5653,18 @@ void standalone_deezer_search(metadb_handle_ptr track) {
         }
         
         char debug_msg[512];
+#ifdef _DEBUG
         sprintf_s(debug_msg, "ARTWORK: Standalone search with artist='%s', title='%s'\n", 
                  artist.c_str(), title.c_str());
         OutputDebugStringA(debug_msg);
+#endif
         
         if (title.empty()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Standalone search - no title, cancelled\n");
+#endif
+#endif
             g_artwork_loading = false;
             return;
         }
@@ -5332,11 +5672,19 @@ void standalone_deezer_search(metadb_handle_ptr track) {
         // TODO: Implement full Deezer API search here
         Sleep(2000); // Temporary simulation
         
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Standalone search completed - no results (simulation)\n");
+#endif
+#endif
         g_artwork_loading = false;
         
     } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Exception in standalone search\n");
+#endif
+#endif
         g_artwork_loading = false;
     }
 }
@@ -5344,12 +5692,18 @@ void standalone_deezer_search(metadb_handle_ptr track) {
 void standalone_deezer_search_with_metadata(const std::string& artist, const std::string& title) {
     try {
         char debug_msg[512];
+#ifdef _DEBUG
         sprintf_s(debug_msg, "ARTWORK: Standalone search with metadata: artist='%s', title='%s'\n", 
                  artist.c_str(), title.c_str());
         OutputDebugStringA(debug_msg);
+#endif
         
         if (title.empty()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Standalone search - no title, cancelled\n");
+#endif
+#endif
             g_artwork_loading = false;
             return;
         }
@@ -5367,48 +5721,86 @@ void standalone_deezer_search_with_metadata(const std::string& artist, const std
         
         std::string search_url = "https://api.deezer.com/search/track?q=" + encoded_search + "&limit=10";
         
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Making Deezer API request...\n");
+#endif
+#endif
         
         // Make HTTP request using standalone method
         std::string response;
         if (standalone::http_get_request(search_url, response)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Deezer API request successful, parsing response...\n");
+#endif
+#endif
             
             // Parse Deezer response using standalone method
             std::string artwork_url;
             if (standalone::parse_deezer_response(response, artwork_url)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Found artwork URL, downloading image...\n");
+#endif
+#endif
                 
                 // Download image using standalone method
                 char url_debug[512];
+#ifdef _DEBUG
                 sprintf_s(url_debug, "ARTWORK: Attempting to download from URL: %s\n", artwork_url.c_str());
+#ifdef _DEBUG
                 OutputDebugStringA(url_debug);
+#endif
+#endif
                 
                 std::vector<BYTE> image_data;
                 if (standalone::download_image(artwork_url, image_data)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                     OutputDebugStringA("ARTWORK: Image downloaded successfully, creating bitmap...\n");
+#endif
+#endif
                     
                     // Create bitmap from downloaded image data
                     if (standalone::create_bitmap_from_data(image_data)) {
                         char success_msg[256];
+#ifdef _DEBUG
                         sprintf_s(success_msg, "ARTWORK: Standalone Deezer search completed successfully - downloaded %zu bytes and created bitmap\n", image_data.size());
                         OutputDebugStringA(success_msg);
+#endif
                     } else {
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Failed to create bitmap from downloaded data\n");
+#endif
                     }
                 } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                     OutputDebugStringA("ARTWORK: Failed to download image\n");
+#endif
+#endif
                 }
             } else {
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: No artwork found in Deezer response\n");
+#endif
             }
         } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Deezer API request failed\n");
+#endif
+#endif
         }
         g_artwork_loading = false;
         
     } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Exception in standalone metadata search\n");
+#endif
+#endif
         g_artwork_loading = false;
     }
 }
@@ -5417,10 +5809,18 @@ void standalone_deezer_search_with_metadata(const std::string& artist, const std
 
 bool bridge_search_deezer(const std::string& artist, const std::string& title) {
     try {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Bridge Deezer search starting\n");
+#endif
+#endif
         
         if (title.empty()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: No title for Deezer search\n");
+#endif
+#endif
             return false;
         }
         
@@ -5450,68 +5850,116 @@ bool bridge_search_deezer(const std::string& artist, const std::string& title) {
         std::string deezer_url = "https://api.deezer.com/search/track?q=" + encoded_query + "&limit=1";
         
         char debug_msg[512];
+#ifdef _DEBUG
         sprintf_s(debug_msg, "ARTWORK: Deezer URL: %s\n", deezer_url.c_str());
         OutputDebugStringA(debug_msg);
+#endif
         
         // Make HTTP request using bridge function
         std::string response;
         if (bridge_http_get_request(deezer_url, response)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Deezer API response received\n");
+#endif
+#endif
             
             // Parse Deezer JSON response for album cover URL (same logic as main component)
             std::string artwork_url;
             if (parse_deezer_json_response(response, artwork_url)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Deezer artwork URL found, downloading...\n");
+#endif
+#endif
                 
                 // Download the artwork image
                 std::vector<BYTE> image_data;
                 if (bridge_download_image(artwork_url, image_data)) {
                     char debug_msg[256];
+#ifdef _DEBUG
                     sprintf_s(debug_msg, "ARTWORK: Deezer artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
+#endif
                     
                     // Set source before creating bitmap so event notification has correct source
                     g_current_artwork_source = "Deezer";
                     
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Deezer artwork bitmap created successfully\n");
+#endif
+#endif
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Failed to create bitmap from Deezer image data\n");
+#endif
+#endif
                     }
                 } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                     OutputDebugStringA("ARTWORK: Failed to download Deezer artwork image\n");
+#endif
+#endif
                 }
             } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: No artwork URL found in Deezer response\n");
+#endif
+#endif
             }
         } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Deezer API request failed\n");
+#endif
+#endif
         }
         
         return false; // No artwork found
         
     } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Exception in Deezer bridge search\n");
+#endif
+#endif
         return false;
     }
 }
 
 bool bridge_search_discogs(const std::string& artist, const std::string& title) {
     try {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Bridge Discogs search starting\n");
+#endif
+#endif
         
         // Check credentials like main component does
         if (cfg_discogs_key.is_empty() && 
             (cfg_discogs_consumer_key.is_empty() || cfg_discogs_consumer_secret.is_empty())) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Discogs API credentials not configured - authentication required\n");
+#endif
+#endif
             return false;
         }
         
         if (artist.empty() || title.empty()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Missing artist or title for Discogs search\n");
+#endif
+#endif
             return false;
         }
         
@@ -5568,65 +6016,111 @@ bool bridge_search_discogs(const std::string& artist, const std::string& title) 
         // Add authentication token if available
         if (!cfg_discogs_key.is_empty()) {
             discogs_url += "&token=" + std::string(cfg_discogs_key.get_ptr());
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Using Discogs token authentication\n");
+#endif
+#endif
         } else if (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()) {
             discogs_url += "&key=" + std::string(cfg_discogs_consumer_key.get_ptr());
             discogs_url += "&secret=" + std::string(cfg_discogs_consumer_secret.get_ptr());
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Using Discogs consumer key/secret authentication\n");
+#endif
+#endif
         }
         
         char debug_msg[512];
+#ifdef _DEBUG
         sprintf_s(debug_msg, "ARTWORK: Discogs URL: %s\n", discogs_url.c_str());
         OutputDebugStringA(debug_msg);
+#endif
         
         // Make HTTP request with User-Agent header (required by Discogs API)
         std::string response;
         if (bridge_http_get_request_with_useragent(discogs_url, response, "foobar2000-artwork/1.0")) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Discogs API response received\n");
+#endif
+#endif
             
             // Debug: Log the first 500 characters of the response to see what we got
             std::string debug_response = response.length() > 500 ? response.substr(0, 500) : response;
             char debug_msg[1024];
+#ifdef _DEBUG
             sprintf_s(debug_msg, "ARTWORK: Discogs response preview: %s\n", debug_response.c_str());
             OutputDebugStringA(debug_msg);
+#endif
             
             // Parse Discogs JSON response for artwork URL
             std::string artwork_url;
             if (parse_discogs_json_response(response, artwork_url)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Discogs artwork URL found, downloading...\n");
+#endif
+#endif
                 
                 // Download the artwork image
                 std::vector<BYTE> image_data;
                 if (bridge_download_image(artwork_url, image_data)) {
                     char debug_msg[256];
+#ifdef _DEBUG
                     sprintf_s(debug_msg, "ARTWORK: Discogs artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
+#endif
                     
                     // Set source before creating bitmap so event notification has correct source
                     g_current_artwork_source = "Discogs";
                     
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Discogs artwork bitmap created successfully\n");
+#endif
+#endif
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Failed to create bitmap from Discogs image data\n");
+#endif
+#endif
                     }
                 } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                     OutputDebugStringA("ARTWORK: Failed to download Discogs artwork image\n");
+#endif
+#endif
                 }
             } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: No artwork URL found in Discogs response\n");
+#endif
+#endif
             }
         } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Discogs API request failed\n");
+#endif
+#endif
         }
         
         return false; // No artwork found
         
     } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Exception in Discogs bridge search\n");
+#endif
+#endif
         return false;
     }
 }
@@ -5634,10 +6128,18 @@ bool bridge_search_discogs(const std::string& artist, const std::string& title) 
 // Placeholder bridge functions for other APIs
 bool bridge_search_itunes(const std::string& artist, const std::string& title) {
     try {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Bridge iTunes search starting\n");
+#endif
+#endif
         
         if (title.empty()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: No title for iTunes search\n");
+#endif
+#endif
             return false;
         }
         
@@ -5667,67 +6169,115 @@ bool bridge_search_itunes(const std::string& artist, const std::string& title) {
         std::string itunes_url = "https://itunes.apple.com/search?term=" + encoded_query + "&media=music&entity=song&limit=1";
         
         char debug_msg[512];
+#ifdef _DEBUG
         sprintf_s(debug_msg, "ARTWORK: iTunes URL: %s\n", itunes_url.c_str());
         OutputDebugStringA(debug_msg);
+#endif
         
         // Make HTTP request
         std::string response;
         if (bridge_http_get_request(itunes_url, response)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: iTunes API response received\n");
+#endif
+#endif
             
             // Parse iTunes JSON response for artwork URL
             std::string artwork_url;
             if (parse_itunes_json_response(response, artwork_url)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: iTunes artwork URL found, downloading...\n");
+#endif
+#endif
                 
                 // Download the artwork image
                 std::vector<BYTE> image_data;
                 if (bridge_download_image(artwork_url, image_data)) {
                     char debug_msg[256];
+#ifdef _DEBUG
                     sprintf_s(debug_msg, "ARTWORK: iTunes artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
+#endif
                     
                     // Set source before creating bitmap so event notification has correct source
                     g_current_artwork_source = "iTunes";
                     
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: iTunes artwork bitmap created successfully\n");
+#endif
+#endif
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Failed to create bitmap from iTunes image data\n");
+#endif
+#endif
                     }
                 } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                     OutputDebugStringA("ARTWORK: Failed to download iTunes artwork image\n");
+#endif
+#endif
                 }
             } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: No artwork URL found in iTunes response\n");
+#endif
+#endif
             }
         } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: iTunes API request failed\n");
+#endif
+#endif
         }
         
         return false; // No artwork found
         
     } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Exception in iTunes bridge search\n");
+#endif
+#endif
         return false;
     }
 }
 
 bool bridge_search_lastfm(const std::string& artist, const std::string& title) {
     try {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Bridge Last.fm search starting\n");
+#endif
+#endif
         
         // Check if API key is configured
         if (cfg_lastfm_key.is_empty()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Last.fm API key not configured\n");
+#endif
+#endif
             return false;
         }
         
         if (artist.empty() || title.empty()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Missing artist or title for Last.fm search\n");
+#endif
+#endif
             return false;
         }
         
@@ -5765,61 +6315,105 @@ bool bridge_search_lastfm(const std::string& artist, const std::string& title) {
                                 "&format=json";
         
         char debug_msg[512];
+#ifdef _DEBUG
         sprintf_s(debug_msg, "ARTWORK: Last.fm URL: %s\n", lastfm_url.c_str());
         OutputDebugStringA(debug_msg);
+#endif
         
         // Make HTTP request
         std::string response;
         if (bridge_http_get_request(lastfm_url, response)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Last.fm API response received\n");
+#endif
+#endif
             
             // Parse Last.fm JSON response for artwork URL
             std::string artwork_url;
             if (parse_lastfm_json_response(response, artwork_url)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Last.fm artwork URL found, downloading...\n");
+#endif
+#endif
                 
                 // Download the artwork image
                 std::vector<BYTE> image_data;
                 if (bridge_download_image(artwork_url, image_data)) {
                     char debug_msg[256];
+#ifdef _DEBUG
                     sprintf_s(debug_msg, "ARTWORK: Last.fm artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
+#endif
                     
                     // Set source before creating bitmap so event notification has correct source
                     g_current_artwork_source = "Last.fm";
                     
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Last.fm artwork bitmap created successfully\n");
+#endif
+#endif
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Failed to create bitmap from Last.fm image data\n");
+#endif
+#endif
                     }
                 } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                     OutputDebugStringA("ARTWORK: Failed to download Last.fm artwork image\n");
+#endif
+#endif
                 }
             } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: No artwork URL found in Last.fm response\n");
+#endif
+#endif
             }
         } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Last.fm API request failed\n");
+#endif
+#endif
         }
         
         return false; // No artwork found
         
     } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Exception in Last.fm bridge search\n");
+#endif
+#endif
         return false;
     }
 }
 
 bool bridge_search_musicbrainz(const std::string& artist, const std::string& title) {
     try {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Bridge MusicBrainz search starting\n");
+#endif
+#endif
         
         if (artist.empty() || title.empty()) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Missing artist or title for MusicBrainz search\n");
+#endif
+#endif
             return false;
         }
         
@@ -5855,58 +6449,94 @@ bool bridge_search_musicbrainz(const std::string& artist, const std::string& tit
                                      "&fmt=json&limit=1";
         
         char debug_msg[512];
+#ifdef _DEBUG
         sprintf_s(debug_msg, "ARTWORK: MusicBrainz URL: %s\n", musicbrainz_url.c_str());
         OutputDebugStringA(debug_msg);
+#endif
         
         // Make HTTP request to MusicBrainz
         std::string response;
         if (bridge_http_get_request(musicbrainz_url, response)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: MusicBrainz API response received\n");
+#endif
+#endif
             
             // Parse MusicBrainz JSON response for release MBID
             std::string release_mbid;
             if (parse_musicbrainz_json_response(response, release_mbid)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: MusicBrainz release MBID found, searching for cover art...\n");
+#endif
+#endif
                 
                 // Build CoverArtArchive URL
                 std::string coverart_url = "https://coverartarchive.org/release/" + release_mbid + "/front";
                 
                 char debug_msg[256];
+#ifdef _DEBUG
                 sprintf_s(debug_msg, "ARTWORK: CoverArtArchive URL: %s\n", coverart_url.c_str());
                 OutputDebugStringA(debug_msg);
+#endif
                 
                 // Download the artwork image directly (CoverArtArchive redirects to actual image)
                 std::vector<BYTE> image_data;
                 if (bridge_download_image(coverart_url, image_data)) {
                     char debug_msg[256];
+#ifdef _DEBUG
                     sprintf_s(debug_msg, "ARTWORK: MusicBrainz artwork downloaded successfully (%zu bytes)\n", image_data.size());
                     OutputDebugStringA(debug_msg);
+#endif
                     
                     // Set source before creating bitmap so event notification has correct source
                     g_current_artwork_source = "MusicBrainz";
                     
                     // Create bitmap from downloaded data and store in shared bitmap
                     if (create_bitmap_from_image_data(image_data)) {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: MusicBrainz artwork bitmap created successfully\n");
+#endif
+#endif
                         g_artwork_loading = false;
                         return true; // Success!
                     } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                         OutputDebugStringA("ARTWORK: Failed to create bitmap from MusicBrainz image data\n");
+#endif
+#endif
                     }
                 } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
                     OutputDebugStringA("ARTWORK: Failed to download MusicBrainz artwork image\n");
+#endif
+#endif
                 }
             } else {
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: No release MBID found in MusicBrainz response\n");
+#endif
             }
         } else {
+#ifdef _DEBUG
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: MusicBrainz API request failed\n");
+#endif
+#endif
         }
         
         return false; // No artwork found
         
     } catch (...) {
+#ifdef _DEBUG
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Exception in MusicBrainz bridge search\n");
+#endif
+#endif
         return false;
     }
 }
@@ -5919,14 +6549,18 @@ bool parse_deezer_json_response(const std::string& json, std::string& artwork_ur
     
     size_t album_pos = json.find("\"album\"");
     if (album_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No album field in Deezer response\n");
+#endif
         return false;
     }
     
     // Find cover_xl field after album
     size_t cover_pos = json.find("\"cover_xl\"", album_pos);
     if (cover_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No cover_xl field in Deezer response\n");
+#endif
         return false;
     }
     
@@ -5952,13 +6586,17 @@ bool parse_deezer_json_response(const std::string& json, std::string& artwork_ur
     
     // Validate URL
     if (artwork_url.empty() || artwork_url.find("http") != 0) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Invalid artwork URL from Deezer\n");
+#endif
         return false;
     }
     
     char debug_msg[512];
+#ifdef _DEBUG
     sprintf_s(debug_msg, "ARTWORK: Deezer artwork URL: %s\n", artwork_url.c_str());
     OutputDebugStringA(debug_msg);
+#endif
     
     return true;
 }
@@ -5969,14 +6607,18 @@ bool parse_itunes_json_response(const std::string& json, std::string& artwork_ur
     
     size_t results_pos = json.find("\"results\"");
     if (results_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No results field in iTunes response\n");
+#endif
         return false;
     }
     
     // Find artworkUrl100 field after results
     size_t artwork_pos = json.find("\"artworkUrl100\"", results_pos);
     if (artwork_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No artworkUrl100 field in iTunes response\n");
+#endif
         return false;
     }
     
@@ -6008,13 +6650,17 @@ bool parse_itunes_json_response(const std::string& json, std::string& artwork_ur
     
     // Validate URL
     if (artwork_url.empty() || artwork_url.find("http") != 0) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Invalid artwork URL from iTunes\n");
+#endif
         return false;
     }
     
     char debug_msg[512];
+#ifdef _DEBUG
     sprintf_s(debug_msg, "ARTWORK: iTunes artwork URL: %s\n", artwork_url.c_str());
     OutputDebugStringA(debug_msg);
+#endif
     
     return true;
 }
@@ -6025,21 +6671,27 @@ bool parse_lastfm_json_response(const std::string& json, std::string& artwork_ur
     
     size_t track_pos = json.find("\"track\"");
     if (track_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No track field in Last.fm response\n");
+#endif
         return false;
     }
     
     // Find album field after track
     size_t album_pos = json.find("\"album\"", track_pos);
     if (album_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No album field in Last.fm response\n");
+#endif
         return false;
     }
     
     // Find image array after album
     size_t image_pos = json.find("\"image\"", album_pos);
     if (image_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No image field in Last.fm response\n");
+#endif
         return false;
     }
     
@@ -6051,7 +6703,9 @@ bool parse_lastfm_json_response(const std::string& json, std::string& artwork_ur
         // Fall back to large if extralarge not found
         size_t large_pos = json.find("\"large\"", image_pos);
         if (large_pos == std::string::npos) {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: No large image found in Last.fm response\n");
+#endif
             return false;
         }
         search_start = large_pos;
@@ -6060,7 +6714,9 @@ bool parse_lastfm_json_response(const std::string& json, std::string& artwork_ur
     // Find the "#text" field that contains the URL (search backwards from size field)
     size_t text_pos = json.rfind("\"#text\"", search_start);
     if (text_pos == std::string::npos || text_pos < image_pos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No #text field found for image in Last.fm response\n");
+#endif
         return false;
     }
     
@@ -6086,13 +6742,17 @@ bool parse_lastfm_json_response(const std::string& json, std::string& artwork_ur
     
     // Validate URL
     if (artwork_url.empty() || artwork_url.find("http") != 0) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Invalid artwork URL from Last.fm\n");
+#endif
         return false;
     }
     
+#ifdef _DEBUG
     char debug_msg[512];
     sprintf_s(debug_msg, "ARTWORK: Last.fm artwork URL: %s\n", artwork_url.c_str());
     OutputDebugStringA(debug_msg);
+#endif
     
     return true;
 }
@@ -6103,21 +6763,27 @@ bool parse_musicbrainz_json_response(const std::string& json, std::string& relea
     
     size_t recordings_pos = json.find("\"recordings\"");
     if (recordings_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No recordings field in MusicBrainz response\n");
+#endif
         return false;
     }
     
     // Find releases array within the first recording
     size_t releases_pos = json.find("\"releases\"", recordings_pos);
     if (releases_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No releases field in MusicBrainz response\n");
+#endif
         return false;
     }
     
     // Find the first release MBID
     size_t id_pos = json.find("\"id\"", releases_pos);
     if (id_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No id field in MusicBrainz releases\n");
+#endif
         return false;
     }
     
@@ -6136,13 +6802,17 @@ bool parse_musicbrainz_json_response(const std::string& json, std::string& relea
     
     // Validate MBID format (should be a UUID)
     if (release_mbid.length() != 36) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Invalid MBID format from MusicBrainz\n");
+#endif
         return false;
     }
     
+#ifdef _DEBUG
     char debug_msg[256];
     sprintf_s(debug_msg, "ARTWORK: MusicBrainz release MBID: %s\n", release_mbid.c_str());
     OutputDebugStringA(debug_msg);
+#endif
     
     return true;
 }
@@ -6153,14 +6823,18 @@ bool parse_discogs_json_response(const std::string& json, std::string& artwork_u
     
     size_t results_pos = json.find("\"results\"");
     if (results_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No results field in Discogs response\n");
+#endif
         return false;
     }
     
     // Find the opening bracket for the results array
     size_t bracket_pos = json.find("[", results_pos);
     if (bracket_pos == std::string::npos) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: No results array bracket in Discogs response\n");
+#endif
         return false;
     }
     
@@ -6170,7 +6844,9 @@ bool parse_discogs_json_response(const std::string& json, std::string& artwork_u
         check_pos++;
     }
     if (check_pos < json.length() && json[check_pos] == ']') {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Discogs results array is empty - no artwork found\n");
+#endif
         return false;
     }
     
@@ -6214,9 +6890,11 @@ bool parse_discogs_json_response(const std::string& json, std::string& artwork_u
         
         // Validate URL - skip empty or null values
         if (!artwork_url.empty() && artwork_url != "null" && artwork_url.find("http") == 0) {
+#ifdef _DEBUG
             char debug_msg[512];
             sprintf_s(debug_msg, "ARTWORK: Discogs artwork URL found: %s\n", artwork_url.c_str());
             OutputDebugStringA(debug_msg);
+#endif
             return true;
         }
         
@@ -6224,16 +6902,21 @@ bool parse_discogs_json_response(const std::string& json, std::string& artwork_u
         search_start = search_start.substr(quote_end + 1);
     }
     
+#ifdef _DEBUG
     OutputDebugStringA("ARTWORK: No valid cover_image URL found in Discogs results\n");
+#endif
     return false;
 }
 
 bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
     try {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Creating bitmap from image data\n");
-        
+#endif        
         if (data.empty()) {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: No image data to create bitmap\n");
+#endif
             return false;
         }
         
@@ -6241,16 +6924,21 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
         IStream* pStream = nullptr;
         HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, data.size());
         if (!hGlobal) {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to allocate memory for image\n");
+#endif
             return false;
         }
-        
+#ifdef _DEBUG        
         OutputDebugStringA("ARTWORK: Memory allocated for image stream\n");
+#endif
         
         void* pData = GlobalLock(hGlobal);
         if (!pData) {
             GlobalFree(hGlobal);
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to lock memory for image\n");
+#endif
             return false;
         }
         
@@ -6259,11 +6947,14 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
         
         if (CreateStreamOnHGlobal(hGlobal, TRUE, &pStream) != S_OK) {
             GlobalFree(hGlobal);
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Failed to create stream from image data\n");
+#endif
             return false;
         }
-        
+#ifdef _DEBUG        
         OutputDebugStringA("ARTWORK: IStream created from image data\n");
+#endif
         
         // Create GDI+ bitmap from stream
         Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(pStream);
@@ -6271,17 +6962,23 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
         
         if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
             if (bitmap) {
+#ifdef _DEBUG
                 char debug_msg[256];
                 sprintf_s(debug_msg, "ARTWORK: GDI+ bitmap creation failed with status: %d\n", (int)bitmap->GetLastStatus());
                 OutputDebugStringA(debug_msg);
+#endif
                 delete bitmap;
             } else {
+#ifdef _DEBUG
                 OutputDebugStringA("ARTWORK: Failed to create GDI+ bitmap - null pointer\n");
+#endif
             }
             return false;
         }
         
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: GDI+ bitmap created successfully\n");
+#endif
         
         // Convert to HBITMAP and store in shared bitmap
         HBITMAP hBitmap = nullptr;
@@ -6292,7 +6989,9 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
             }
             
             g_shared_artwork_bitmap = hBitmap;
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Bitmap created and stored in shared bitmap\n");
+#endif
             
             // Notify event system that artwork was loaded successfully
             ArtworkEventManager::get().notify(ArtworkEvent(
@@ -6302,18 +7001,24 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
                 "", 
                 ""
             ));
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Event notification sent for shared bitmap\n");
+#endif
             
             delete bitmap;
             return true;
         }
         
         delete bitmap;
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Failed to convert image to HBITMAP\n");
+#endif
         return false;
         
     } catch (...) {
+#ifdef _DEBUG
         OutputDebugStringA("ARTWORK: Exception creating bitmap from image data\n");
+#endif
         return false;
     }
 }
@@ -6340,7 +7045,9 @@ bool bridge_http_get_request(const std::string& url, std::string& response) {
         urlComp.dwExtraInfoLength = -1;
         
         if (!WinHttpCrackUrl(wide_url.c_str(), 0, 0, &urlComp)) {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Bridge HTTP - WinHttpCrackUrl failed\n");
+#endif
             return false;
         }
         
@@ -6350,7 +7057,9 @@ bool bridge_http_get_request(const std::string& url, std::string& response) {
                                        WINHTTP_NO_PROXY_BYPASS, 0);
         
         if (!hSession) {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Bridge HTTP - WinHttpOpen failed\n");
+#endif
             return false;
         }
         
@@ -6442,7 +7151,9 @@ bool bridge_http_get_request_with_useragent(const std::string& url, std::string&
         urlComp.dwExtraInfoLength = -1;
         
         if (!WinHttpCrackUrl(wide_url.c_str(), 0, 0, &urlComp)) {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Bridge HTTP with User-Agent - WinHttpCrackUrl failed\n");
+#endif
             return false;
         }
         
@@ -6452,7 +7163,9 @@ bool bridge_http_get_request_with_useragent(const std::string& url, std::string&
                                        WINHTTP_NO_PROXY_BYPASS, 0);
         
         if (!hSession) {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Bridge HTTP with User-Agent - WinHttpOpen failed\n");
+#endif
             return false;
         }
         
@@ -6549,7 +7262,9 @@ bool bridge_download_image(const std::string& url, std::vector<BYTE>& data) {
         urlComp.dwExtraInfoLength = -1;
         
         if (!WinHttpCrackUrl(wide_url.c_str(), 0, 0, &urlComp)) {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Bridge download - WinHttpCrackUrl failed\n");
+#endif
             return false;
         }
         
@@ -6561,7 +7276,9 @@ bool bridge_download_image(const std::string& url, std::vector<BYTE>& data) {
                                        WINHTTP_NO_PROXY_BYPASS, 0);
         
         if (!hSession) {
+#ifdef _DEBUG
             OutputDebugStringA("ARTWORK: Bridge download - WinHttpOpen failed\n");
+#endif
             return false;
         }
         
@@ -6651,6 +7368,102 @@ bool bridge_download_image(const std::string& url, std::vector<BYTE>& data) {
         OutputDebugStringA("ARTWORK: Exception in bridge image download\n");
         return false;
     }
+}
+
+// Station name detection helper function with SomaFM-specific patterns
+bool artwork_ui_element::is_station_name(const pfc::string8& artist, const pfc::string8& title) {
+    // Only check titles when artist is empty (station name pattern)
+    if (!artist.is_empty() || title.is_empty()) {
+        return false;
+    }
+    
+    // Pattern 1: Ends with exclamation mark (like "Indie Pop Rocks!")
+    if (title.length() > 0 && title[title.length() - 1] == '!') {
+        return true;
+    }
+    
+    // Pattern 2: SomaFM-specific station name patterns
+    // These are actual SomaFM station names that should be detected
+    const char* somafm_stations[] = {
+        "Indie Pop Rocks!",
+        "Groove Salad",
+        "Drone Zone",
+        "Lush",
+        "Beat Blender",
+        "Sonic Universe",
+        "Space Station Soma",
+        "Suburbs of Goa",
+        "Mission Control",
+        "Doomed",
+        "The Trip",
+        "Covers",
+        "Folk Forward",
+        "Fluid",
+        "Poptron",
+        "Cliq Hop",
+        "Digitalis",
+        "Dubstep Beyond",
+        "Def Con Radio",
+        "Seven Inch Soul",
+        "Secret Agent",
+        "Bagel Radio",
+        "Illinois Street Lounge",
+        "Bootliquor",
+        "Thistle Radio",
+        "Deep Space One",
+        "Left Coast 70s",
+        "Earwaves",
+        "Concrete Jungle",
+        "Department Store Christmas",
+        "Christmas Lounge",
+        "Christmas Rocks!",
+        "BAGeL Radio",
+        "PopTron",
+        "Metal Detector",
+        "Heavyweight",
+        "Jolly Ol' Soul",
+        "Xmas in Frisko",
+        "Underground 80s",
+        "Smooth Jazz",
+        "SF 10-33",
+        "Sonic Shivers",
+        "Frost",
+        "Flipside",
+        "Vaporwaves",
+        "Tiki Lounge",
+        "Dub Step Beyond",
+        "Specials",
+        "Streaming Soundtracks"
+    };
+    
+    // Check for exact SomaFM station name matches (case-insensitive)
+    for (const char* station : somafm_stations) {
+        if (_stricmp(title.c_str(), station) == 0) {
+            return true;
+        }
+    }
+    
+    // Pattern 3: General radio/stream keywords for other stations
+    const char* station_keywords[] = {
+        "Radio", "FM", "Stream", "Station", "Music", "Rocks", "Hits", "Channel", "Chill", "Out",
+        "Lounge", "Jazz", "Classical", "Electronic", "Dance", "House", "Techno", "Ambient",
+        "Zone", "Universe", "Space", "Deep", "Underground", "Alternative", "Indie"
+    };
+    
+    // Manual case-insensitive substring search
+    std::string title_str = title.c_str();
+    std::transform(title_str.begin(), title_str.end(), title_str.begin(), ::toupper);
+    
+    for (const char* keyword : station_keywords) {
+        std::string keyword_str = keyword;
+        std::transform(keyword_str.begin(), keyword_str.end(), keyword_str.begin(), ::toupper);
+        
+        if (title_str.find(keyword_str) != std::string::npos) {
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 //=============================================================================
