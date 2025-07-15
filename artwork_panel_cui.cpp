@@ -241,6 +241,7 @@ private:
     bool copy_bitmap_from_main_component(HBITMAP source_bitmap);
     void search_artwork_for_track(metadb_handle_ptr track);
     void search_artwork_with_metadata(const std::string& artist, const std::string& title);
+    bool is_station_name(const std::string& artist, const std::string& title);  // Station name detection helper
     
     // Constants
     static const int OSD_DELAY_DURATION = 1000;   // 1 second delay before animation starts
@@ -582,12 +583,44 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
         if (data.is_valid() && data->get_size() > 0) {
             OutputDebugStringA("ARTWORK: CUI Panel - Valid artwork data received\n");
             
-            // PRIORITY CHECK: For local files, prefer local artwork files over embedded artwork
+            // CRITICAL: Check if this embedded artwork is for a station name
+            // This fixes SomaFM Icecast streams with embedded station artwork
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
-            bool should_prefer_local = false;
             
             if (pc->get_now_playing(current_track) && current_track.is_valid()) {
+                // Get track metadata to check for station names
+                std::string artist, title;
+                
+                try {
+                    auto info = current_track->get_info_ref();
+                    if (info.is_valid()) {
+                        const char* artist_ptr = info->info().meta_get("ARTIST", 0);
+                        const char* title_ptr = info->info().meta_get("TITLE", 0);
+                        
+                        if (artist_ptr) artist = artist_ptr;
+                        if (title_ptr) title = title_ptr;
+                    }
+                } catch (...) {
+                    // If metadata access fails, use empty strings
+                    artist = "";
+                    title = "";
+                }
+                
+                // Check if this is embedded artwork for a station name
+                if (is_station_name(artist, title)) {
+                    char debug_msg[512];
+                    sprintf_s(debug_msg, "ARTWORK: CUI Panel - REJECTED embedded artwork for station name: artist='%s', title='%s'\n", 
+                             artist.c_str(), title.c_str());
+                    OutputDebugStringA(debug_msg);
+                    return; // Block the embedded station artwork
+                }
+            }
+            
+            // PRIORITY CHECK: For local files, prefer local artwork files over embedded artwork
+            bool should_prefer_local = false;
+            
+            if (current_track.is_valid()) {
                 pfc::string8 file_path = current_track->get_path();
                 bool is_local_file = !(strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
                 
@@ -1586,6 +1619,113 @@ void CUIArtworkPanel::search_artwork_with_metadata(const std::string& artist, co
         OutputDebugStringA("ARTWORK: CUI Panel - Exception delegating metadata search\n");
         g_artwork_loading = false;
     }
+}
+
+// Station name detection helper function with SomaFM-specific patterns
+bool CUIArtworkPanel::is_station_name(const std::string& artist, const std::string& title) {
+    // Only check titles when artist is empty (station name pattern)
+    if (!artist.empty() || title.empty()) {
+        return false;
+    }
+    
+    // Pattern 1: Ends with exclamation mark (like "Indie Pop Rocks!")
+    if (title.length() > 0 && title[title.length() - 1] == '!') {
+        char debug_msg[512];
+        sprintf_s(debug_msg, "ARTWORK: CUI Panel - Station name detected: '%s' ends with exclamation mark\n", title.c_str());
+        OutputDebugStringA(debug_msg);
+        return true;
+    }
+    
+    // Pattern 2: SomaFM-specific station name patterns
+    // These are actual SomaFM station names that should be detected
+    const std::vector<std::string> somafm_stations = {
+        "Indie Pop Rocks!",
+        "Groove Salad",
+        "Drone Zone",
+        "Lush",
+        "Beat Blender",
+        "Sonic Universe",
+        "Space Station Soma",
+        "Suburbs of Goa",
+        "Mission Control",
+        "Doomed",
+        "The Trip",
+        "Covers",
+        "Folk Forward",
+        "Fluid",
+        "Poptron",
+        "Cliq Hop",
+        "Digitalis",
+        "Dubstep Beyond",
+        "Def Con Radio",
+        "Seven Inch Soul",
+        "Secret Agent",
+        "Bagel Radio",
+        "Illinois Street Lounge",
+        "Bootliquor",
+        "Thistle Radio",
+        "Deep Space One",
+        "Left Coast 70s",
+        "Earwaves",
+        "Concrete Jungle",
+        "Department Store Christmas",
+        "Christmas Lounge",
+        "Christmas Rocks!",
+        "BAGeL Radio",
+        "PopTron",
+        "Metal Detector",
+        "Heavyweight",
+        "Jolly Ol' Soul",
+        "Xmas in Frisko",
+        "Underground 80s",
+        "Smooth Jazz",
+        "SF 10-33",
+        "Sonic Shivers",
+        "Frost",
+        "Flipside",
+        "Vaporwaves",
+        "Tiki Lounge",
+        "Dub Step Beyond",
+        "Specials",
+        "Streaming Soundtracks"
+    };
+    
+    // Check for exact SomaFM station name matches (case-insensitive)
+    std::string title_upper = title;
+    std::transform(title_upper.begin(), title_upper.end(), title_upper.begin(), ::toupper);
+    
+    for (const std::string& station : somafm_stations) {
+        std::string station_upper = station;
+        std::transform(station_upper.begin(), station_upper.end(), station_upper.begin(), ::toupper);
+        
+        if (title_upper == station_upper) {
+            char debug_msg[512];
+            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Station name detected: exact SomaFM match '%s'\n", title.c_str());
+            OutputDebugStringA(debug_msg);
+            return true;
+        }
+    }
+    
+    // Pattern 3: General radio/stream keywords for other stations
+    const std::vector<std::string> station_keywords = {
+        "Radio", "FM", "Stream", "Station", "Music", "Rocks", "Hits", "Channel", "Chill", "Out",
+        "Lounge", "Jazz", "Classical", "Electronic", "Dance", "House", "Techno", "Ambient",
+        "Zone", "Universe", "Space", "Deep", "Underground", "Alternative", "Indie"
+    };
+    
+    for (const std::string& keyword : station_keywords) {
+        std::string keyword_upper = keyword;
+        std::transform(keyword_upper.begin(), keyword_upper.end(), keyword_upper.begin(), ::toupper);
+        
+        if (title_upper.find(keyword_upper) != std::string::npos) {
+            char debug_msg[512];
+            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Station name detected: keyword match '%s' in '%s'\n", keyword.c_str(), title.c_str());
+            OutputDebugStringA(debug_msg);
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 #endif // COLUMNS_UI_AVAILABLE
