@@ -3,6 +3,7 @@
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <shlobj.h>
 
 // CUI support is now defined in stdafx.h
 
@@ -274,7 +275,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.8",
+    "1.3.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -291,7 +292,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.8",
+    "1.3.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -359,6 +360,160 @@ static pfc::list_t<artwork_ui_element*> g_artwork_ui_elements;
 
 // Note: g_current_artwork_source already declared above
 
+// Function to create AppData directory structure for logos
+void create_appdata_directories() {
+    try {
+        // Get foobar2000 profile path (returns file:// URL)
+        pfc::string8 profile_url = core_api::get_profile_path();
+        
+        // Convert file:// URL to filesystem path
+        pfc::string8 profile_path;
+        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+            // Remove "file://" prefix and convert to Windows path
+            profile_path = profile_url.c_str() + 7; // Skip "file://"
+            // Replace forward slashes with backslashes for Windows
+            for (size_t i = 0; i < profile_path.length(); i++) {
+                if (profile_path[i] == '/') {
+                    profile_path.set_char(i, '\\');
+                }
+            }
+        } else {
+            profile_path = profile_url;
+        }
+        
+        // Create foo_artwork_data directory
+        pfc::string8 artwork_data_dir = profile_path + "\\foo_artwork_data\\";
+        
+        // Create logos subdirectory
+        pfc::string8 logos_dir = artwork_data_dir + "logos\\";
+        
+        // Create directories (SHCreateDirectoryEx creates parent directories if needed)
+        HRESULT hr1 = SHCreateDirectoryExA(NULL, artwork_data_dir.get_ptr(), NULL);
+        HRESULT hr2 = SHCreateDirectoryExA(NULL, logos_dir.get_ptr(), NULL);
+        
+        // Directory creation completed silently
+        // (Console messages removed to reduce noise)
+        
+    } catch (const std::exception& e) {
+        console::print(pfc::string8("Artwork component: Failed to create AppData directories: ") + e.what());
+    } catch (...) {
+        console::print("Artwork component: Failed to create AppData directories (unknown error)");
+    }
+}
+
+// Function to extract domain from stream URL for logo matching
+pfc::string8 extract_domain_from_stream_url(metadb_handle_ptr track) {
+    if (!track.is_valid()) return "";
+    
+    pfc::string8 path = track->get_path();
+    
+    // Check if it's an internet stream
+    if (!(strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"))) {
+        return "";
+    }
+    
+    // Extract domain from URL (e.g., "http://somafm.com/stream" -> "somafm.com")
+    const char* start = strstr(path.c_str(), "://");
+    if (!start) return "";
+    start += 3; // Skip "://"
+    
+    const char* end = strchr(start, '/');
+    if (!end) end = start + strlen(start);
+    
+    const char* port = strchr(start, ':');
+    if (port && port < end) end = port;
+    
+    if (end > start) {
+        return pfc::string8(start, end - start);
+    }
+    
+    return "";
+}
+
+// Function to extract station name from metadata for logo matching
+pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track) {
+    if (!track.is_valid()) return "";
+    
+    // Get metadata
+    file_info_impl info;
+    if (!track->get_info(info)) return "";
+    
+    // Get artist and title
+    const char* artist = info.meta_get("ARTIST", 0);
+    const char* title = info.meta_get("TITLE", 0);
+    
+    // If no artist (empty or just "?") but we have a title, assume title contains station name
+    if ((!artist || strlen(artist) == 0 || strcmp(artist, "?") == 0) && title && strlen(title) > 0) {
+        // Look for pattern "? - StationName" or just "StationName"
+        const char* dash = strstr(title, " - ");
+        if (dash) {
+            // Skip "? - " and return the station name part
+            return pfc::string8(dash + 3);
+        } else {
+            // No dash, assume the whole title is the station name
+            return pfc::string8(title);
+        }
+    }
+    
+    return "";
+}
+
+// Function to load station logo from AppData directory
+HBITMAP load_station_logo(const pfc::string8& domain) {
+    if (domain.is_empty()) return NULL;
+    
+    try {
+        // Get foobar2000 profile path (returns file:// URL)
+        pfc::string8 profile_url = core_api::get_profile_path();
+        
+        // Convert file:// URL to filesystem path
+        pfc::string8 profile_path;
+        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+            // Remove "file://" prefix and convert to Windows path
+            profile_path = profile_url.c_str() + 7; // Skip "file://"
+            // Replace forward slashes with backslashes for Windows
+            for (size_t i = 0; i < profile_path.length(); i++) {
+                if (profile_path[i] == '/') {
+                    profile_path.set_char(i, '\\');
+                }
+            }
+        } else {
+            profile_path = profile_url;
+        }
+        
+        pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+        
+        // Try common image extensions
+        const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
+        
+        for (const char* ext : extensions) {
+            pfc::string8 logo_path = logos_dir + domain + ext;
+            
+            if (PathFileExistsA(logo_path.get_ptr())) {
+                // Load the image file
+                std::wstring wide_path;
+                wide_path.resize(logo_path.length() + 1);
+                MultiByteToWideChar(CP_UTF8, 0, logo_path.c_str(), -1, &wide_path[0], wide_path.size());
+                
+                // Load bitmap using GDI+
+                Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
+                if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                    HBITMAP hBitmap;
+                    if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
+                        delete bitmap;
+                        return hBitmap;
+                    }
+                }
+                delete bitmap;
+            }
+        }
+    } catch (...) {
+        // Silently fail - this is just a fallback feature
+    }
+    
+    return NULL;
+}
+
 // Artwork initialization handler
 class artwork_init : public initquit {
 private:
@@ -369,6 +524,9 @@ public:
         // Initialize GDI+
         GdiplusStartupInput gdiplusStartupInput;
         GdiplusStartup(&m_gdiplusToken, &gdiplusStartupInput, NULL);
+        
+        // Create AppData directory structure for logos
+        create_appdata_directories();
         
         // Initialize artwork component
         artwork_manager::get_instance().initialize();
@@ -793,6 +951,50 @@ public:
         if (track_changed && track.is_valid()) {
             pfc::string8 new_path = track->get_path();
             bool new_is_internet_stream = (strstr(new_path.c_str(), "://") && !strstr(new_path.c_str(), "file://"));
+            
+            // Try to load station logo for internet streams immediately (before metadata arrives)
+            if (new_is_internet_stream) {
+                pfc::string8 logo_identifier;
+                
+                // First try to extract domain from URL
+                logo_identifier = extract_domain_from_stream_url(track);
+                
+                // If no domain found, try to extract station name from metadata
+                if (logo_identifier.is_empty()) {
+                    logo_identifier = extract_station_name_from_metadata(track);
+                }
+                
+                if (!logo_identifier.is_empty()) {
+                    HBITMAP logo_bitmap = load_station_logo(logo_identifier);
+                    if (logo_bitmap) {
+                        // Clean up any existing bitmap
+                        if (m_artwork_bitmap) {
+                            DeleteObject(m_artwork_bitmap);
+                        }
+                        
+                        m_artwork_bitmap = logo_bitmap;
+                        m_status_text = "Station logo loaded";
+                        
+                        // Mark that artwork has been found to stop any online searches
+                        {
+                            std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
+                            m_artwork_found = true;
+                        }
+                        
+                        // Update display immediately
+                        if (m_hWnd) {
+                            InvalidateRect(m_hWnd, NULL, TRUE);
+                        }
+                        
+                        // Update tracking variables and return - no need to wait for metadata
+                        m_current_track = track;
+                        m_last_update_track = track;
+                        m_last_update_content = current_content;
+                        m_last_update_timestamp = current_time;
+                        return;
+                    }
+                }
+            }
             
             bool should_clear_artwork = false;
             bool is_new_stream = false;
@@ -2470,6 +2672,46 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
         }
     } catch (...) {
         // Local artwork failed, continue to online search
+    }
+    
+    // Try to load station logo for internet streams (fallback before online search)
+    if (is_internet_stream) {
+        pfc::string8 logo_identifier;
+        
+        // First try to extract domain from URL
+        logo_identifier = extract_domain_from_stream_url(track);
+        
+        // If no domain found, try to extract station name from metadata
+        if (logo_identifier.is_empty()) {
+            logo_identifier = extract_station_name_from_metadata(track);
+        }
+        
+        if (!logo_identifier.is_empty()) {
+            HBITMAP logo_bitmap = load_station_logo(logo_identifier);
+            if (logo_bitmap) {
+                // Clean up any existing bitmap
+                if (m_artwork_bitmap) {
+                    DeleteObject(m_artwork_bitmap);
+                }
+                
+                m_artwork_bitmap = logo_bitmap;
+                m_status_text = "Station logo loaded";
+                
+                // Mark that artwork has been found to stop any online searches
+                {
+                    std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
+                    m_artwork_found = true;
+                }
+                
+                complete_artwork_search();
+                if (m_hWnd) {
+                    PostMessage(m_hWnd, WM_USER + 1, 0, 0);
+                }
+                m_current_track = track;
+                console::print(pfc::string8("Artwork component: Loaded station logo for ") + logo_identifier);
+                return;
+            }
+        }
     }
     
     // Check if we should search online
