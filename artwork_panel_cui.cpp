@@ -84,6 +84,11 @@ extern HBITMAP get_main_component_artwork_bitmap();
 // Shared bitmap from standalone search
 extern HBITMAP g_shared_artwork_bitmap;
 
+// Logo loading functions (declared in sdk_main.cpp)
+extern pfc::string8 extract_domain_from_stream_url(metadb_handle_ptr track);
+extern pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track);
+extern HBITMAP load_station_logo(const pfc::string8& domain);
+
 // External functions for triggering main component search
 extern void trigger_main_component_search(metadb_handle_ptr track);
 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
@@ -714,6 +719,55 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
         if (g_artwork_loading) {
             OutputDebugStringA("ARTWORK: CUI Panel - Main component is loading artwork, waiting...\n");
             return;
+        }
+        
+        // Try to load station logo for internet streams (fallback before waiting)
+        if (!is_local_file) {
+            pfc::string8 logo_identifier;
+            
+            // First try to extract domain from URL
+            logo_identifier = extract_domain_from_stream_url(p_track);
+            
+            // If no domain found, try to extract station name from metadata
+            if (logo_identifier.is_empty()) {
+                logo_identifier = extract_station_name_from_metadata(p_track);
+            }
+            
+            if (!logo_identifier.is_empty()) {
+                HBITMAP logo_bitmap = load_station_logo(logo_identifier);
+                if (logo_bitmap) {
+                    OutputDebugStringA("ARTWORK: CUI Panel - Loading station logo\n");
+                    
+                    // Convert HBITMAP to GDI+ bitmap using FromHBITMAP
+                    try {
+                        auto new_bitmap = std::unique_ptr<Gdiplus::Bitmap>(Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL));
+                        if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
+                            // Store the bitmap and mark as loaded
+                            m_artwork_bitmap = std::move(new_bitmap);
+                            m_artwork_loaded = true;
+                            m_artwork_source = "Station logo";
+                            
+                            // Resize to fit window
+                            resize_artwork_to_fit();
+                            
+                            // Redraw with the new logo
+                            InvalidateRect(m_hWnd, NULL, FALSE);
+                            UpdateWindow(m_hWnd);
+                            
+                            char debug_msg[256];
+                            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded station logo for %s\n", logo_identifier.c_str());
+                            OutputDebugStringA(debug_msg);
+                            
+                            // Clean up the HBITMAP (GDI+ bitmap made its own copy)
+                            DeleteObject(logo_bitmap);
+                            return;
+                        }
+                    } catch (...) {
+                        // Failed to create GDI+ bitmap, clean up HBITMAP
+                        DeleteObject(logo_bitmap);
+                    }
+                }
+            }
         }
         
         // If no Default UI element is active, wait for dynamic metadata
