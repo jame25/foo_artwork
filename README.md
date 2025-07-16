@@ -10,6 +10,7 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 - **Online API Integration**: Falls back to iTunes, Deezer, Last.fm, MusicBrainz, and Discogs APIs when local artwork is not found
 - **User-Customizable API Priority**: Configure the order of API fallback chain through an intuitive interface
 - **Internet Radio Support**: Displays artwork for internet radio streams using metadata
+- **Custom Station Logos**: Support for custom logo files for internet radio stations
 - **Configurable API Services**: Enable/disable individual API services and manage API keys
 - **Smart Caching**: Prevents repeated API calls for the same track during the current session
 - **High-Quality Display**: Uses GDI+ for smooth, high-quality artwork rendering with aspect ratio preservation
@@ -63,6 +64,49 @@ The component automatically searches for these common artwork filenames:
 - `album.jpg`, `album.jpeg`, `album.png`
 - `front.jpg`, `front.jpeg`, `front.png`
 - `artwork.jpg`, `artwork.jpeg`, `artwork.png`
+
+### Custom Station Logos
+
+The component supports custom logo files for internet radio stations. This feature allows you to display station-specific logos instead of track artwork when listening to internet radio.
+
+#### Setup
+
+1. **Logo Directory**: Place your logo files in the `foo_artwork_data/logos/` directory within your foobar2000 profile folder
+   - **Profile location**: Usually `%APPDATA%\foobar2000\foo_artwork_data\logos\`
+   - The directory is automatically created when the component starts
+
+2. **Filename Format**: Logo files should be named using the station's domain name or identifier
+   - **Domain-based naming**: Use the full domain from the stream URL
+     - Example: For `http://maxxima.mine.nu:8000/stream` → name the file `maxxima.mine.nu.png`
+     - Example: For `http://somafm.com/groovesalad.pls` → name the file `somafm.com.jpg`
+   - **Station-based naming**: If domain extraction fails, the component will try to extract the station name from metadata
+
+3. **Supported Formats**: The component supports common image formats:
+   - `.png` (recommended for logos with transparency)
+   - `.jpg` / `.jpeg`
+   - `.gif`
+   - `.bmp`
+
+#### How It Works
+
+- **Automatic Detection**: When connecting to an internet radio stream, the component automatically:
+  1. Extracts the domain name from the stream URL
+  2. Looks for a matching logo file in the `logos/` directory
+  3. Displays the custom logo if found
+  4. Falls back to normal track artwork search if no logo is found
+
+- **Priority**: Station logos have **highest priority** and will be displayed immediately when a stream starts, before waiting for track metadata
+
+- **No Configuration Required**: Simply place logo files in the correct directory with the correct filename - the component handles the rest automatically
+
+#### Example Setup
+
+For a radio station with URL `http://stream.example.com:8000/radio`:
+
+1. Create logo file: `stream.example.com.png`
+2. Place in: `%APPDATA%\foobar2000\foo_artwork_data\logos\stream.example.com.png`
+3. Connect to the radio station
+4. The logo will appear immediately
 
 ### Preferences Configuration
 
