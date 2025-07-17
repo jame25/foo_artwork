@@ -275,7 +275,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.9",
+    "1.4.0",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -292,7 +292,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.3.9",
+    "1.4.0",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -494,6 +494,62 @@ HBITMAP load_station_logo(const pfc::string8& domain) {
                 std::wstring wide_path;
                 wide_path.resize(logo_path.length() + 1);
                 MultiByteToWideChar(CP_UTF8, 0, logo_path.c_str(), -1, &wide_path[0], wide_path.size());
+                
+                // Load bitmap using GDI+
+                Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
+                if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                    HBITMAP hBitmap;
+                    if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
+                        delete bitmap;
+                        return hBitmap;
+                    }
+                }
+                delete bitmap;
+            }
+        }
+    } catch (...) {
+        // Silently fail - this is just a fallback feature
+    }
+    
+    return NULL;
+}
+
+// Function to load "no artwork" fallback logo for a specific domain when artwork search fails
+HBITMAP load_noart_logo(const pfc::string8& domain) {
+    if (domain.is_empty()) return NULL;
+    
+    try {
+        // Get foobar2000 profile path (returns file:// URL)
+        pfc::string8 profile_url = core_api::get_profile_path();
+        
+        // Convert file:// URL to filesystem path
+        pfc::string8 profile_path;
+        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+            // Remove "file://" prefix and convert to Windows path
+            profile_path = profile_url.c_str() + 7; // Skip "file://"
+            // Replace forward slashes with backslashes for Windows
+            for (size_t i = 0; i < profile_path.length(); i++) {
+                if (profile_path[i] == '/') {
+                    profile_path.set_char(i, '\\');
+                }
+            }
+        } else {
+            profile_path = profile_url;
+        }
+        
+        pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+        
+        // Try common image extensions with -noart suffix
+        const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
+        
+        for (const char* ext : extensions) {
+            pfc::string8 noart_path = logos_dir + domain + "-noart" + ext;
+            
+            if (PathFileExistsA(noart_path.get_ptr())) {
+                // Load the image file
+                std::wstring wide_path;
+                wide_path.resize(noart_path.length() + 1);
+                MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
                 
                 // Load bitmap using GDI+
                 Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
@@ -1528,6 +1584,17 @@ void trigger_main_component_search_with_metadata(const std::string& artist, cons
                 OutputDebugStringA("ARTWORK: All bridge searches completed - no results\n");
 #endif
 #endif
+
+                // Send failure event for CUI panel (thread-safe)
+                OutputDebugStringA("ARTWORK: Bridge search - Sending ARTWORK_FAILED event\n");
+                ArtworkEventManager::get().notify(ArtworkEvent(
+                    ArtworkEventType::ARTWORK_FAILED, 
+                    nullptr, 
+                    "Bridge search - All APIs exhausted", 
+                    artist.c_str(), 
+                    title.c_str()
+                ));
+                
                 g_artwork_loading = false;
                 
             } catch (...) {
@@ -1536,6 +1603,19 @@ void trigger_main_component_search_with_metadata(const std::string& artist, cons
                 OutputDebugStringA("ARTWORK: Exception in bridge search\n");
 #endif
 #endif
+                // Send failure event even on exception
+                try {
+                    ArtworkEventManager::get().notify(ArtworkEvent(
+                        ArtworkEventType::ARTWORK_FAILED, 
+                        nullptr, 
+                        "Bridge search - Exception occurred", 
+                        artist.c_str(), 
+                        title.c_str()
+                    ));
+                } catch (...) {
+                    // Ignore event notification failures to prevent crash loops
+                    OutputDebugStringA("ARTWORK: Failed to send exception event\n");
+                }
                 g_artwork_loading = false;
             }
         }).detach();
@@ -4963,9 +5043,62 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
     }
     
     if (current_position >= 5) {
-        // No more APIs to try - mark search as complete
+        // No more APIs to try - try -noart fallback for internet streams
+        if (m_current_track.is_valid()) {
+            pfc::string8 path = m_current_track->get_path();
+            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            
+            if (is_internet_stream) {
+                // Try to load -noart fallback image for this domain
+                pfc::string8 domain = extract_domain_from_stream_url(m_current_track);
+                if (!domain.is_empty()) {
+                    HBITMAP noart_bitmap = load_noart_logo(domain);
+                    if (noart_bitmap) {
+                        // Clean up any existing bitmap
+                        if (m_artwork_bitmap) {
+                            DeleteObject(m_artwork_bitmap);
+                        }
+                        
+                        m_artwork_bitmap = noart_bitmap;
+                        m_status_text = "No artwork - showing station fallback";
+                        
+                        // Mark that artwork has been found (fallback counts as found)
+                        {
+                            std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
+                            m_artwork_found = true;
+                        }
+                        
+                        // Notify event system that fallback artwork was loaded (for CUI panel)
+                        ArtworkEventManager::get().notify(ArtworkEvent(
+                            ArtworkEventType::ARTWORK_LOADED, 
+                            noart_bitmap, 
+                            "Station fallback (no artwork)", 
+                            m_last_search_artist.c_str(), 
+                            m_last_search_title.c_str()
+                        ));
+                        
+                        complete_artwork_search();
+                        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+                        return;
+                    }
+                }
+            }
+        }
+        
+        // No fallback available - mark search as complete
         complete_artwork_search();
         m_status_text = "No artwork found";
+        
+        // Notify event system that artwork search failed (for CUI panel)
+        OutputDebugStringA("ARTWORK: Default UI - Sending ARTWORK_FAILED event to CUI panel\n");
+        ArtworkEventManager::get().notify(ArtworkEvent(
+            ArtworkEventType::ARTWORK_FAILED, 
+            nullptr, 
+            "All APIs exhausted", 
+            m_last_search_artist.c_str(), 
+            m_last_search_title.c_str()
+        ));
+        
         if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
         return;
     }
