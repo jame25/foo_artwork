@@ -88,6 +88,7 @@ extern HBITMAP g_shared_artwork_bitmap;
 extern pfc::string8 extract_domain_from_stream_url(metadb_handle_ptr track);
 extern pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track);
 extern HBITMAP load_station_logo(const pfc::string8& domain);
+extern HBITMAP load_noart_logo(const pfc::string8& domain);
 
 // External functions for triggering main component search
 extern void trigger_main_component_search(metadb_handle_ptr track);
@@ -562,6 +563,81 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (source_ptr) {
                     OutputDebugStringA("ARTWORK: CUI Panel - Bitmap processing failed, source was cleaned up\n");
                 }
+            }
+        }
+        break;
+        
+    case WM_USER + 11: // Handle -noart fallback on main thread
+        {
+            OutputDebugStringA("ARTWORK: CUI Panel - Processing -noart fallback on main thread\n");
+            
+            // Now it's safe to access foobar2000 APIs and UI functions
+            try {
+                static_api_ptr_t<playback_control> pc;
+                metadb_handle_ptr current_track;
+                if (pc->get_now_playing(current_track) && current_track.is_valid()) {
+                    pfc::string8 path = current_track->get_path();
+                    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                    
+                    if (is_internet_stream) {
+                        // Try to extract domain from URL
+                        pfc::string8 domain = extract_domain_from_stream_url(current_track);
+                        if (!domain.is_empty()) {
+                            OutputDebugStringA("ARTWORK: CUI Panel - Attempting -noart fallback on main thread\n");
+                            
+                            // Load directly as GDI+ bitmap (safe on main thread)
+                            try {
+                                // Get foobar2000 profile path (safe on main thread)
+                                pfc::string8 profile_url = core_api::get_profile_path();
+                                pfc::string8 profile_path;
+                                if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+                                    profile_path = profile_url.c_str() + 7;
+                                    for (size_t i = 0; i < profile_path.length(); i++) {
+                                        if (profile_path[i] == '/') {
+                                            profile_path.set_char(i, '\\');
+                                        }
+                                    }
+                                } else {
+                                    profile_path = profile_url;
+                                }
+                                
+                                pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+                                const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
+                                
+                                for (const char* ext : extensions) {
+                                    pfc::string8 noart_path = logos_dir + domain + "-noart" + ext;
+                                    
+                                    if (PathFileExistsA(noart_path.get_ptr())) {
+                                        // Load using direct file path
+                                        std::wstring wide_path;
+                                        wide_path.resize(noart_path.length() + 1);
+                                        MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
+                                        
+                                        auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
+                                        if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
+                                            m_artwork_bitmap = std::move(new_bitmap);
+                                            m_artwork_loaded = true;
+                                            m_artwork_source = "Station fallback (no artwork)";
+                                            
+                                            resize_artwork_to_fit();
+                                            InvalidateRect(m_hWnd, NULL, FALSE);
+                                            UpdateWindow(m_hWnd);
+                                            
+                                            char debug_msg[512];
+                                            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded -noart fallback: %s\n", noart_path.c_str());
+                                            OutputDebugStringA(debug_msg);
+                                            break; // Exit early if successful
+                                        }
+                                    }
+                                }
+                            } catch (...) {
+                                OutputDebugStringA("ARTWORK: CUI Panel - Exception loading -noart fallback on main thread\n");
+                            }
+                        }
+                    }
+                }
+            } catch (...) {
+                OutputDebugStringA("ARTWORK: CUI Panel - Exception in main thread -noart fallback logic\n");
             }
         }
         break;
@@ -1597,10 +1673,20 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
             break;
             
         case ArtworkEventType::ARTWORK_FAILED:
-            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Artwork loading failed from %s\n", event.source.c_str());
-            OutputDebugStringA(debug_msg);
-            // Keep previous artwork visible - don't clear on failure
-            break;
+            {
+                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Artwork loading failed from %s\n", event.source.c_str());
+                OutputDebugStringA(debug_msg);
+                
+                // THREAD SAFETY: Post message to main thread to handle -noart fallback
+                // Cannot access foobar2000 APIs or UI functions from background thread
+                if (m_hWnd) {
+                    OutputDebugStringA("ARTWORK: CUI Panel - Posting -noart fallback message to main thread\n");
+                    PostMessage(m_hWnd, WM_USER + 11, 0, 0); // WM_USER + 11 for -noart fallback
+                }
+                
+                // Keep previous artwork visible - don't clear on failure
+                break;
+            }
             
         case ArtworkEventType::ARTWORK_CLEARED:
             OutputDebugStringA("ARTWORK: CUI Panel - Artwork cleared\n");
