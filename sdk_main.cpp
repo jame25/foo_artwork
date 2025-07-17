@@ -275,7 +275,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.4.0",
+    "1.4.1",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -292,7 +292,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.4.0",
+    "1.4.1",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -489,7 +489,12 @@ HBITMAP load_station_logo(const pfc::string8& domain) {
         for (const char* ext : extensions) {
             pfc::string8 logo_path = logos_dir + domain + ext;
             
+            char path_debug[512];
+            sprintf_s(path_debug, "ARTWORK: Checking logo path: %s\n", logo_path.c_str());
+            OutputDebugStringA(path_debug);
+            
             if (PathFileExistsA(logo_path.get_ptr())) {
+                OutputDebugStringA("ARTWORK: Logo file found!\n");
                 // Load the image file
                 std::wstring wide_path;
                 wide_path.resize(logo_path.length() + 1);
@@ -544,6 +549,60 @@ HBITMAP load_noart_logo(const pfc::string8& domain) {
         
         for (const char* ext : extensions) {
             pfc::string8 noart_path = logos_dir + domain + "-noart" + ext;
+            
+            if (PathFileExistsA(noart_path.get_ptr())) {
+                // Load the image file
+                std::wstring wide_path;
+                wide_path.resize(noart_path.length() + 1);
+                MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
+                
+                // Load bitmap using GDI+
+                Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
+                if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                    HBITMAP hBitmap;
+                    if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
+                        delete bitmap;
+                        return hBitmap;
+                    }
+                }
+                delete bitmap;
+            }
+        }
+    } catch (...) {
+        // Silently fail - this is just a fallback feature
+    }
+    
+    return NULL;
+}
+
+// Function to load generic "no artwork" fallback image for all streams
+HBITMAP load_generic_noart_logo() {
+    try {
+        // Get foobar2000 profile path (returns file:// URL)
+        pfc::string8 profile_url = core_api::get_profile_path();
+        
+        // Convert file:// URL to filesystem path
+        pfc::string8 profile_path;
+        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+            // Remove "file://" prefix and convert to Windows path
+            profile_path = profile_url.c_str() + 7; // Skip "file://"
+            // Replace forward slashes with backslashes for Windows
+            for (size_t i = 0; i < profile_path.length(); i++) {
+                if (profile_path[i] == '/') {
+                    profile_path.set_char(i, '\\');
+                }
+            }
+        } else {
+            profile_path = profile_url;
+        }
+        
+        pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+        
+        // Try common image extensions for generic noart file
+        const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
+        
+        for (const char* ext : extensions) {
+            pfc::string8 noart_path = logos_dir + "noart" + ext;
             
             if (PathFileExistsA(noart_path.get_ptr())) {
                 // Load the image file
@@ -699,6 +758,7 @@ private:
 public:
     void clear_artwork();  // Clear search state only (keep bitmap visible)
     void clear_artwork_bitmap();  // Actually clear bitmap (only for playback stop)
+    void try_fallback_images_for_stream(metadb_handle_ptr track);  // Try fallback images when no metadata
     pfc::string8 get_artwork_source() const { return m_artwork_source; }  // Get current artwork source
     void search_itunes_artwork(metadb_handle_ptr track);
     void search_itunes_background(pfc::string8 artist, pfc::string8 title);
@@ -896,6 +956,16 @@ public:
     void update_track(metadb_handle_ptr track) {
         if (!m_hWnd) return;
         
+        OutputDebugStringA("ARTWORK: *** DEFAULT UI UPDATE_TRACK CALLED ***\n");
+        if (track.is_valid()) {
+            pfc::string8 path = track->get_path();
+            char track_debug[512];
+            sprintf_s(track_debug, "ARTWORK: Default UI - update_track called with: %s\n", path.c_str());
+            OutputDebugStringA(track_debug);
+        } else {
+            OutputDebugStringA("ARTWORK: Default UI - update_track called with invalid track\n");
+        }
+        
         // Smart debouncing - only update if track or content actually changed
         DWORD current_time = GetTickCount();
         bool track_changed = (track != m_last_update_track);
@@ -1008,49 +1078,8 @@ public:
             pfc::string8 new_path = track->get_path();
             bool new_is_internet_stream = (strstr(new_path.c_str(), "://") && !strstr(new_path.c_str(), "file://"));
             
-            // Try to load station logo for internet streams immediately (before metadata arrives)
-            if (new_is_internet_stream) {
-                pfc::string8 logo_identifier;
-                
-                // First try to extract domain from URL
-                logo_identifier = extract_domain_from_stream_url(track);
-                
-                // If no domain found, try to extract station name from metadata
-                if (logo_identifier.is_empty()) {
-                    logo_identifier = extract_station_name_from_metadata(track);
-                }
-                
-                if (!logo_identifier.is_empty()) {
-                    HBITMAP logo_bitmap = load_station_logo(logo_identifier);
-                    if (logo_bitmap) {
-                        // Clean up any existing bitmap
-                        if (m_artwork_bitmap) {
-                            DeleteObject(m_artwork_bitmap);
-                        }
-                        
-                        m_artwork_bitmap = logo_bitmap;
-                        m_status_text = "Station logo loaded";
-                        
-                        // Mark that artwork has been found to stop any online searches
-                        {
-                            std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
-                            m_artwork_found = true;
-                        }
-                        
-                        // Update display immediately
-                        if (m_hWnd) {
-                            InvalidateRect(m_hWnd, NULL, TRUE);
-                        }
-                        
-                        // Update tracking variables and return - no need to wait for metadata
-                        m_current_track = track;
-                        m_last_update_track = track;
-                        m_last_update_content = current_content;
-                        m_last_update_timestamp = current_time;
-                        return;
-                    }
-                }
-            }
+            // Station logos and noart fallbacks are now handled after metadata search fails
+            // This allows metadata-based artwork to have priority
             
             bool should_clear_artwork = false;
             bool is_new_stream = false;
@@ -1253,6 +1282,10 @@ public:
                 
                 if (is_new_stream_connection) {
                     // Initial stream connection: Use full configurable stream delay
+                    int delay_seconds = cfg_stream_delay;
+                    char timer_debug[512];
+                    sprintf_s(timer_debug, "ARTWORK: Setting stream delay timer for %d seconds\n", delay_seconds);
+                    OutputDebugStringA(timer_debug);
                     SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
                     m_new_stream_delay_active = true;  // Set flag to prevent override
                 } else {
@@ -2231,11 +2264,7 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 }
             }
         } else if (wParam == 9) {  // Timer ID 9 - delayed metadata check for new streams
-#ifdef _DEBUG
-#ifdef _DEBUG
-            OutputDebugStringA("ARTWORK: Stream delay timer fired, proceeding with delayed artwork search\n");
-#endif
-#endif
+            OutputDebugStringA("ARTWORK: *** DEFAULT UI TIMER FIRED ***\n");
             KillTimer(hwnd, 9);  // Kill the timer
             pThis->m_new_stream_delay_active = false;  // Clear the flag when timer fires
             
@@ -2247,8 +2276,13 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                 pfc::string8 stream_artist = pThis->m_pending_timer_artist;
                 pfc::string8 stream_title = pThis->m_pending_timer_title;
                 
+                char metadata_debug[512];
+                sprintf_s(metadata_debug, "ARTWORK: Timer fired - Artist: '%s', Title: '%s'\n", stream_artist.c_str(), stream_title.c_str());
+                OutputDebugStringA(metadata_debug);
+                
                 // Proceed if we have at least a title (artist can be empty for some streams)
                 if (!stream_title.is_empty()) {
+                    OutputDebugStringA("ARTWORK: Timer - Starting artwork search with metadata\n");
                     // Clear search cache and start fresh search
                     {
                         std::lock_guard<std::mutex> lock(pThis->m_artwork_found_mutex);
@@ -2266,6 +2300,25 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                     // Clear stored metadata after use
                     pThis->m_pending_timer_artist = "";
                     pThis->m_pending_timer_title = "";
+                } else {
+                    OutputDebugStringA("ARTWORK: Timer - No metadata available, trying fallback images\n");
+                    // No metadata available, directly try fallback images for internet streams
+                    pfc::string8 path = current_track->get_path();
+                    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                    
+                    if (is_internet_stream) {
+                        // Send ARTWORK_FAILED event to notify CUI panel that API search "failed" (no metadata)
+                        OutputDebugStringA("ARTWORK: Timer - Sending ARTWORK_FAILED event for no metadata\n");
+                        ArtworkEventManager::get().notify(ArtworkEvent(
+                            ArtworkEventType::ARTWORK_FAILED, 
+                            nullptr, 
+                            "No metadata available", 
+                            "", 
+                            ""
+                        ));
+                        
+                        pThis->try_fallback_images_for_stream(current_track);
+                    }
                 }
             }
         } else if (wParam == 10) {  // Timer ID 10 - OSD animation
@@ -2605,6 +2658,10 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
 
 // Optimized version that reuses already-extracted metadata
 void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr track, const pfc::string8& artist, const pfc::string8& title) {
+    
+    char debug_msg[512];
+    sprintf_s(debug_msg, "ARTWORK: load_artwork_for_track_with_metadata - Artist: '%s', Title: '%s'\n", artist.c_str(), title.c_str());
+    OutputDebugStringA(debug_msg);
     
     if (!track.is_valid()) {
         m_status_text = "No track";
@@ -4630,6 +4687,69 @@ void artwork_ui_element::clear_artwork_bitmap() {
     }
 }
 
+// Try fallback images when no metadata is available
+void artwork_ui_element::try_fallback_images_for_stream(metadb_handle_ptr track) {
+    if (!track.is_valid()) return;
+    
+    OutputDebugStringA("ARTWORK: Trying fallback images for stream\n");
+    
+    pfc::string8 domain = extract_domain_from_stream_url(track);
+    HBITMAP fallback_bitmap = nullptr;
+    std::string fallback_source;
+    
+    if (!domain.is_empty()) {
+        char domain_debug[512];
+        sprintf_s(domain_debug, "ARTWORK: Fallback - Domain extracted: '%s'\n", domain.c_str());
+        OutputDebugStringA(domain_debug);
+        
+        // Try station logo first
+        fallback_bitmap = load_station_logo(domain);
+        if (fallback_bitmap) {
+            fallback_source = "Station logo";
+            OutputDebugStringA("ARTWORK: Fallback - Station logo found\n");
+        } else {
+            // Try station-specific noart
+            fallback_bitmap = load_noart_logo(domain);
+            if (fallback_bitmap) {
+                fallback_source = "Station fallback (no artwork)";
+                OutputDebugStringA("ARTWORK: Fallback - Station noart found\n");
+            }
+        }
+    }
+    
+    // Try generic noart if nothing else found
+    if (!fallback_bitmap) {
+        fallback_bitmap = load_generic_noart_logo();
+        if (fallback_bitmap) {
+            fallback_source = "Generic fallback (no artwork)";
+            OutputDebugStringA("ARTWORK: Fallback - Generic noart found\n");
+        }
+    }
+    
+    if (fallback_bitmap) {
+        // Clean up any existing bitmap
+        if (m_artwork_bitmap) {
+            DeleteObject(m_artwork_bitmap);
+        }
+        
+        m_artwork_bitmap = fallback_bitmap;
+        m_status_text = fallback_source.c_str();
+        
+        // Mark that artwork has been found
+        {
+            std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
+            m_artwork_found = true;
+        }
+        
+        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+        OutputDebugStringA("ARTWORK: Fallback image loaded successfully\n");
+    } else {
+        OutputDebugStringA("ARTWORK: No fallback images found\n");
+        m_status_text = "No artwork found";
+        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+    }
+}
+
 // Playback callback for track changes
 class artwork_play_callback : public play_callback_static {
 public:
@@ -5043,44 +5163,78 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
     }
     
     if (current_position >= 5) {
-        // No more APIs to try - try -noart fallback for internet streams
+        // No more APIs to try - try fallback images for internet streams
         if (m_current_track.is_valid()) {
             pfc::string8 path = m_current_track->get_path();
             bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
             
+            char debug_msg[512];
+            sprintf_s(debug_msg, "ARTWORK: Reached fallback stage, URL: %s, is_internet_stream: %d\n", path.c_str(), is_internet_stream);
+            OutputDebugStringA(debug_msg);
+            
             if (is_internet_stream) {
-                // Try to load -noart fallback image for this domain
                 pfc::string8 domain = extract_domain_from_stream_url(m_current_track);
+                
+                char domain_debug[512];
+                sprintf_s(domain_debug, "ARTWORK: Extracted domain: '%s'\n", domain.c_str());
+                OutputDebugStringA(domain_debug);
+                HBITMAP fallback_bitmap = nullptr;
+                std::string fallback_source;
+                
+                // Priority order for fallbacks:
+                // 1. Station-specific logo (domain.com.png)
+                // 2. Station-specific noart (domain.com-noart.png) 
+                // 3. Generic noart (noart.png)
+                
                 if (!domain.is_empty()) {
-                    HBITMAP noart_bitmap = load_noart_logo(domain);
-                    if (noart_bitmap) {
-                        // Clean up any existing bitmap
-                        if (m_artwork_bitmap) {
-                            DeleteObject(m_artwork_bitmap);
+                    // Try station logo first
+                    fallback_bitmap = load_station_logo(domain);
+                    if (fallback_bitmap) {
+                        fallback_source = "Station logo";
+                    } else {
+                        // Try station-specific noart
+                        fallback_bitmap = load_noart_logo(domain);
+                        if (fallback_bitmap) {
+                            fallback_source = "Station fallback (no artwork)";
                         }
-                        
-                        m_artwork_bitmap = noart_bitmap;
-                        m_status_text = "No artwork - showing station fallback";
-                        
-                        // Mark that artwork has been found (fallback counts as found)
-                        {
-                            std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
-                            m_artwork_found = true;
-                        }
-                        
-                        // Notify event system that fallback artwork was loaded (for CUI panel)
-                        ArtworkEventManager::get().notify(ArtworkEvent(
-                            ArtworkEventType::ARTWORK_LOADED, 
-                            noart_bitmap, 
-                            "Station fallback (no artwork)", 
-                            m_last_search_artist.c_str(), 
-                            m_last_search_title.c_str()
-                        ));
-                        
-                        complete_artwork_search();
-                        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
-                        return;
                     }
+                }
+                
+                // If no station-specific fallback, try generic noart
+                if (!fallback_bitmap) {
+                    fallback_bitmap = load_generic_noart_logo();
+                    if (fallback_bitmap) {
+                        fallback_source = "Generic fallback (no artwork)";
+                    }
+                }
+                
+                if (fallback_bitmap) {
+                    // Clean up any existing bitmap
+                    if (m_artwork_bitmap) {
+                        DeleteObject(m_artwork_bitmap);
+                    }
+                    
+                    m_artwork_bitmap = fallback_bitmap;
+                    m_status_text = fallback_source.c_str();
+                    
+                    // Mark that artwork has been found (fallback counts as found)
+                    {
+                        std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
+                        m_artwork_found = true;
+                    }
+                    
+                    // Notify event system that fallback artwork was loaded (for CUI panel)
+                    ArtworkEventManager::get().notify(ArtworkEvent(
+                        ArtworkEventType::ARTWORK_LOADED, 
+                        fallback_bitmap, 
+                        fallback_source.c_str(), 
+                        m_last_search_artist.c_str(), 
+                        m_last_search_title.c_str()
+                    ));
+                    
+                    complete_artwork_search();
+                    if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+                    return;
                 }
             }
         }
