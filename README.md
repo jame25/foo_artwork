@@ -108,6 +108,41 @@ For a radio station with URL `http://stream.example.com:8000/radio`:
 3. Connect to the radio station
 4. The logo will appear immediately
 
+#### Fallback Images for Failed Artwork Searches
+
+The component also supports **fallback images** that display when artwork searches fail for specific radio stations. This is useful for stations where track artwork is rarely available.
+
+**Setup for Fallback Images:**
+
+1. **Filename Format**: Add `-noart` suffix to the domain name before the file extension
+   - Example: For `http://pub0302.101.ru:8000/stream` → create `pub0302.101.ru-noart.png`
+   - Example: For `http://stream.example.com/radio` → create `stream.example.com-noart.jpg`
+
+2. **When It's Used**: The fallback image is displayed **only** when:
+   - Normal track artwork search fails (all APIs exhausted)
+   - The stream is an internet radio station
+   - No regular station logo exists (station logos have higher priority)
+
+3. **Priority Order** for internet radio streams:
+   1. **Regular station logo** (e.g., `domain.com.png`) - highest priority
+   2. **Track artwork** from APIs (when metadata is available)
+   3. **Fallback image** (e.g., `domain.com-noart.png`) - when artwork search fails
+   4. **No artwork** message
+
+**Example Setup:**
+
+For a radio station `http://pub0302.101.ru:8000/stream/trust/mp3/128/24`:
+
+1. Create fallback image: `pub0302.101.ru-noart.png`
+2. Place in: `%APPDATA%\foobar2000\foo_artwork_data\logos\pub0302.101.ru-noart.png`
+3. When connecting to this station:
+   - If track artwork is found → shows track artwork
+   - If no track artwork is found → shows your fallback image
+   - Status will display: "No artwork - showing station fallback"
+
+This feature ensures that radio stations always have some visual representation, even when individual track artwork cannot be found.
+
+
 ### Preferences Configuration
 
 Access the preferences dialog through:
