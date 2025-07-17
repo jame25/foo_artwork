@@ -95,7 +95,7 @@ The component supports custom logo files for internet radio stations. This featu
   3. Displays the custom logo if found
   4. Falls back to normal track artwork search if no logo is found
 
-- **Priority**: Station logos have **highest priority** and will be displayed immediately when a stream starts, before waiting for track metadata
+- **Priority**: Station logos are used as fallbacks when API artwork search fails
 
 - **No Configuration Required**: Simply place logo files in the correct directory with the correct filename - the component handles the rest automatically
 
@@ -107,6 +107,8 @@ For a radio station with URL `http://stream.example.com:8000/radio`:
 2. Place in: `%APPDATA%\foobar2000\foo_artwork_data\logos\stream.example.com.png`
 3. Connect to the radio station
 4. The logo will appear immediately
+
+This feature is particularly useful for frequently listened radio stations, providing immediate visual identification.
 
 #### Fallback Images for Failed Artwork Searches
 
@@ -124,10 +126,12 @@ The component also supports **fallback images** that display when artwork search
    - No regular station logo exists (station logos have higher priority)
 
 3. **Priority Order** for internet radio streams:
-   1. **Regular station logo** (e.g., `domain.com.png`) - highest priority
-   2. **Track artwork** from APIs (when metadata is available)
-   3. **Fallback image** (e.g., `domain.com-noart.png`) - when artwork search fails
-   4. **No artwork** message
+   1. **Track artwork** from APIs - highest priority, searches using metadata (if available)
+   2. **Fallback hierarchy** - when API artwork search fails:
+      - **Station logo** (e.g., `domain.com.png`)
+      - **Station-specific fallback** (e.g., `domain.com-noart.png`)
+      - **Generic fallback** (`noart.png`)
+   3. **No artwork** message
 
 **Example Setup:**
 
@@ -140,8 +144,25 @@ For a radio station `http://pub0302.101.ru:8000/stream/trust/mp3/128/24`:
    - If no track artwork is found → shows your fallback image
    - Status will display: "No artwork - showing station fallback"
 
-This feature ensures that radio stations always have some visual representation, even when individual track artwork cannot be found.
+#### Generic Fallback Image
 
+In addition to station-specific fallbacks, the component supports a **universal fallback image** that applies to all internet radio streams when artwork searches fail.
+
+**Setup for Generic Fallback:**
+
+1. **Filename**: Create a file named `noart.png` (or `.jpg`, `.jpeg`, `.gif`, `.bmp`)
+2. **Location**: Place in `%APPDATA%\foobar2000\foo_artwork_data\logos\noart.png`
+3. **Usage**: This image will be displayed for **any** internet radio stream when:
+   - Track artwork search fails
+   - No station-specific logo exists
+   - No station-specific "-noart" image exists
+
+**Priority for Generic Fallback:**
+- Lowest priority in the fallback chain
+- Only used when all other options are exhausted
+- Provides a consistent "no artwork" visual across all radio stations
+
+This feature ensures that radio stations always have some visual representation, even when individual track artwork cannot be found.
 
 ### Preferences Configuration
 
