@@ -164,14 +164,14 @@ The **Priority** section contains five dropdown menus allowing you to customize 
 #### Stream Delay (May fix stream issues)
 The **Stream Delay** setting controls how long the component waits before checking metadata and searching for artwork when **initially connecting** to internet radio streams:
 
-- **Range**: 1-30 seconds (adjustable with up/down arrows)
-- **Default**: 1 second
+- **Range**: 1-10 seconds (adjustable with up/down arrows)
+- **Default**: 0 seconds
 - **Purpose**: Allows radio streams time to provide proper track metadata before artwork search begins
 - **When to increase**: If you experience issues with artwork searches using station names instead of track names
 - **Applies to**: Initial stream connections and station name detection
 
 **Recommended values:**
-- **Fast streams**: 1-2 seconds (default works well for most streams)
+- **Fast streams**: 0-2 seconds (default works well for most streams)
 - **Slow streams**: 3-5 seconds (for streams that take longer to provide initial track metadata)  
 - **Problem streams**: 5-10 seconds (for streams with persistent initial metadata issues)
 
