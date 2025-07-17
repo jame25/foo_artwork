@@ -89,6 +89,7 @@ extern pfc::string8 extract_domain_from_stream_url(metadb_handle_ptr track);
 extern pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track);
 extern HBITMAP load_station_logo(const pfc::string8& domain);
 extern HBITMAP load_noart_logo(const pfc::string8& domain);
+extern HBITMAP load_generic_noart_logo();
 
 // External functions for triggering main component search
 extern void trigger_main_component_search(metadb_handle_ptr track);
@@ -494,6 +495,25 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (wParam == m_osd_timer_id) {
             update_osd_animation();
+        } else if (wParam == 100) {
+            // Fallback timer - no Default UI panel detected, handle station logos ourselves
+            KillTimer(m_hWnd, 100);
+            OutputDebugStringA("ARTWORK: CUI Panel - Fallback timer fired, no Default UI detected\n");
+            
+            // Try to load station logo for internet stream
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            if (pc->get_now_playing(current_track) && current_track.is_valid()) {
+                pfc::string8 path = current_track->get_path();
+                bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                
+                if (is_internet_stream) {
+                    OutputDebugStringA("ARTWORK: CUI Panel - Trying station logo fallback\n");
+                    
+                    // Manually trigger the fallback mechanism
+                    PostMessage(m_hWnd, WM_USER + 11, 0, 0);
+                }
+            }
         } else if (wParam == 101) {
             // Stream delay timer fired - now do the delayed search
             KillTimer(m_hWnd, 101);
@@ -583,7 +603,7 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
                         // Try to extract domain from URL
                         pfc::string8 domain = extract_domain_from_stream_url(current_track);
                         if (!domain.is_empty()) {
-                            OutputDebugStringA("ARTWORK: CUI Panel - Attempting -noart fallback on main thread\n");
+                            OutputDebugStringA("ARTWORK: CUI Panel - Attempting fallback images on main thread\n");
                             
                             // Load directly as GDI+ bitmap (safe on main thread)
                             try {
@@ -603,35 +623,99 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
                                 
                                 pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
                                 const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
+                                bool fallback_loaded = false;
+                                
+                                // Priority 1: Station logo
+                                char domain_debug[512];
+                                sprintf_s(domain_debug, "ARTWORK: CUI Panel - Trying fallbacks for domain: '%s'\n", domain.c_str());
+                                OutputDebugStringA(domain_debug);
                                 
                                 for (const char* ext : extensions) {
-                                    pfc::string8 noart_path = logos_dir + domain + "-noart" + ext;
+                                    pfc::string8 logo_path = logos_dir + domain + ext;
                                     
-                                    if (PathFileExistsA(noart_path.get_ptr())) {
-                                        // Load using direct file path
+                                    char path_debug[512];
+                                    sprintf_s(path_debug, "ARTWORK: CUI Panel - Checking: %s\n", logo_path.c_str());
+                                    OutputDebugStringA(path_debug);
+                                    
+                                    if (PathFileExistsA(logo_path.get_ptr())) {
                                         std::wstring wide_path;
-                                        wide_path.resize(noart_path.length() + 1);
-                                        MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
+                                        wide_path.resize(logo_path.length() + 1);
+                                        MultiByteToWideChar(CP_UTF8, 0, logo_path.c_str(), -1, &wide_path[0], wide_path.size());
                                         
                                         auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
                                         if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
                                             m_artwork_bitmap = std::move(new_bitmap);
                                             m_artwork_loaded = true;
-                                            m_artwork_source = "Station fallback (no artwork)";
-                                            
-                                            resize_artwork_to_fit();
-                                            InvalidateRect(m_hWnd, NULL, FALSE);
-                                            UpdateWindow(m_hWnd);
+                                            m_artwork_source = "Station logo";
+                                            fallback_loaded = true;
                                             
                                             char debug_msg[512];
-                                            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded -noart fallback: %s\n", noart_path.c_str());
+                                            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded station logo: %s\n", logo_path.c_str());
                                             OutputDebugStringA(debug_msg);
-                                            break; // Exit early if successful
+                                            break;
                                         }
                                     }
                                 }
+                                
+                                // Priority 2: Station-specific noart
+                                if (!fallback_loaded) {
+                                    for (const char* ext : extensions) {
+                                        pfc::string8 noart_path = logos_dir + domain + "-noart" + ext;
+                                        
+                                        if (PathFileExistsA(noart_path.get_ptr())) {
+                                            std::wstring wide_path;
+                                            wide_path.resize(noart_path.length() + 1);
+                                            MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
+                                            
+                                            auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
+                                            if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
+                                                m_artwork_bitmap = std::move(new_bitmap);
+                                                m_artwork_loaded = true;
+                                                m_artwork_source = "Station fallback (no artwork)";
+                                                fallback_loaded = true;
+                                                
+                                                char debug_msg[512];
+                                                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded station noart: %s\n", noart_path.c_str());
+                                                OutputDebugStringA(debug_msg);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Priority 3: Generic noart
+                                if (!fallback_loaded) {
+                                    for (const char* ext : extensions) {
+                                        pfc::string8 generic_noart_path = logos_dir + "noart" + ext;
+                                        
+                                        if (PathFileExistsA(generic_noart_path.get_ptr())) {
+                                            std::wstring wide_path;
+                                            wide_path.resize(generic_noart_path.length() + 1);
+                                            MultiByteToWideChar(CP_UTF8, 0, generic_noart_path.c_str(), -1, &wide_path[0], wide_path.size());
+                                            
+                                            auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
+                                            if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
+                                                m_artwork_bitmap = std::move(new_bitmap);
+                                                m_artwork_loaded = true;
+                                                m_artwork_source = "Generic fallback (no artwork)";
+                                                fallback_loaded = true;
+                                                
+                                                char debug_msg[512];
+                                                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded generic noart: %s\n", generic_noart_path.c_str());
+                                                OutputDebugStringA(debug_msg);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (fallback_loaded) {
+                                    resize_artwork_to_fit();
+                                    InvalidateRect(m_hWnd, NULL, FALSE);
+                                    UpdateWindow(m_hWnd);
+                                }
                             } catch (...) {
-                                OutputDebugStringA("ARTWORK: CUI Panel - Exception loading -noart fallback on main thread\n");
+                                OutputDebugStringA("ARTWORK: CUI Panel - Exception loading fallback images on main thread\n");
                             }
                         }
                     }
@@ -771,8 +855,8 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
             trigger_main_component_local_search(p_track);
         } else {
             OutputDebugStringA("ARTWORK: CUI Panel - Internet stream detected, respecting main component stream delay\n");
-            // For internet streams, let the main component handle the stream delay
-            // Don't trigger immediate search - the main component will handle it with proper delay
+            // For internet streams, let the main component handle the stream delay for metadata search
+            // API search should always be the primary priority, station logos are fallbacks only
         }
         
         // Check if main component's artwork manager has artwork for this track
@@ -797,57 +881,18 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
             return;
         }
         
-        // Try to load station logo for internet streams (fallback before waiting)
-        if (!is_local_file) {
-            pfc::string8 logo_identifier;
-            
-            // First try to extract domain from URL
-            logo_identifier = extract_domain_from_stream_url(p_track);
-            
-            // If no domain found, try to extract station name from metadata
-            if (logo_identifier.is_empty()) {
-                logo_identifier = extract_station_name_from_metadata(p_track);
-            }
-            
-            if (!logo_identifier.is_empty()) {
-                HBITMAP logo_bitmap = load_station_logo(logo_identifier);
-                if (logo_bitmap) {
-                    OutputDebugStringA("ARTWORK: CUI Panel - Loading station logo\n");
-                    
-                    // Convert HBITMAP to GDI+ bitmap using FromHBITMAP
-                    try {
-                        auto new_bitmap = std::unique_ptr<Gdiplus::Bitmap>(Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL));
-                        if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
-                            // Store the bitmap and mark as loaded
-                            m_artwork_bitmap = std::move(new_bitmap);
-                            m_artwork_loaded = true;
-                            m_artwork_source = "Station logo";
-                            
-                            // Resize to fit window
-                            resize_artwork_to_fit();
-                            
-                            // Redraw with the new logo
-                            InvalidateRect(m_hWnd, NULL, FALSE);
-                            UpdateWindow(m_hWnd);
-                            
-                            char debug_msg[256];
-                            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded station logo for %s\n", logo_identifier.c_str());
-                            OutputDebugStringA(debug_msg);
-                            
-                            // Clean up the HBITMAP (GDI+ bitmap made its own copy)
-                            DeleteObject(logo_bitmap);
-                            return;
-                        }
-                    } catch (...) {
-                        // Failed to create GDI+ bitmap, clean up HBITMAP
-                        DeleteObject(logo_bitmap);
-                    }
-                }
-            }
-        }
+        // Station logos and fallback images are now handled after metadata search fails
+        // This allows metadata-based artwork to have priority
         
         // If no Default UI element is active, wait for dynamic metadata
         OutputDebugStringA("ARTWORK: CUI Panel - Waiting for dynamic metadata updates\n");
+        
+        // Set a timeout to handle station logos if no Default UI panel is active
+        // This timer will fire if no artwork events are received within a reasonable time
+        if (m_hWnd) {
+            OutputDebugStringA("ARTWORK: CUI Panel - Setting fallback timer in case no Default UI is active\n");
+            SetTimer(m_hWnd, 100, 3000, NULL); // Timer ID 100, 3 second timeout
+        }
     }
 }
 
@@ -1648,6 +1693,12 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
         case ArtworkEventType::ARTWORK_LOADED:
             if (event.bitmap && event.bitmap != m_last_event_bitmap) {
                 OutputDebugStringA("ARTWORK: CUI Panel - Posting artwork update to main thread\n");
+                
+                // Cancel fallback timer since artwork was found
+                if (m_hWnd) {
+                    KillTimer(m_hWnd, 100);
+                    OutputDebugStringA("ARTWORK: CUI Panel - Cancelling fallback timer, artwork found\n");
+                }
                 
                 // Store bitmap handle for comparison (this is thread-safe)
                 m_last_event_bitmap = event.bitmap;
