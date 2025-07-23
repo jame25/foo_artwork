@@ -156,14 +156,34 @@ void artwork_ui_element::OnPaint(CDCHandle dc) {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(&ps);
     
-    draw_artwork(hdc, &ps.rcPaint);
+    // Use double buffering to eliminate flicker during resizing
+    RECT client_rect;
+    GetClientRect(&client_rect);
+    
+    // Create memory DC and bitmap for double buffering
+    HDC memDC = CreateCompatibleDC(hdc);
+    HBITMAP memBitmap = CreateCompatibleBitmap(hdc, client_rect.right, client_rect.bottom);
+    HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
+    
+    // Paint to memory DC first (off-screen)
+    draw_artwork(memDC, &client_rect);
+    
+    // Copy the entire off-screen buffer to screen in one operation (flicker-free)
+    BitBlt(hdc, 0, 0, client_rect.right, client_rect.bottom, memDC, 0, 0, SRCCOPY);
+    
+    // Cleanup
+    SelectObject(memDC, oldBitmap);
+    DeleteObject(memBitmap);
+    DeleteDC(memDC);
     
     EndPaint(&ps);
 }
 
 void artwork_ui_element::OnSize(UINT nType, CSize size) {
     GetClientRect(&m_client_rect);
-    Invalidate();
+    
+    // Use RedrawWindow for flicker-free resizing instead of Invalidate()
+    RedrawWindow(RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOCHILDREN);
 }
 
 BOOL artwork_ui_element::OnEraseBkgnd(CDCHandle dc) {
@@ -213,19 +233,14 @@ void artwork_ui_element::clear_artwork() {
 }
 
 void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
-    // Create memory DC for double buffering
-    HDC mem_dc = CreateCompatibleDC(hdc);
-    HBITMAP mem_bitmap = CreateCompatibleBitmap(hdc, m_client_rect.right, m_client_rect.bottom);
-    HBITMAP old_bitmap = (HBITMAP)SelectObject(mem_dc, mem_bitmap);
-    
-    // Fill background
+    // Fill background (hdc is already the memory DC from OnPaint)
     HBRUSH bg_brush = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
-    FillRect(mem_dc, &m_client_rect, bg_brush);
+    FillRect(hdc, &m_client_rect, bg_brush);
     DeleteObject(bg_brush);
     
     if (m_artwork_image) {
         // Draw artwork
-        Gdiplus::Graphics graphics(mem_dc);
+        Gdiplus::Graphics graphics(hdc);
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
         
@@ -261,35 +276,26 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
         }
     } else if (m_artwork_loading) {
         // Show loading indicator
-        draw_placeholder(mem_dc, m_client_rect);
+        draw_placeholder(hdc, m_client_rect);
         
         HFONT font = CreateFont(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
                                DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        HFONT old_font = (HFONT)SelectObject(mem_dc, font);
+        HFONT old_font = (HFONT)SelectObject(hdc, font);
         
-        SetBkMode(mem_dc, TRANSPARENT);
-        SetTextColor(mem_dc, GetSysColor(COLOR_BTNTEXT));
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
         
         const char* loading_text = "Loading artwork...";
         RECT text_rect = m_client_rect;
-        DrawTextA(mem_dc, loading_text, -1, &text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextA(hdc, loading_text, -1, &text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         
-        SelectObject(mem_dc, old_font);
+        SelectObject(hdc, old_font);
         DeleteObject(font);
     } else {
         // Show placeholder
-        draw_placeholder(mem_dc, m_client_rect);
+        draw_placeholder(hdc, m_client_rect);
     }
-    
-    // Copy to main DC
-    BitBlt(hdc, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-           mem_dc, rect.left, rect.top, SRCCOPY);
-    
-    // Cleanup
-    SelectObject(mem_dc, old_bitmap);
-    DeleteObject(mem_bitmap);
-    DeleteDC(mem_dc);
 }
 
 void artwork_ui_element::draw_placeholder(HDC hdc, const RECT& rect) {
@@ -367,4 +373,4 @@ static ui_element_factory<ui_element_artwork> g_ui_element_artwork_factory;
 */
 
 // Placeholder implementation - component will load but without UI element for now
-// This allows us to test the basic component loading without ATL dependencies
+// This allows me to test the basic component loading without ATL dependencies
