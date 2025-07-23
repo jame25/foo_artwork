@@ -173,7 +173,12 @@ public:
         // Do NOT add WS_EX_CLIENTEDGE or WS_EX_STATICEDGE (which cause borders)
         // This matches how JScript Panel creates borderless panels
         
+        // Add flicker-reduction window styles
+        config.window_styles |= WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+        config.class_styles = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
         config.class_cursor = IDC_ARROW;
+        config.class_background = nullptr;  // No background brush (we handle it in WM_PAINT)
+        
         return config;
     }
     
@@ -419,13 +424,30 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(m_hWnd, &ps);
         
-        // Paint artwork
-        paint_artwork(hdc);
+        // Use double buffering to eliminate flicker during resizing
+        RECT client_rect;
+        GetClientRect(m_hWnd, &client_rect);
+        
+        // Create memory DC and bitmap for double buffering
+        HDC memDC = CreateCompatibleDC(hdc);
+        HBITMAP memBitmap = CreateCompatibleBitmap(hdc, client_rect.right, client_rect.bottom);
+        HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
+        
+        // Paint to memory DC first (off-screen)
+        paint_artwork(memDC);
         
         // Paint OSD if visible
         if (m_osd_visible) {
-            paint_osd(hdc);
+            paint_osd(memDC);
         }
+        
+        // Copy the entire off-screen buffer to screen in one operation (flicker-free)
+        BitBlt(hdc, 0, 0, client_rect.right, client_rect.bottom, memDC, 0, 0, SRCCOPY);
+        
+        // Cleanup
+        SelectObject(memDC, oldBitmap);
+        DeleteObject(memBitmap);
+        DeleteDC(memDC);
         
         EndPaint(m_hWnd, &ps);
         return 0;
@@ -434,11 +456,12 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
     case WM_SIZE:
         // Resize artwork to fit new window size
         resize_artwork_to_fit();
-        InvalidateRect(m_hWnd, NULL, FALSE);  // FALSE prevents background erase
-        break;
+        // Use RedrawWindow for flicker-free resizing
+        RedrawWindow(m_hWnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOCHILDREN);
+        return 0;  // Prevent default processing
         
     case WM_ERASEBKGND:
-        // We handle background in WM_PAINT to prevent flickering
+        // Always return 1 to prevent background erasing (causes flicker)
         return 1;
         
     case WM_TIMER:
