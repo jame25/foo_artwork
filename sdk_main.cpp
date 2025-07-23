@@ -2007,10 +2007,12 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
     case WM_ERASEBKGND:
         return 1; // We handle background in WM_PAINT
     case WM_SIZE:
-        InvalidateRect(hwnd, NULL, TRUE);
+        // Use RedrawWindow for flicker-free resizing instead of InvalidateRect
+        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOCHILDREN);
         return 0;
     case WM_USER + 1: // Artwork found
-        InvalidateRect(hwnd, NULL, TRUE);
+        // Use RedrawWindow for smoother artwork updates
+        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOCHILDREN);
         return 0;
     // OLD MESSAGE HANDLERS REMOVED - Now using priority-based search system
     // OLD WM_USER + 7 HANDLER REMOVED - Now using priority-based search system
@@ -2335,6 +2337,11 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
     RECT clientRect;
     GetClientRect(m_hWnd, &clientRect);
     
+    // Create memory DC and bitmap for double buffering to eliminate flicker
+    HDC memDC = CreateCompatibleDC(hdc);
+    HBITMAP memBitmap = CreateCompatibleBitmap(hdc, clientRect.right, clientRect.bottom);
+    HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
+    
     // Use foobar2000's proper UI element colors
     COLORREF bg_color, text_color;
     
@@ -2366,9 +2373,9 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
         text_color = GetSysColor(COLOR_WINDOWTEXT);
     }
     
-    // Fill background
+    // Fill background (to memory DC)
     HBRUSH bgBrush = CreateSolidBrush(bg_color);
-    FillRect(hdc, &clientRect, bgBrush);
+    FillRect(memDC, &clientRect, bgBrush);
     DeleteObject(bgBrush);
     
     // ALWAYS show artwork if we have any bitmap, regardless of search state
@@ -2424,37 +2431,45 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
         // The image should always fit within the window bounds in fit mode
         
         // Create compatible DC and select bitmap
-        HDC memDC = CreateCompatibleDC(hdc);
-        if (memDC) {
-            HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, m_artwork_bitmap);
+        HDC artworkDC = CreateCompatibleDC(hdc);
+        if (artworkDC) {
+            HBITMAP oldArtworkBitmap = (HBITMAP)SelectObject(artworkDC, m_artwork_bitmap);
             
             // Set stretch mode for better quality
-            SetStretchBltMode(hdc, HALFTONE);
-            SetBrushOrgEx(hdc, 0, 0, NULL);
+            SetStretchBltMode(memDC, HALFTONE);
+            SetBrushOrgEx(memDC, 0, 0, NULL);
             
-            // Draw the scaled bitmap
-            StretchBlt(hdc, x, y, scaledWidth, scaledHeight, memDC, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+            // Draw the scaled bitmap to memory DC
+            StretchBlt(memDC, x, y, scaledWidth, scaledHeight, artworkDC, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
             
             // Clean up
-            SelectObject(memDC, oldBitmap);
-            DeleteDC(memDC);
+            SelectObject(artworkDC, oldArtworkBitmap);
+            DeleteDC(artworkDC);
         }
     } else {
         // Never show blank screen - always keep the last artwork visible
         // If no artwork exists, show a subtle placeholder instead of blank screen
         if (!m_status_text.is_empty()) {
             // Only show status text if we have something meaningful to display
-            SetBkColor(hdc, bg_color);
-            SetTextColor(hdc, text_color);
-            DrawTextA(hdc, m_status_text.c_str(), -1, &clientRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SetBkColor(memDC, bg_color);
+            SetTextColor(memDC, text_color);
+            DrawTextA(memDC, m_status_text.c_str(), -1, &clientRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         // If no status text and no artwork, just show the background color (no blank screen)
     }
     
     // Paint OSD overlay (always on top)
     if (m_osd_visible) {
-        paint_osd(hdc, clientRect);
+        paint_osd(memDC, clientRect);
     }
+    
+    // Copy the entire off-screen buffer to screen in one operation (flicker-free)
+    BitBlt(hdc, 0, 0, clientRect.right, clientRect.bottom, memDC, 0, 0, SRCCOPY);
+    
+    // Cleanup double buffering
+    SelectObject(memDC, oldBitmap);
+    DeleteObject(memBitmap);
+    DeleteDC(memDC);
 }
 
 // Load artwork for track
