@@ -45,6 +45,7 @@ public:
 // Include CUI SDK headers directly - these contain their own foobar2000 SDK
 #include "columns_ui/columns_ui-sdk/ui_extension.h"
 #include "columns_ui/columns_ui-sdk/window.h"
+#include "columns_ui/columns_ui-sdk/container_uie_window_v3.h"
 
 // Also include base UI extension headers
 #include "columns_ui/columns_ui-sdk/base.h"
@@ -146,7 +147,7 @@ extern void unsubscribe_from_artwork_events(IArtworkEventListener* listener);
 // CUI Artwork Panel Class Definition - Full Implementation
 //=============================================================================
 
-class CUIArtworkPanel : public uie::window
+class CUIArtworkPanel : public uie::container_uie_window_v3
                       , public now_playing_album_art_notify
                       , public play_callback
                       , public IArtworkEventListener
@@ -161,11 +162,23 @@ public:
     void get_category(pfc::string_base& out) const override;
     unsigned get_type() const override;
     
-    // Window management
+    // Window management  
     bool is_available(const uie::window_host_ptr& p_host) const override;
-    HWND create_or_transfer_window(HWND wnd_parent, const uie::window_host_ptr& p_host, const ui_helpers::window_position_t& p_position) override;
-    void destroy_window() override;
-    HWND get_wnd() const override;
+    
+    // Container window configuration (creates borderless panel like JScript Panel)
+    uie::container_window_v3_config get_window_config() override {
+        uie::container_window_v3_config config(L"foo_artwork_cui_panel_borderless", false);
+        
+        // KEY: Keep default extended_window_styles = WS_EX_CONTROLPARENT
+        // Do NOT add WS_EX_CLIENTEDGE or WS_EX_STATICEDGE (which cause borders)
+        // This matches how JScript Panel creates borderless panels
+        
+        config.class_cursor = IDC_ARROW;
+        return config;
+    }
+    
+    // Container window message handler (replaces manual window creation)
+    LRESULT on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam) override;
     
     // Configuration
     void set_config(stream_reader* p_reader, size_t p_size, abort_callback& p_abort) override {}
@@ -191,9 +204,8 @@ public:
     void on_artwork_event(const ArtworkEvent& event) override;
 
 private:
-    // Window state
+    // Window state (managed by container_uie_window_v3)
     HWND m_hWnd;
-    uie::window_host_ptr m_host;
     
     // GDI+ objects for artwork rendering
     std::unique_ptr<Gdiplus::Graphics> m_graphics;
@@ -220,9 +232,8 @@ private:
     // Event-driven artwork system (replaces polling)
     HBITMAP m_last_event_bitmap;
     
-    // Window procedure and message handling
-    static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-    LRESULT on_message(UINT msg, WPARAM wParam, LPARAM lParam);
+    // Container window message handling (used by container_uie_window_v3)
+    // Note: LRESULT on_message() is already declared in public section
     
     // Artwork loading and management
     void load_artwork_from_data(album_art_data::ptr data);
@@ -343,79 +354,17 @@ bool CUIArtworkPanel::is_available(const uie::window_host_ptr& p_host) const {
     return true; // Always available
 }
 
-HWND CUIArtworkPanel::create_or_transfer_window(HWND wnd_parent, const uie::window_host_ptr& p_host, const ui_helpers::window_position_t& p_position) {
-    if (m_hWnd) {
-        // Transfer existing window
-        ShowWindow(m_hWnd, SW_HIDE);
-        SetParent(m_hWnd, wnd_parent);
-        m_host->relinquish_ownership(m_hWnd);
-        m_host = p_host;
-        SetWindowPos(m_hWnd, nullptr, p_position.x, p_position.y, p_position.cx, p_position.cy, SWP_NOZORDER);
-    } else {
-        // Create new window
-        m_host = p_host;
-        
-        WNDCLASS wc = {};
-        wc.lpfnWndProc = window_proc;
-        wc.hInstance = core_api::get_my_instance();
-        wc.lpszClassName = L"foo_artwork_cui_panel_full";
-        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-        wc.style = CS_HREDRAW | CS_VREDRAW;
-        
-        RegisterClass(&wc);
-        
-        m_hWnd = CreateWindow(
-            L"foo_artwork_cui_panel_full",
-            L"Artwork Display",
-            WS_CHILD,
-            p_position.x, p_position.y, p_position.cx, p_position.cy,
-            wnd_parent,
-            NULL,
-            core_api::get_my_instance(),
-            this
-        );
-    }
-    
-    return m_hWnd;
-}
-
-void CUIArtworkPanel::destroy_window() {
-    if (m_hWnd) {
-        DestroyWindow(m_hWnd);
-        m_hWnd = NULL;
-    }
-    m_host.release();
-}
-
-HWND CUIArtworkPanel::get_wnd() const {
-    return m_hWnd;
-}
+// Window creation is now handled by container_uie_window_v3
 
 //=============================================================================
 // Window procedure and message handling
 //=============================================================================
 
-LRESULT CALLBACK CUIArtworkPanel::window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    CUIArtworkPanel* p_this = nullptr;
-    
-    if (msg == WM_NCCREATE) {
-        LPCREATESTRUCT lpcs = reinterpret_cast<LPCREATESTRUCT>(lParam);
-        p_this = static_cast<CUIArtworkPanel*>(lpcs->lpCreateParams);
-        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LPARAM>(p_this));
-        p_this->m_hWnd = hwnd;
-    } else {
-        p_this = reinterpret_cast<CUIArtworkPanel*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // Store window handle for compatibility
+    if (!m_hWnd) {
+        m_hWnd = wnd;
     }
-    
-    if (p_this) {
-        return p_this->on_message(msg, wParam, lParam);
-    }
-    
-    return DefWindowProc(hwnd, msg, wParam, lParam);
-}
-
-LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE:
         OutputDebugStringA("ARTWORK: CUI Full Panel WM_CREATE\n");
@@ -732,7 +681,7 @@ LRESULT CUIArtworkPanel::on_message(UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
     }
     
-    return DefWindowProc(m_hWnd, msg, wParam, lParam);
+    return DefWindowProc(wnd, msg, wParam, lParam);
 }
 
 //=============================================================================
@@ -1643,7 +1592,16 @@ void CUIArtworkPanel::resize_artwork_to_fit() {
             Gdiplus::Graphics g(temp_scaled.get());
             g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
             g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-            g.DrawImage(m_artwork_bitmap.get(), 0, 0, new_width, new_height);
+            g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+            
+            // Create ImageAttributes to fix edge artifacts
+            Gdiplus::ImageAttributes img_attr;
+            img_attr.SetWrapMode(Gdiplus::WrapModeTileFlipXY);
+            
+            // Use DrawImage with ImageAttributes to prevent edge artifacts
+            Gdiplus::Rect dest_rect(0, 0, new_width, new_height);
+            g.DrawImage(m_artwork_bitmap.get(), dest_rect, 0, 0, img_width, img_height, 
+                       Gdiplus::UnitPixel, &img_attr);
             
             // Convert to GDI HBITMAP
             Gdiplus::Color transparent(0, 0, 0, 0);
