@@ -35,7 +35,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
-    <UseDebugLibraries>false</UseDebugLibraries>
+    <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
@@ -48,7 +48,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
-    <UseDebugLibraries>false</UseDebugLibraries>
+    <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
@@ -96,7 +96,7 @@
       <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -106,7 +106,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/Win32/foobar2000_SDK;columns_ui/pfc/Win32/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/Win32/columns_ui_sdk</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/debug-win32/foobar2000_SDK;columns_ui/pfc/debug-win32/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/debug-win32/columns_ui_sdk</AdditionalLibraryDirectories>
       <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-Win32.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
@@ -131,6 +131,7 @@
       <StringPooling>true</StringPooling>
       <OmitFramePointers>true</OmitFramePointers>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -151,7 +152,7 @@
       <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -161,7 +162,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/x64/foobar2000_SDK;columns_ui/pfc/x64/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/x64/columns_ui_sdk</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/debug-x64/foobar2000_SDK;columns_ui/pfc/debug-x64/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/debug-x64/columns_ui_sdk</AdditionalLibraryDirectories>
       <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-x64.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
@@ -186,6 +187,7 @@
       <StringPooling>true</StringPooling>
       <OmitFramePointers>true</OmitFramePointers>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
