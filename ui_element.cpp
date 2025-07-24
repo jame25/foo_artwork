@@ -4,7 +4,10 @@
 
 #pragma comment(lib, "gdiplus.lib")
 
-// For now, we'll create a simplified version without ATL dependencies
+// Custom message for artwork loading completion
+#define WM_USER_ARTWORK_LOADED (WM_USER + 100)
+
+// For now, I'll create a simplified version without ATL dependencies
 // This creates a basic component that can be extended later
 /*
 class artwork_ui_element : public ui_element_instance, public CWindowImpl<artwork_ui_element> {
@@ -21,6 +24,7 @@ public:
         MSG_WM_SIZE(OnSize)
         MSG_WM_ERASEBKGND(OnEraseBkgnd)
         MSG_WM_CONTEXTMENU(OnContextMenu)
+        MESSAGE_HANDLER(WM_USER_ARTWORK_LOADED, OnArtworkLoaded)
     END_MSG_MAP()
 
     // ui_element_instance methods
@@ -39,6 +43,7 @@ private:
     void OnSize(UINT nType, CSize size);
     BOOL OnEraseBkgnd(CDCHandle dc);
     void OnContextMenu(CWindow wnd, CPoint point);
+    LRESULT OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
 
     // Artwork handling
     void on_playback_new_track(metadb_handle_ptr track);
@@ -194,6 +199,18 @@ void artwork_ui_element::OnContextMenu(CWindow wnd, CPoint point) {
     // Could add context menu for artwork options
 }
 
+LRESULT artwork_ui_element::OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    // Safely handle artwork loading completion on UI thread
+    bHandled = TRUE;
+    
+    std::unique_ptr<artwork_manager::artwork_result> result(reinterpret_cast<artwork_manager::artwork_result*>(lParam));
+    if (result) {
+        on_artwork_loaded(*result);
+    }
+    
+    return 0;
+}
+
 void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
     m_current_track = track;
     m_artwork_loading = true;
@@ -202,13 +219,20 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
     cleanup_gdiplus_image();
     Invalidate();
     
-    // Load new artwork asynchronously
-    artwork_manager::get_artwork_async(track, [this](const artwork_manager::artwork_result& result) {
-        // This callback runs in background thread, so we need to marshal to UI thread
-        // For simplicity, we'll call the handler directly (in a real implementation, 
-        // you'd want proper thread marshaling)
-        on_artwork_loaded(result);
-    });
+    // Load new artwork asynchronously - completely silent operation
+    try {
+        artwork_manager::get_artwork_async(track, [this](const artwork_manager::artwork_result& result) {
+            // Marshal callback to UI thread safely
+            if (IsWindow()) {
+                // Post message to UI thread to handle result
+                PostMessage(WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(new artwork_manager::artwork_result(result)));
+            }
+        });
+    } catch (const std::exception& e) {
+        // Handle any initialization errors silently
+        m_artwork_loading = false;
+        console::formatter() << "foo_artwork: Error starting artwork search: " << e.what();
+    }
 }
 
 void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result& result) {
