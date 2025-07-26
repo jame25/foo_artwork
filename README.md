@@ -72,7 +72,7 @@ The component supports custom logo files for internet radio stations. This featu
 #### Setup
 
 1. **Logo Directory**: Place your logo files in the `foo_artwork_data/logos/` directory within your foobar2000 profile folder
-   - **Profile location**: Usually `%APPDATA%\foobar2000\foo_artwork_data\logos\`
+   - **Profile location**: Usually `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\`
    - The directory is automatically created when the component starts
 
 2. **Filename Format**: Logo files should be named using the station's domain name or identifier
@@ -104,7 +104,7 @@ The component supports custom logo files for internet radio stations. This featu
 For a radio station with URL `http://stream.example.com:8000/radio`:
 
 1. Create logo file: `stream.example.com.png`
-2. Place in: `%APPDATA%\foobar2000\foo_artwork_data\logos\stream.example.com.png`
+2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\stream.example.com.png`
 3. Connect to the radio station
 4. The logo will appear immediately
 
@@ -138,7 +138,7 @@ The component also supports **fallback images** that display when artwork search
 For a radio station `http://pub0302.101.ru:8000/stream/trust/mp3/128/24`:
 
 1. Create fallback image: `pub0302.101.ru-noart.png`
-2. Place in: `%APPDATA%\foobar2000\foo_artwork_data\logos\pub0302.101.ru-noart.png`
+2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\pub0302.101.ru-noart.png`
 3. When connecting to this station:
    - If track artwork is found → shows track artwork
    - If no track artwork is found → shows your fallback image
@@ -151,7 +151,7 @@ In addition to station-specific fallbacks, the component supports a **universal 
 **Setup for Generic Fallback:**
 
 1. **Filename**: Create a file named `noart.png` (or `.jpg`, `.jpeg`, `.gif`, `.bmp`)
-2. **Location**: Place in `%APPDATA%\foobar2000\foo_artwork_data\logos\noart.png`
+2. **Location**: Place in `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\noart.png`
 3. **Usage**: This image will be displayed for **any** internet radio stream when:
    - Track artwork search fails
    - No station-specific logo exists
