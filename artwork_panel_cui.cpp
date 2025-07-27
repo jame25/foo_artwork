@@ -5,30 +5,14 @@
 #define _WINSOCKAPI_
 #define NOMINMAX
 
-// Need windows.h for OutputDebugStringA
 #include <windows.h>
+#include <shlobj.h>
 
 // Define CUI support for this file since we're not using precompiled headers
 #define COLUMNS_UI_AVAILABLE
 
-// Debug: Always output this regardless of defines
-static class cui_file_debug {
-public:
-    cui_file_debug() {
-        OutputDebugStringA("ARTWORK: CUI artwork_panel_cui.cpp is being compiled and linked\n");
-    }
-} g_cui_file_debug;
-
 // Only compile CUI support if CUI SDK is available
 #ifdef COLUMNS_UI_AVAILABLE
-
-// Debug: Check if we get inside the ifdef
-static class cui_ifdef_debug {
-public:
-    cui_ifdef_debug() {
-        OutputDebugStringA("ARTWORK: Inside COLUMNS_UI_AVAILABLE ifdef in CUI file\n");
-    }
-} g_cui_ifdef_debug;
 
 // Standard Windows headers
 #include <windows.h>
@@ -78,6 +62,9 @@ extern std::wstring g_current_artwork_path;
 
 // Global preference settings
 extern cfg_bool cfg_show_osd;
+extern cfg_bool cfg_enable_custom_logos;
+extern cfg_string cfg_logos_folder;
+extern cfg_bool cfg_clear_panel_when_not_playing;
 
 // Access to main component's artwork bitmap
 extern HBITMAP get_main_component_artwork_bitmap();
@@ -86,10 +73,15 @@ extern HBITMAP get_main_component_artwork_bitmap();
 extern HBITMAP g_shared_artwork_bitmap;
 
 // Logo loading functions (declared in sdk_main.cpp)
+
 extern pfc::string8 extract_domain_from_stream_url(metadb_handle_ptr track);
+extern pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track);
 extern pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track);
 extern HBITMAP load_station_logo(const pfc::string8& domain);
+extern HBITMAP load_station_logo(metadb_handle_ptr track);
+extern HBITMAP load_noart_logo(metadb_handle_ptr track);
 extern HBITMAP load_noart_logo(const pfc::string8& domain);
+extern HBITMAP load_generic_noart_logo(metadb_handle_ptr track);
 extern HBITMAP load_generic_noart_logo();
 
 // External functions for triggering main component search
@@ -155,6 +147,10 @@ class CUIArtworkPanel : public uie::container_uie_window_v3
 public:
     CUIArtworkPanel();
     ~CUIArtworkPanel();
+    
+    // Timer management for clear panel functionality
+    void update_clear_panel_timer();  // Start/stop clear panel monitoring timer based on setting
+    void force_clear_artwork_bitmap();  // Force clear bitmap for "clear panel when not playing" option
     
     // Required uie::window interface
     const GUID& get_extension_guid() const override;
@@ -222,6 +218,7 @@ private:
     std::string m_current_artwork_source;
     bool m_artwork_loaded;
     bool m_fit_to_window;
+    bool m_was_playing;  // Track previous playback state for clear panel detection
     
     // OSD (On-Screen Display) system
     bool m_show_osd;
@@ -260,6 +257,10 @@ private:
     void resize_artwork_to_fit();
     std::wstring get_formatted_text(const std::string& text);
     void initialize_gdiplus();
+    
+    // Safe track information access
+    bool get_safe_track_path(metadb_handle_ptr track, pfc::string8& path);
+    bool is_safe_internet_stream(metadb_handle_ptr track);
     void cleanup_gdiplus();
     bool copy_bitmap_from_main_component(HBITMAP source_bitmap);
     void search_artwork_for_track(metadb_handle_ptr track);
@@ -286,12 +287,24 @@ static const GUID g_cui_artwork_panel_guid =
 // Factory registration
 static uie::window_factory<CUIArtworkPanel> g_cui_artwork_panel_factory;
 
+//=============================================================================
+// Global functions for managing CUI clear panel timers
+//=============================================================================
+
+// Global list of CUI artwork panels for preference updates
+static pfc::list_t<CUIArtworkPanel*> g_cui_artwork_panels;
+
+// Global function to update CUI timers (called from sdk_main.cpp)
+void update_all_cui_clear_panel_timers() {
+    for (t_size i = 0; i < g_cui_artwork_panels.get_count(); i++) {
+        g_cui_artwork_panels[i]->update_clear_panel_timer();
+    }
+}
+
 // Registration verification function
 static class cui_registration_helper {
 public:
     cui_registration_helper() {
-        OutputDebugStringA("ARTWORK: CUI Full Artwork Panel factory registered during static initialization\n");
-        console::print("CUI Full Artwork Panel: Factory registered during static initialization");
     }
 } g_cui_registration_helper;
 
@@ -303,6 +316,7 @@ CUIArtworkPanel::CUIArtworkPanel()
     : m_hWnd(NULL)
     , m_artwork_loaded(false)
     , m_fit_to_window(false)
+    , m_was_playing(false)
     , m_show_osd(true)
     , m_osd_start_time(0)
     , m_osd_slide_offset(OSD_SLIDE_DISTANCE)
@@ -311,18 +325,19 @@ CUIArtworkPanel::CUIArtworkPanel()
     , m_last_event_bitmap(nullptr)
     , m_scaled_gdi_bitmap(NULL)
 {
-    OutputDebugStringA("ARTWORK: CUI Full Artwork Panel Constructor called\n");
-    console::print("CUI Full Artwork Panel: Constructor called");
-    
     // Register for artwork events (replaces polling)
     subscribe_to_artwork_events(this);
-    OutputDebugStringA("ARTWORK: CUI Panel registered for artwork events\n");
+    
+    // Add to global list for preference updates
+    g_cui_artwork_panels.add_item(this);
 }
 
 CUIArtworkPanel::~CUIArtworkPanel() {
+    // Remove from global list
+    g_cui_artwork_panels.remove_item(this);
+    
     // Unregister from artwork events
     unsubscribe_from_artwork_events(this);
-    OutputDebugStringA("ARTWORK: CUI Panel unregistered from artwork events\n");
     
     if (m_scaled_gdi_bitmap) {
         DeleteObject(m_scaled_gdi_bitmap);
@@ -372,44 +387,47 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
     }
     switch (msg) {
     case WM_CREATE:
-        OutputDebugStringA("ARTWORK: CUI Full Panel WM_CREATE\n");
         // Initialize GDI+
         initialize_gdiplus();
         
         // Register for foobar2000 callbacks
         try {
             now_playing_album_art_notify_manager::get()->add(this);
-            OutputDebugStringA("ARTWORK: CUI Panel registered for album art notifications\n");
             
             play_callback_manager::get()->register_callback(this, 
                 play_callback::flag_on_playback_new_track | 
                 play_callback::flag_on_playback_stop | 
                 play_callback::flag_on_playback_dynamic_info_track, false);
-            OutputDebugStringA("ARTWORK: CUI Panel registered for playback callbacks\n");
             
             // Request artwork for current track if playing
             auto pc = playback_control::get();
             if (pc->is_playing()) {
                 metadb_handle_ptr track;
                 if (pc->get_now_playing(track)) {
-                    OutputDebugStringA("ARTWORK: CUI Panel requesting artwork for current track\n");
                     on_playback_new_track(track);
                 }
+                m_was_playing = true;  // Initialize state if currently playing
+            }
+            
+            // Start timer to monitor playback state for clear panel functionality
+            if (cfg_clear_panel_when_not_playing) {
+                SetTimer(m_hWnd, 102, 500, NULL);  // Timer ID 102, check every 0.5 seconds
+                m_current_artwork_source = "CUI Timer auto-started on creation";
+                InvalidateRect(m_hWnd, NULL, TRUE);
             }
         } catch (const std::exception& e) {
-            OutputDebugStringA("ARTWORK: CUI Panel callback registration failed\n");
         }
         
         // Note: No need for polling timer - using event-driven artwork updates
         break;
         
     case WM_DESTROY:
-        OutputDebugStringA("ARTWORK: CUI Full Panel WM_DESTROY\n");
         // Stop timers
         if (m_osd_timer_id) {
             KillTimer(m_hWnd, m_osd_timer_id);
             m_osd_timer_id = 0;
         }
+        KillTimer(m_hWnd, 102);  // Stop playback monitoring timer
         // Note: No artwork polling timer to stop - using event-driven system
         
         // Unregister callbacks
@@ -470,18 +488,14 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         } else if (wParam == 100) {
             // Fallback timer - no Default UI panel detected, handle station logos ourselves
             KillTimer(m_hWnd, 100);
-            OutputDebugStringA("ARTWORK: CUI Panel - Fallback timer fired, no Default UI detected\n");
             
             // Try to load station logo for internet stream
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
             if (pc->get_now_playing(current_track) && current_track.is_valid()) {
-                pfc::string8 path = current_track->get_path();
-                bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                 
-                if (is_internet_stream) {
-                    OutputDebugStringA("ARTWORK: CUI Panel - Trying station logo fallback\n");
-                    
+                // SAFE PATH ACCESS: Use safer helper function
+                if (is_safe_internet_stream(current_track)) {
                     // Manually trigger the fallback mechanism
                     PostMessage(m_hWnd, WM_USER + 11, 0, 0);
                 }
@@ -489,14 +503,9 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         } else if (wParam == 101) {
             // Stream delay timer fired - now do the delayed search
             KillTimer(m_hWnd, 101);
-            OutputDebugStringA("ARTWORK: CUI Panel - Stream delay timer fired, starting delayed search\n");
             
             // Use stored metadata for delayed search
             if (!m_delayed_search_title.empty()) {
-                char search_debug[512];
-                sprintf_s(search_debug, "ARTWORK: CUI Panel - Starting delayed search with stored metadata: artist='%s', title='%s'\n", 
-                         m_delayed_search_artist.c_str(), m_delayed_search_title.c_str());
-                OutputDebugStringA(search_debug);
                 
                 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
                 trigger_main_component_search_with_metadata(m_delayed_search_artist, m_delayed_search_title);
@@ -505,7 +514,23 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 m_delayed_search_artist.clear();
                 m_delayed_search_title.clear();
             } else {
-                OutputDebugStringA("ARTWORK: CUI Panel - No stored metadata for delayed search\n");
+            }
+        } else if (wParam == 102) {
+            // Timer ID 102 - playback state monitoring for clear panel
+            static_api_ptr_t<playback_control> pc;
+            bool is_playing = pc->is_playing();
+            
+            // If we were playing but now we're not, clear the panel
+            if (m_was_playing && !is_playing && cfg_clear_panel_when_not_playing) {
+                force_clear_artwork_bitmap();
+            }
+            
+            // Update the previous state
+            m_was_playing = is_playing;
+            
+            // If option is disabled, stop the timer
+            if (!cfg_clear_panel_when_not_playing) {
+                KillTimer(m_hWnd, 102);
             }
         }
         break;
@@ -515,8 +540,6 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             HBITMAP bitmap = (HBITMAP)wParam;
             std::string* source_ptr = (std::string*)lParam;
             
-            OutputDebugStringA("ARTWORK: CUI Panel - Processing artwork update on main thread\n");
-            
             // Extract the source string from the message
             std::string artwork_source = source_ptr ? *source_ptr : "";
             
@@ -525,11 +548,6 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 delete source_ptr;
             }
             
-            // Debug: Log the received artwork source
-            char source_debug[256];
-            sprintf_s(source_debug, "ARTWORK: CUI Panel - Received artwork source: '%s'\n", artwork_source.c_str());
-            OutputDebugStringA(source_debug);
-            
             // Now it's safe to call UI functions since we're on the main thread
             if (bitmap && copy_bitmap_from_main_component(bitmap)) {
                 // Update the member variable with the correct source
@@ -537,147 +555,126 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 
                 // Only show OSD for online sources, not local files
                 if (artwork_source != "Local file" && !artwork_source.empty()) {
-                    char osd_debug[256];
-                    sprintf_s(osd_debug, "ARTWORK: CUI Panel - About to show OSD with source: '%s'\n", artwork_source.c_str());
-                    OutputDebugStringA(osd_debug);
                     show_osd("Artwork from " + artwork_source);
-                } else if (artwork_source.empty()) {
-                    OutputDebugStringA("ARTWORK: CUI Panel - Artwork source is empty, skipping OSD\n");
-                } else {
-                    OutputDebugStringA("ARTWORK: CUI Panel - Local file source, skipping OSD\n");
                 }
                 
                 InvalidateRect(m_hWnd, NULL, FALSE);
                 UpdateWindow(m_hWnd); // Force immediate repaint
-                OutputDebugStringA("ARTWORK: CUI Panel - Main thread artwork update complete\n");
             } else {
                 // Clean up even if bitmap processing failed
-                if (source_ptr) {
-                    OutputDebugStringA("ARTWORK: CUI Panel - Bitmap processing failed, source was cleaned up\n");
-                }
             }
         }
         break;
         
     case WM_USER + 11: // Handle -noart fallback on main thread
         {
-            OutputDebugStringA("ARTWORK: CUI Panel - Processing -noart fallback on main thread\n");
             
             // Now it's safe to access foobar2000 APIs and UI functions
             try {
                 static_api_ptr_t<playback_control> pc;
                 metadb_handle_ptr current_track;
                 if (pc->get_now_playing(current_track) && current_track.is_valid()) {
-                    pfc::string8 path = current_track->get_path();
-                    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                    // SAFE PATH ACCESS: Add try-catch to prevent crashes
+                    pfc::string8 path;
+                    bool is_internet_stream = false;
+                    // SAFE PATH ACCESS: Use safer helper function
+                    if (get_safe_track_path(current_track, path)) {
+                        is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                    } else {
+                        is_internet_stream = false;
+                    }
                     
-                    if (is_internet_stream) {
+                    if (is_internet_stream && cfg_enable_custom_logos) {
                         // Try to extract domain from URL
                         pfc::string8 domain = extract_domain_from_stream_url(current_track);
                         if (!domain.is_empty()) {
-                            OutputDebugStringA("ARTWORK: CUI Panel - Attempting fallback images on main thread\n");
                             
                             // Load directly as GDI+ bitmap (safe on main thread)
                             try {
-                                // Get foobar2000 profile path (safe on main thread)
-                                pfc::string8 profile_url = core_api::get_profile_path();
-                                pfc::string8 profile_path;
-                                if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
-                                    profile_path = profile_url.c_str() + 7;
-                                    for (size_t i = 0; i < profile_path.length(); i++) {
-                                        if (profile_path[i] == '/') {
-                                            profile_path.set_char(i, '\\');
-                                        }
-                                    }
-                                } else {
-                                    profile_path = profile_url;
-                                }
-                                
-                                pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+                                pfc::string8 logos_dir;
+                                char appdata_buffer[MAX_PATH];
                                 const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
                                 bool fallback_loaded = false;
                                 
-                                // Priority 1: Station logo
-                                char domain_debug[512];
-                                sprintf_s(domain_debug, "ARTWORK: CUI Panel - Trying fallbacks for domain: '%s'\n", domain.c_str());
-                                OutputDebugStringA(domain_debug);
+                                // Use custom folder path if specified, otherwise use default
+                                if (!cfg_logos_folder.is_empty()) {
+                                    logos_dir = cfg_logos_folder.get_ptr();
+                                    if (!logos_dir.is_empty() && logos_dir[logos_dir.length() - 1] != '\\') {
+                                        logos_dir += "\\";
+                                    }
+                                } else {
+                                    // Use default APPDATA path
+                                    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, appdata_buffer))) {
+                                        logos_dir = pfc::string8(appdata_buffer) + "\\foobar2000-v2\\foo_artwork_data\\logos\\";
+                                    } else {
+                                        // Fallback to profile path
+                                        pfc::string8 profile_url = core_api::get_profile_path();
+                                        pfc::string8 profile_path;
+                                        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+                                            profile_path = profile_url.c_str() + 7;
+                                            for (size_t i = 0; i < profile_path.length(); i++) {
+                                                if (profile_path[i] == '/') {
+                                                    profile_path.set_char(i, '\\');
+                                                }
+                                            }
+                                        } else {
+                                            profile_path = profile_url;
+                                        }
+                                        logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+                                    }
+                                }
                                 
-                                for (const char* ext : extensions) {
-                                    pfc::string8 logo_path = logos_dir + domain + ext;
-                                    
-                                    char path_debug[512];
-                                    sprintf_s(path_debug, "ARTWORK: CUI Panel - Checking: %s\n", logo_path.c_str());
-                                    OutputDebugStringA(path_debug);
-                                    
-                                    if (PathFileExistsA(logo_path.get_ptr())) {
-                                        std::wstring wide_path;
-                                        wide_path.resize(logo_path.length() + 1);
-                                        MultiByteToWideChar(CP_UTF8, 0, logo_path.c_str(), -1, &wide_path[0], wide_path.size());
-                                        
-                                        auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
-                                        if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
-                                            m_artwork_bitmap = std::move(new_bitmap);
+                                // Priority 1: Station logo (with full path + domain fallback)
+                                if (!fallback_loaded) {
+                                    HBITMAP logo_bitmap = load_station_logo(current_track);
+                                    if (logo_bitmap) {
+                                        // Convert HBITMAP to GDI+ Bitmap using FromHBITMAP
+                                        Gdiplus::Bitmap* bitmap_ptr = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
+                                        if (bitmap_ptr && bitmap_ptr->GetLastStatus() == Gdiplus::Ok) {
+                                            m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(bitmap_ptr);
                                             m_artwork_loaded = true;
                                             m_artwork_source = "Station logo";
                                             fallback_loaded = true;
-                                            
-                                            char debug_msg[512];
-                                            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded station logo: %s\n", logo_path.c_str());
-                                            OutputDebugStringA(debug_msg);
-                                            break;
+                                        } else {
+                                            delete bitmap_ptr; // Clean up if failed
                                         }
+                                        DeleteObject(logo_bitmap); // Clean up HBITMAP
                                     }
                                 }
                                 
-                                // Priority 2: Station-specific noart
+                                // Priority 2: Station-specific noart (with full URL path support)
                                 if (!fallback_loaded) {
-                                    for (const char* ext : extensions) {
-                                        pfc::string8 noart_path = logos_dir + domain + "-noart" + ext;
-                                        
-                                        if (PathFileExistsA(noart_path.get_ptr())) {
-                                            std::wstring wide_path;
-                                            wide_path.resize(noart_path.length() + 1);
-                                            MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
-                                            
-                                            auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
-                                            if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
-                                                m_artwork_bitmap = std::move(new_bitmap);
-                                                m_artwork_loaded = true;
-                                                m_artwork_source = "Station fallback (no artwork)";
-                                                fallback_loaded = true;
-                                                
-                                                char debug_msg[512];
-                                                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded station noart: %s\n", noart_path.c_str());
-                                                OutputDebugStringA(debug_msg);
-                                                break;
-                                            }
+                                    HBITMAP noart_bitmap = load_noart_logo(current_track);
+                                    if (noart_bitmap) {
+                                        // Convert HBITMAP to GDI+ Bitmap using FromHBITMAP
+                                        Gdiplus::Bitmap* bitmap_ptr = Gdiplus::Bitmap::FromHBITMAP(noart_bitmap, NULL);
+                                        if (bitmap_ptr && bitmap_ptr->GetLastStatus() == Gdiplus::Ok) {
+                                            m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(bitmap_ptr);
+                                            m_artwork_loaded = true;
+                                            m_artwork_source = "Station fallback (no artwork)";
+                                            fallback_loaded = true;
+                                        } else {
+                                            delete bitmap_ptr; // Clean up if failed
                                         }
+                                        DeleteObject(noart_bitmap); // Clean up HBITMAP
                                     }
                                 }
                                 
-                                // Priority 3: Generic noart
+                                // Priority 3: Generic noart (with full URL path support)
                                 if (!fallback_loaded) {
-                                    for (const char* ext : extensions) {
-                                        pfc::string8 generic_noart_path = logos_dir + "noart" + ext;
-                                        
-                                        if (PathFileExistsA(generic_noart_path.get_ptr())) {
-                                            std::wstring wide_path;
-                                            wide_path.resize(generic_noart_path.length() + 1);
-                                            MultiByteToWideChar(CP_UTF8, 0, generic_noart_path.c_str(), -1, &wide_path[0], wide_path.size());
-                                            
-                                            auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
-                                            if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
-                                                m_artwork_bitmap = std::move(new_bitmap);
-                                                m_artwork_loaded = true;
-                                                m_artwork_source = "Generic fallback (no artwork)";
-                                                fallback_loaded = true;
-                                                
-                                                char debug_msg[512];
-                                                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Loaded generic noart: %s\n", generic_noart_path.c_str());
-                                                OutputDebugStringA(debug_msg);
-                                                break;
-                                            }
+                                    HBITMAP generic_bitmap = load_generic_noart_logo(current_track);
+                                    if (generic_bitmap) {
+                                        // Convert HBITMAP to GDI+ Bitmap using FromHBITMAP
+                                        Gdiplus::Bitmap* bitmap_ptr = Gdiplus::Bitmap::FromHBITMAP(generic_bitmap, NULL);
+                                        if (bitmap_ptr && bitmap_ptr->GetLastStatus() == Gdiplus::Ok) {
+                                            m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(bitmap_ptr);
+                                            m_artwork_loaded = true;
+                                            m_artwork_source = "Generic fallback (no artwork)";
+                                            fallback_loaded = true;
+                                        } else {
+                                            delete bitmap_ptr; // Clean up if failed
                                         }
+                                        DeleteObject(generic_bitmap); // Clean up HBITMAP
                                     }
                                 }
                                 
@@ -687,13 +684,11 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                                     UpdateWindow(m_hWnd);
                                 }
                             } catch (...) {
-                                OutputDebugStringA("ARTWORK: CUI Panel - Exception loading fallback images on main thread\n");
                             }
                         }
                     }
                 }
             } catch (...) {
-                OutputDebugStringA("ARTWORK: CUI Panel - Exception in main thread -noart fallback logic\n");
             }
         }
         break;
@@ -714,11 +709,9 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
 void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
     if (!m_hWnd) return;
     
-    OutputDebugStringA("ARTWORK: CUI Panel - on_album_art callback received\n");
     
     try {
         if (data.is_valid() && data->get_size() > 0) {
-            OutputDebugStringA("ARTWORK: CUI Panel - Valid artwork data received\n");
             
             // CRITICAL: Check if this embedded artwork is for a station name
             // This fixes SomaFM Icecast streams with embedded station artwork
@@ -746,10 +739,6 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
                 
                 // Check if this is embedded artwork for a station name
                 if (is_station_name(artist, title)) {
-                    char debug_msg[512];
-                    sprintf_s(debug_msg, "ARTWORK: CUI Panel - REJECTED embedded artwork for station name: artist='%s', title='%s'\n", 
-                             artist.c_str(), title.c_str());
-                    OutputDebugStringA(debug_msg);
                     return; // Block the embedded station artwork
                 }
             }
@@ -758,23 +747,25 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
             bool should_prefer_local = false;
             
             if (current_track.is_valid()) {
-                pfc::string8 file_path = current_track->get_path();
-                bool is_local_file = !(strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
-                
-                if (is_local_file) {
-                    // Check if main component already found local artwork
-                    HBITMAP main_bitmap = get_main_component_artwork_bitmap();
-                    if (main_bitmap) {
-                        OutputDebugStringA("ARTWORK: CUI Panel - Local artwork available, preferring over embedded artwork\n");
-                        should_prefer_local = true;
-                        
-                        if (copy_bitmap_from_main_component(main_bitmap)) {
-                            m_artwork_source = "Local file";
-                            // No OSD for local files - they should load silently
-                            InvalidateRect(m_hWnd, NULL, FALSE);
-                            UpdateWindow(m_hWnd); // Force immediate repaint
-                            OutputDebugStringA("ARTWORK: CUI Panel - Local artwork in album_art callback loaded, forced repaint\n");
-                            return;
+                // SAFE PATH ACCESS: Add try-catch to prevent crashes
+                // SAFE PATH ACCESS: Use safer helper function
+                pfc::string8 file_path;
+                if (get_safe_track_path(current_track, file_path)) {
+                    bool is_local_file = !(strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
+                    
+                    if (is_local_file) {
+                        // Check if main component already found local artwork
+                        HBITMAP main_bitmap = get_main_component_artwork_bitmap();
+                        if (main_bitmap) {
+                            should_prefer_local = true;
+                            
+                            if (copy_bitmap_from_main_component(main_bitmap)) {
+                                m_artwork_source = "Local file";
+                                // No OSD for local files - they should load silently
+                                InvalidateRect(m_hWnd, NULL, FALSE);
+                                UpdateWindow(m_hWnd); // Force immediate repaint
+                                return;
+                            }
                         }
                     }
                 }
@@ -782,22 +773,18 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
             
             // If no local artwork found or this is a stream, use embedded artwork
             if (!should_prefer_local) {
-                OutputDebugStringA("ARTWORK: CUI Panel - Using embedded artwork\n");
                 load_artwork_from_data(data);
                 m_artwork_source = "Album data";
             }
         } else {
-            OutputDebugStringA("ARTWORK: CUI Panel - No artwork data received\n");
             // Keep previous artwork visible - don't clear
             m_artwork_source = "";
         }
         
         InvalidateRect(m_hWnd, NULL, FALSE);
         UpdateWindow(m_hWnd); // Force immediate repaint
-        OutputDebugStringA("ARTWORK: CUI Panel - on_album_art completed, forced repaint\n");
     } catch (...) {
         // Handle any exceptions gracefully
-        OutputDebugStringA("ARTWORK: CUI Panel - Exception in on_album_art\n");
         // Keep previous artwork visible - don't clear
         m_artwork_source = "";
         InvalidateRect(m_hWnd, NULL, FALSE);
@@ -813,20 +800,22 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
     // Don't invalidate here - let new artwork trigger the redraw
     
     if (p_track.is_valid()) {
-        OutputDebugStringA("ARTWORK: CUI Panel - New track, checking main component artwork\n");
         
         // PRIORITY FIX: For local files, immediately trigger main component local artwork search
         // This ensures local files are found before embedded artwork loads
-        pfc::string8 file_path = p_track->get_path();
-        bool is_local_file = (strstr(file_path.c_str(), "file://") == file_path.c_str()) || 
-                            !(strstr(file_path.c_str(), "://"));
+        
+        // SAFE PATH HANDLING: Use safer helper function
+        pfc::string8 file_path;
+        bool is_local_file = false;
+        if (get_safe_track_path(p_track, file_path)) {
+            is_local_file = (strstr(file_path.c_str(), "file://") == file_path.c_str()) || 
+                           !(strstr(file_path.c_str(), "://"));
+        }
         
         if (is_local_file) {
-            OutputDebugStringA("ARTWORK: CUI Panel - Local file detected, triggering immediate local artwork search\n");
             // Force main component to search for local artwork immediately
             trigger_main_component_local_search(p_track);
         } else {
-            OutputDebugStringA("ARTWORK: CUI Panel - Internet stream detected, respecting main component stream delay\n");
             // For internet streams, let the main component handle the stream delay for metadata search
             // API search should always be the primary priority, station logos are fallbacks only
         }
@@ -835,21 +824,18 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
         HBITMAP main_bitmap = get_main_component_artwork_bitmap();
         
         if (main_bitmap) {
-            OutputDebugStringA("ARTWORK: CUI Panel - Found artwork bitmap from main component\n");
             if (copy_bitmap_from_main_component(main_bitmap)) {
                 m_last_event_bitmap = main_bitmap;
                 m_artwork_source = "Local file";
                 // No OSD for local files - they should load silently
                 InvalidateRect(m_hWnd, NULL, FALSE);
                 UpdateWindow(m_hWnd); // Force immediate repaint
-                OutputDebugStringA("ARTWORK: CUI Panel - Local artwork loaded, forced repaint\n");
                 return;
             }
         }
         
         // If main component is loading artwork, wait for it
         if (g_artwork_loading) {
-            OutputDebugStringA("ARTWORK: CUI Panel - Main component is loading artwork, waiting...\n");
             return;
         }
         
@@ -857,12 +843,10 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
         // This allows metadata-based artwork to have priority
         
         // If no Default UI element is active, wait for dynamic metadata
-        OutputDebugStringA("ARTWORK: CUI Panel - Waiting for dynamic metadata updates\n");
         
         // Set a timeout to handle station logos if no Default UI panel is active
         // This timer will fire if no artwork events are received within a reasonable time
         if (m_hWnd) {
-            OutputDebugStringA("ARTWORK: CUI Panel - Setting fallback timer in case no Default UI is active\n");
             SetTimer(m_hWnd, 100, 3000, NULL); // Timer ID 100, 3 second timeout
         }
     }
@@ -871,7 +855,13 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
 void CUIArtworkPanel::on_playback_stop(play_control::t_stop_reason p_reason) {
     if (!m_hWnd) return;
     
-    // Keep artwork visible when playback stops
+    // Clear artwork if option is enabled
+    if (cfg_clear_panel_when_not_playing) {
+        m_artwork_bitmap.reset();  // Properly release GDI+ bitmap
+        m_current_artwork_source = "Panel cleared - not playing";
+        m_osd_text = "";
+        InvalidateRect(m_hWnd, NULL, TRUE);
+    }
 }
 
 void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
@@ -887,10 +877,6 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
         title = p_info.meta_get("TITLE", 0);
     }
     
-    char debug_msg[512];
-    sprintf_s(debug_msg, "ARTWORK: CUI Panel - Dynamic info received: artist='%s', title='%s'\n", 
-             artist.c_str(), title.c_str());
-    OutputDebugStringA(debug_msg);
     
     // Clean up metadata for better search results
     std::string original_title = title;
@@ -925,7 +911,39 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
         }
     };
     
-    // 2. Remove bracketed information and quality indicators
+    // 2. Remove featuring patterns in parentheses/brackets (including unclosed ones)
+    auto remove_featuring_in_brackets = [](std::string& str) {
+        // Remove featuring patterns in parentheses - handles both complete and unclosed parentheses
+        // Patterns: (ft. Artist), (feat. Artist), (featuring Artist), (Ft. Artist), etc.
+        std::vector<std::string> feat_patterns = {
+            "ft\\.", "feat\\.", "featuring", "Ft\\.", "Feat\\.", "Featuring", 
+            "FT\\.", "FEAT\\.", "FEATURING"
+        };
+        
+        for (const auto& pattern : feat_patterns) {
+            // Match parentheses with featuring pattern: "(ft. Artist)" or "(ft. Artist" (unclosed)
+            std::string paren_regex = "\\s*\\(\\s*" + pattern + "\\s+[^)]*\\)?\\s*";
+            str = std::regex_replace(str, std::regex(paren_regex, std::regex_constants::icase), " ");
+            
+            // Match square brackets with featuring pattern: "[ft. Artist]" or "[ft. Artist" (unclosed)
+            std::string bracket_regex = "\\s*\\[\\s*" + pattern + "\\s+[^\\]]*\\]?\\s*";
+            str = std::regex_replace(str, std::regex(bracket_regex, std::regex_constants::icase), " ");
+        }
+        
+        // Clean up any remaining unmatched opening brackets/parentheses at the end
+        // This handles cases like "Song Title (Ft. Artist" where the closing ) is missing
+        std::regex trailing_open("\\s*[\\(\\[]\\s*$");
+        str = std::regex_replace(str, trailing_open, "");
+        
+        // Remove multiple consecutive spaces
+        std::regex multi_space("\\s{2,}");
+        str = std::regex_replace(str, multi_space, " ");
+        
+        // Trim leading and trailing spaces
+        str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
+    };
+    
+    // 3. Remove bracketed information and quality indicators
     auto remove_bracketed_info = [](std::string& str) {
         std::vector<std::string> patterns = {
             "[Live]", "[Explicit]", "[Remastered]", "[Radio Edit]", "[Extended]", "[Remix]",
@@ -952,7 +970,11 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
         std::regex duration_regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*");
         str = std::regex_replace(str, duration_regex, " ");
         
-        // Remove " - X.XX" timestamp patterns at the end
+        // Remove " - MM:SS" or " - M:SS" timestamp patterns at the end (like " - 0:00")
+        std::regex dash_time_regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$");
+        str = std::regex_replace(str, dash_time_regex, "");
+        
+        // Remove " - X.XX" numeric timestamp patterns at the end
         size_t dash_pos = str.rfind(" - ");
         if (dash_pos != std::string::npos) {
             std::string suffix = str.substr(dash_pos + 3);
@@ -1035,6 +1057,7 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     
     // Apply all cleaning rules to title
     remove_prefixes(title);
+    remove_featuring_in_brackets(title);  // Remove featuring patterns first
     remove_bracketed_info(title);
     remove_duration_info(title);
     normalize_collaborations(title);
@@ -1045,17 +1068,9 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     normalize_collaborations(artist);
     clean_encoding_artifacts(artist);
     
-    // Log cleaning results if anything changed
-    if (title != original_title || artist != original_artist) {
-        char clean_debug[1024];
-        sprintf_s(clean_debug, "ARTWORK: CUI Panel - Cleaned metadata:\n  Artist: '%s' → '%s'\n  Title: '%s' → '%s'\n", 
-                 original_artist.c_str(), artist.c_str(), original_title.c_str(), title.c_str());
-        OutputDebugStringA(clean_debug);
-    }
     
     // Check for "adbreak" in title (radio advertisement breaks - no search needed)
     if (!title.empty() && strstr(title.c_str(), "adbreak")) {
-        OutputDebugStringA("ARTWORK: CUI Panel - Detected 'adbreak' in title, skipping artwork search\n");
         return;
     }
     
@@ -1066,17 +1081,14 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
         metadb_handle_ptr current_track;
         if (pc->get_now_playing(current_track) && current_track.is_valid()) {
             // Check if this is an internet stream
-            pfc::string8 file_path = current_track->get_path();
-            bool is_internet_stream = (strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
+            // SAFE PATH ACCESS: Use safer helper function
+            bool is_internet_stream = is_safe_internet_stream(current_track);
             
             if (is_internet_stream) {
                 // For internet streams, respect the stream delay configuration
                 extern cfg_int cfg_stream_delay;
                 int delay_seconds = (int)cfg_stream_delay;
                 
-                char debug_msg[256];
-                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Internet stream dynamic metadata - applying %d second delay\n", delay_seconds);
-                OutputDebugStringA(debug_msg);
                 
                 if (delay_seconds > 0) {
                     // Clear any previous artwork to respect stream delay
@@ -1084,28 +1096,21 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                     if (g_shared_artwork_bitmap) {
                         DeleteObject(g_shared_artwork_bitmap);
                         g_shared_artwork_bitmap = NULL;
-                        OutputDebugStringA("ARTWORK: CUI Panel - Cleared previous artwork to respect stream delay\n");
                     }
                     
                     // Store metadata for delayed search
                     m_delayed_search_artist = artist;
                     m_delayed_search_title = title;
-                    char stored_debug[512];
-                    sprintf_s(stored_debug, "ARTWORK: CUI Panel - Stored metadata for delayed search: artist='%s', title='%s'\n", 
-                             m_delayed_search_artist.c_str(), m_delayed_search_title.c_str());
-                    OutputDebugStringA(stored_debug);
                     
                     // Set a timer to delay the search
                     if (m_hWnd) {
                         // Use timer ID 101 for stream delay
                         SetTimer(m_hWnd, 101, delay_seconds * 1000, NULL);
-                        OutputDebugStringA("ARTWORK: CUI Panel - Set delay timer for internet stream\n");
                         
                         // Note: No polling timer needed - using event-driven updates
                     }
                 } else {
                     // No delay configured, search immediately
-                    OutputDebugStringA("ARTWORK: CUI Panel - No delay configured, searching immediately\n");
                     extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
                     trigger_main_component_search_with_metadata(artist, title);
                     
@@ -1113,7 +1118,6 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                 }
                 return;
             } else {
-                OutputDebugStringA("ARTWORK: CUI Panel - Local file dynamic metadata - starting search immediately\n");
                 // For local files, proceed with immediate search
                 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
                 trigger_main_component_search_with_metadata(artist, title);
@@ -1173,14 +1177,11 @@ void CUIArtworkPanel::load_artwork_from_data(album_art_data::ptr data) {
             // Resize to fit window
             resize_artwork_to_fit();
             
-            OutputDebugStringA("ARTWORK: CUI Panel - Successfully loaded artwork from album data\n");
         } else {
             // Keep previous artwork visible - don't clear on load failure
-            OutputDebugStringA("ARTWORK: CUI Panel - Failed to load artwork from album data\n");
         }
     } catch (...) {
         // Keep previous artwork visible - don't clear on exception
-        OutputDebugStringA("ARTWORK: CUI Panel - Exception loading artwork from album data\n");
     }
 }
 
@@ -1197,14 +1198,11 @@ void CUIArtworkPanel::load_artwork_from_file(const std::wstring& file_path) {
             // Resize to fit window
             resize_artwork_to_fit();
             
-            OutputDebugStringA("ARTWORK: CUI Panel - Successfully loaded artwork from file\n");
         } else {
             // Keep previous artwork visible - don't clear on load failure
-            OutputDebugStringA("ARTWORK: CUI Panel - Failed to load artwork from file\n");
         }
     } catch (...) {
         // Keep previous artwork visible - don't clear on exception
-        OutputDebugStringA("ARTWORK: CUI Panel - Exception loading artwork from file\n");
     }
 }
 
@@ -1217,6 +1215,45 @@ void CUIArtworkPanel::clear_artwork() {
     m_artwork_loaded = false;
     m_current_artwork_path.clear();
     m_current_artwork_source.clear();
+}
+
+// Start/stop clear panel monitoring timer based on configuration
+void CUIArtworkPanel::update_clear_panel_timer() {
+    if (!m_hWnd) {
+        return;
+    }
+    
+    if (cfg_clear_panel_when_not_playing) {
+        // Start the timer if option is enabled
+        SetTimer(m_hWnd, 102, 500, NULL);  // Timer ID 102, check every 0.5 seconds
+    } else {
+        // Stop the timer if option is disabled
+        KillTimer(m_hWnd, 102);
+    }
+}
+
+// Force clear artwork bitmap for "clear panel when not playing" option
+void CUIArtworkPanel::force_clear_artwork_bitmap() {
+    // Clear the GDI+ bitmap
+    if (m_artwork_bitmap) {
+        m_artwork_bitmap.reset();
+    }
+    
+    // Clear the GDI bitmap
+    if (m_scaled_gdi_bitmap) {
+        DeleteObject(m_scaled_gdi_bitmap);
+        m_scaled_gdi_bitmap = NULL;
+    }
+    
+    // Clear artwork state
+    m_artwork_loaded = false;
+    m_current_artwork_path.clear();
+    m_current_artwork_source.clear();
+    
+    // Invalidate window to redraw
+    if (m_hWnd) {
+        InvalidateRect(m_hWnd, NULL, TRUE);
+    }
 }
 
 //=============================================================================
@@ -1261,28 +1298,36 @@ void CUIArtworkPanel::paint_artwork(HDC hdc) {
         }
         return; // Early return when artwork is drawn
     } else {
-        // Draw "no artwork" message using GDI (like Default UI)
-        SetBkMode(hdc, TRANSPARENT);
-        
-        // Get text color from CUI color scheme
-        COLORREF text_color = colors.get_colour(cui::colours::colour_text);
-        SetTextColor(hdc, text_color);
-        
-        const char* text = "No artwork available";
-        DrawTextA(hdc, text, -1, &client_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        // Only show "no artwork" message if panel wasn't deliberately cleared
+        if (!m_current_artwork_source.empty()) {
+            // Draw "no artwork" message using GDI (like Default UI)
+            SetBkMode(hdc, TRANSPARENT);
+            
+            // Get text color from CUI color scheme
+            COLORREF text_color = colors.get_colour(cui::colours::colour_text);
+            SetTextColor(hdc, text_color);
+            
+            const char* text = "No artwork available";
+            DrawTextA(hdc, text, -1, &client_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        // If m_current_artwork_source is empty, panel was cleared - show nothing
     }
 }
 
 void CUIArtworkPanel::paint_no_artwork(HDC hdc) {
-    RECT client_rect;
-    GetClientRect(m_hWnd, &client_rect);
-    
-    // Draw text
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(100, 100, 100));
-    
-    const char* text = "No artwork available";
-    DrawTextA(hdc, text, -1, &client_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    // Only show message if panel wasn't deliberately cleared
+    if (!m_current_artwork_source.empty()) {
+        RECT client_rect;
+        GetClientRect(m_hWnd, &client_rect);
+        
+        // Draw text
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(100, 100, 100));
+        
+        const char* text = "No artwork available";
+        DrawTextA(hdc, text, -1, &client_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    // If m_current_artwork_source is empty, panel was cleared - show nothing
 }
 
 void CUIArtworkPanel::paint_loading(HDC hdc) {
@@ -1302,15 +1347,10 @@ void CUIArtworkPanel::paint_loading(HDC hdc) {
 //=============================================================================
 
 void CUIArtworkPanel::show_osd(const std::string& text) {
-    // DEBUG: Log all OSD calls to trace where they're coming from
-    char debug_msg[512];
-    sprintf_s(debug_msg, "ARTWORK: CUI Panel - show_osd() called with text: '%s'\n", text.c_str());
-    OutputDebugStringA(debug_msg);
     
     // Check if this is a local file OSD call that should be blocked
     if (text.find("Local file") != std::string::npos || 
         text.find("local") != std::string::npos) {
-        OutputDebugStringA("ARTWORK: CUI Panel - Blocking OSD for local file\n");
         return;
     }
     
@@ -1318,12 +1358,14 @@ void CUIArtworkPanel::show_osd(const std::string& text) {
     static_api_ptr_t<playback_control> pc;
     metadb_handle_ptr current_track;
     if (pc->get_now_playing(current_track) && current_track.is_valid()) {
-        pfc::string8 current_path = current_track->get_path();
-        bool is_current_local = (strstr(current_path.c_str(), "file://") == current_path.c_str()) || 
-                               !(strstr(current_path.c_str(), "://"));
-        if (is_current_local) {
-            OutputDebugStringA("ARTWORK: CUI Panel - Blocking OSD because current track is local file\n");
-            return;
+        // SAFE PATH ACCESS: Use safer helper function
+        pfc::string8 current_path;
+        if (get_safe_track_path(current_track, current_path)) {
+            bool is_current_local = (strstr(current_path.c_str(), "file://") == current_path.c_str()) || 
+                                   !(strstr(current_path.c_str(), "://"));
+            if (is_current_local) {
+                return;
+            }
         }
     }
     
@@ -1661,10 +1703,6 @@ void CUIArtworkPanel::cleanup_gdiplus() {
 void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
     if (!m_hWnd) return;
     
-    char debug_msg[512];
-    sprintf_s(debug_msg, "ARTWORK: CUI Panel - Event received: type=%d, bitmap=%p, source='%s'\n", 
-             (int)event.type, event.bitmap, event.source.c_str());
-    OutputDebugStringA(debug_msg);
     
     // THREAD SAFETY: This event handler can be called from background threads
     // We must NOT directly call UI functions like InvalidateRect or copy_bitmap_from_main_component
@@ -1673,12 +1711,10 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
     switch (event.type) {
         case ArtworkEventType::ARTWORK_LOADED:
             if (event.bitmap && event.bitmap != m_last_event_bitmap) {
-                OutputDebugStringA("ARTWORK: CUI Panel - Posting artwork update to main thread\n");
                 
                 // Cancel fallback timer since artwork was found
                 if (m_hWnd) {
                     KillTimer(m_hWnd, 100);
-                    OutputDebugStringA("ARTWORK: CUI Panel - Cancelling fallback timer, artwork found\n");
                 }
                 
                 // Store bitmap handle for comparison (this is thread-safe)
@@ -1688,9 +1724,6 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
                 // Allocate a copy of the source string that the main thread will free
                 std::string* source_copy = new std::string(event.source);
                 
-                char debug_msg[256];
-                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Posting event with source: '%s'\n", source_copy->c_str());
-                OutputDebugStringA(debug_msg);
                 
                 // Post message to main thread to handle the UI update safely
                 // Use WM_USER + 10 for artwork event updates
@@ -1700,19 +1733,15 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
             break;
             
         case ArtworkEventType::ARTWORK_LOADING:
-            OutputDebugStringA("ARTWORK: CUI Panel - Artwork loading started\n");
             // Could show a loading indicator here if desired
             break;
             
         case ArtworkEventType::ARTWORK_FAILED:
             {
-                sprintf_s(debug_msg, "ARTWORK: CUI Panel - Artwork loading failed from %s\n", event.source.c_str());
-                OutputDebugStringA(debug_msg);
                 
                 // THREAD SAFETY: Post message to main thread to handle -noart fallback
                 // Cannot access foobar2000 APIs or UI functions from background thread
                 if (m_hWnd) {
-                    OutputDebugStringA("ARTWORK: CUI Panel - Posting -noart fallback message to main thread\n");
                     PostMessage(m_hWnd, WM_USER + 11, 0, 0); // WM_USER + 11 for -noart fallback
                 }
                 
@@ -1721,7 +1750,6 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
             }
             
         case ArtworkEventType::ARTWORK_CLEARED:
-            OutputDebugStringA("ARTWORK: CUI Panel - Artwork cleared\n");
             m_last_event_bitmap = nullptr;
             // Keep previous artwork visible - don't clear unless explicitly requested
             break;
@@ -1749,11 +1777,9 @@ bool CUIArtworkPanel::copy_bitmap_from_main_component(HBITMAP source_bitmap) {
             // Resize to fit window
             resize_artwork_to_fit();
             
-            OutputDebugStringA("ARTWORK: CUI Panel - Successfully copied artwork from main component\n");
             return true;
         }
     } catch (...) {
-        OutputDebugStringA("ARTWORK: CUI Panel - Exception copying bitmap from main component\n");
     }
     
     return false;
@@ -1766,29 +1792,22 @@ void CUIArtworkPanel::search_artwork_for_track(metadb_handle_ptr track) {
     }
     
     try {
-        OutputDebugStringA("ARTWORK: CUI Panel - Delegating search to main component's priority system\n");
         
         // Use the external trigger function which will be updated to use priority search
         trigger_main_component_search(track);
         
     } catch (...) {
-        OutputDebugStringA("ARTWORK: CUI Panel - Exception delegating to main component\n");
         g_artwork_loading = false;
     }
 }
 
 void CUIArtworkPanel::search_artwork_with_metadata(const std::string& artist, const std::string& title) {
     try {
-        char debug_msg[512];
-        sprintf_s(debug_msg, "ARTWORK: CUI Panel - Delegating metadata search to main component: artist='%s', title='%s'\n", 
-                 artist.c_str(), title.c_str());
-        OutputDebugStringA(debug_msg);
         
         // Use the external trigger function which will be updated to use priority search
         trigger_main_component_search_with_metadata(artist, title);
         
     } catch (...) {
-        OutputDebugStringA("ARTWORK: CUI Panel - Exception delegating metadata search\n");
         g_artwork_loading = false;
     }
 }
@@ -1802,9 +1821,6 @@ bool CUIArtworkPanel::is_station_name(const std::string& artist, const std::stri
     
     // Pattern 1: Ends with exclamation mark (like "Indie Pop Rocks!")
     if (title.length() > 0 && title[title.length() - 1] == '!') {
-        char debug_msg[512];
-        sprintf_s(debug_msg, "ARTWORK: CUI Panel - Station name detected: '%s' ends with exclamation mark\n", title.c_str());
-        OutputDebugStringA(debug_msg);
         return true;
     }
     
@@ -1871,9 +1887,6 @@ bool CUIArtworkPanel::is_station_name(const std::string& artist, const std::stri
         std::transform(station_upper.begin(), station_upper.end(), station_upper.begin(), ::toupper);
         
         if (title_upper == station_upper) {
-            char debug_msg[512];
-            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Station name detected: exact SomaFM match '%s'\n", title.c_str());
-            OutputDebugStringA(debug_msg);
             return true;
         }
     }
@@ -1890,14 +1903,75 @@ bool CUIArtworkPanel::is_station_name(const std::string& artist, const std::stri
         std::transform(keyword_upper.begin(), keyword_upper.end(), keyword_upper.begin(), ::toupper);
         
         if (title_upper.find(keyword_upper) != std::string::npos) {
-            char debug_msg[512];
-            sprintf_s(debug_msg, "ARTWORK: CUI Panel - Station name detected: keyword match '%s' in '%s'\n", keyword.c_str(), title.c_str());
-            OutputDebugStringA(debug_msg);
             return true;
         }
     }
     
     return false;
+}
+
+// Safe track path extraction with multiple fallback methods
+bool CUIArtworkPanel::get_safe_track_path(metadb_handle_ptr track, pfc::string8& path) {
+    path = "";
+    
+    if (!track.is_valid()) return false;
+    
+    try {
+        // Method 1: Try direct path access
+        path = track->get_path();
+        if (!path.is_empty() && path.length() < 2000) { // Sanity check length
+            return true;
+        }
+    } catch (...) {
+        // Method 1 failed, try alternative
+    }
+    
+    try {
+        // Method 2: Try titleformat approach
+        service_ptr_t<titleformat_object> script;
+        static_api_ptr_t<titleformat_compiler> compiler;
+        
+        compiler->compile_safe(script, "[%path%]");
+        if (script.is_valid()) {
+            track->format_title(NULL, path, script, NULL);
+            if (!path.is_empty() && path.length() < 2000) {
+                return true;
+            }
+        }
+    } catch (...) {
+        // Method 2 failed
+    }
+    
+    // All methods failed
+    path = "";
+    return false;
+}
+
+// Safe internet stream detection
+bool CUIArtworkPanel::is_safe_internet_stream(metadb_handle_ptr track) {
+    if (!track.is_valid()) return false;
+    
+    pfc::string8 path;
+    if (!get_safe_track_path(track, path)) {
+        return false; // Couldn't get path safely
+    }
+    
+    if (path.is_empty()) return false;
+    
+    // Check for protocol indicators
+    const char* path_cstr = path.c_str();
+    const char* protocol_pos = strstr(path_cstr, "://");
+    if (!protocol_pos) {
+        return false; // No protocol found
+    }
+    
+    // Exclude file:// protocol
+    const char* file_pos = strstr(path_cstr, "file://");
+    if (file_pos == path_cstr) {
+        return false; // This is a file:// URL
+    }
+    
+    return true; // This appears to be an internet stream
 }
 
 #endif // COLUMNS_UI_AVAILABLE
