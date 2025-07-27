@@ -713,33 +713,20 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
     try {
         if (data.is_valid() && data->get_size() > 0) {
             
-            // CRITICAL: Check if this embedded artwork is for a station name
-            // This fixes SomaFM Icecast streams with embedded station artwork
+            // CRITICAL: Block embedded artwork completely for internet streams
+            // User requirement: never check embedded artwork on internet streams
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
             
             if (pc->get_now_playing(current_track) && current_track.is_valid()) {
-                // Get track metadata to check for station names
-                std::string artist, title;
-                
-                try {
-                    auto info = current_track->get_info_ref();
-                    if (info.is_valid()) {
-                        const char* artist_ptr = info->info().meta_get("ARTIST", 0);
-                        const char* title_ptr = info->info().meta_get("TITLE", 0);
-                        
-                        if (artist_ptr) artist = artist_ptr;
-                        if (title_ptr) title = title_ptr;
+                // Check if this is an internet stream
+                pfc::string8 file_path;
+                if (get_safe_track_path(current_track, file_path)) {
+                    bool is_internet_stream = (strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
+                    
+                    if (is_internet_stream) {
+                        return; // Never use embedded artwork for internet streams
                     }
-                } catch (...) {
-                    // If metadata access fails, use empty strings
-                    artist = "";
-                    title = "";
-                }
-                
-                // Check if this is embedded artwork for a station name
-                if (is_station_name(artist, title)) {
-                    return; // Block the embedded station artwork
                 }
             }
             
