@@ -1,5 +1,6 @@
 #pragma once
 #include "stdafx.h"
+#include "async_io_manager.h"
 #include <functional>
 #include <memory>
 #include <thread>
@@ -12,6 +13,7 @@ public:
         pfc::string8 mime_type;
         bool success;
         pfc::string8 error_message;
+        pfc::string8 source;  // Source of the artwork (e.g., "iTunes", "Deezer", "Local file")
         
         artwork_result() : success(false) {}
     };
@@ -19,32 +21,57 @@ public:
     // Callback for async artwork retrieval
     typedef std::function<void(const artwork_result&)> artwork_callback;
 
-    // Main entry point for artwork retrieval - silent background operation
+    // Main entry point for artwork retrieval - fully asynchronous operation
     static void get_artwork_async(metadb_handle_ptr track, artwork_callback callback);
+    static void get_artwork_async_with_metadata(const char* artist, const char* track, artwork_callback callback);
+    
+    // Initialize/shutdown async I/O system
+    static void initialize();
+    static void shutdown();
+    
+private:
+    // Internal async pipeline methods
+    static void check_cache_async_metadata(const pfc::string8& cache_key, const pfc::string8& artist, const pfc::string8& track, artwork_callback callback);
+    static void search_apis_async_metadata(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback);
 
 private:
-    // Background search function
-    static void search_artwork_background(metadb_handle_ptr track, artwork_callback callback);
+    // Async search pipeline
+    static void search_artwork_pipeline(metadb_handle_ptr track, artwork_callback callback);
+    static void check_cache_async(const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback);
+    static void search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback);
+    static void search_apis_async(const pfc::string8& artist, const pfc::string8& album, const pfc::string8& cache_key, artwork_callback callback);
     
-    // Local artwork search
-    static bool find_local_artwork(const char* file_path, artwork_result& result);
+    // Async local artwork search
+    static void find_local_artwork_async(const char* file_path, artwork_callback callback);
     
-    // API artwork search
-    static bool search_itunes_api(const char* artist, const char* album, artwork_result& result);
-    static bool search_discogs_api(const char* artist, const char* album, artwork_result& result);
-    static bool search_lastfm_api(const char* artist, const char* album, artwork_result& result);
+    // Async API artwork search  
+    static void search_itunes_api_async(const char* artist, const char* track, artwork_callback callback);
+    static void search_deezer_api_async(const char* artist, const char* track, artwork_callback callback);
+    static void search_discogs_api_async(const char* artist, const char* track, artwork_callback callback);
+    static void search_lastfm_api_async(const char* artist, const char* track, artwork_callback callback);
+    static void search_musicbrainz_api_async(const char* artist, const char* track, artwork_callback callback);
     
-    // HTTP utilities with WinHTTP
-    static bool download_image_winhttp(const char* url, artwork_result& result);
+    // Async HTTP utilities
+    static void download_image_async(const char* url, artwork_callback callback);
     
-    // Cache management
-    static bool get_from_cache(const char* cache_key, artwork_result& result);
-    static void save_to_cache(const char* cache_key, const artwork_result& result);
-    static pfc::string8 generate_cache_key(const char* artist, const char* album);
+    // Helper functions for async operations
+    static void process_local_files(const std::vector<pfc::string8>& files, artwork_callback callback, size_t index = 0);
+    static void validate_and_complete_result(const pfc::array_t<t_uint8>& data, artwork_callback callback);
     
     // Utility functions
     static bool is_valid_image_data(const t_uint8* data, size_t size);
     static pfc::string8 detect_mime_type(const t_uint8* data, size_t size);
     static pfc::string8 get_file_directory(const char* file_path);
     static pfc::string8 url_encode(const char* str);
+    static pfc::string8 generate_cache_key(const char* artist, const char* track);
+    
+    // JSON parsing functions
+    static bool parse_itunes_json(const pfc::string8& json, pfc::string8& artwork_url);
+    static bool parse_deezer_json(const pfc::string8& json, pfc::string8& artwork_url);
+    static bool parse_lastfm_json(const pfc::string8& json, pfc::string8& artwork_url);
+    static bool parse_discogs_json(const pfc::string8& json, pfc::string8& artwork_url);
+    static bool parse_musicbrainz_json(const pfc::string8& json, pfc::string8& release_id);
+    
+    // Initialization flag
+    static std::atomic<bool> initialized_;
 };
