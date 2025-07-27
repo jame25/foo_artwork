@@ -11,16 +11,23 @@ extern cfg_string cfg_discogs_key, cfg_discogs_consumer_key, cfg_discogs_consume
 extern cfg_int cfg_search_order_1, cfg_search_order_2, cfg_search_order_3, cfg_search_order_4, cfg_search_order_5;
 extern cfg_int cfg_stream_delay;
 extern cfg_bool cfg_show_osd;
+extern cfg_bool cfg_enable_custom_logos;
+extern cfg_string cfg_logos_folder;
+extern cfg_bool cfg_clear_panel_when_not_playing;
 
 // Reference to current artwork source for logging
 extern pfc::string8 g_current_artwork_source;
 
-// External declaration from sdk_main.cpp
+// External declarations from sdk_main.cpp
 extern HINSTANCE g_hIns;
+extern void update_all_clear_panel_timers();
 
-// GUID for our preferences page
+// GUID for our preferences pages
 static const GUID guid_preferences_page_artwork = 
 { 0x12345680, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf7 } };
+
+static const GUID guid_preferences_page_advanced = 
+{ 0x12345690, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
 
 //=============================================================================
 // artwork_preferences - preferences page instance implementation
@@ -428,5 +435,245 @@ preferences_page_instance::ptr artwork_preferences_page::instantiate(HWND parent
     return instance;
 }
 
+//=============================================================================
+// artwork_advanced_preferences - Advanced preferences page instance implementation  
+//=============================================================================
+
+class artwork_advanced_preferences : public preferences_page_instance {
+private:
+    HWND m_hwnd;
+    preferences_page_callback::ptr m_callback;
+    bool m_has_changes;
+    fb2k::CCoreDarkModeHooks m_darkMode;
+    
+public:
+    artwork_advanced_preferences(preferences_page_callback::ptr callback);
+    
+    // preferences_page_instance implementation
+    HWND get_wnd() override;
+    t_uint32 get_state() override;
+    void apply() override;
+    void reset() override;
+    
+    // Dialog procedure
+    static INT_PTR CALLBACK AdvancedConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+    
+private:
+    void on_changed();
+    bool has_changed();
+    void apply_settings();
+    void reset_settings();
+    void update_controls();
+    void update_control_states();
+    void browse_for_folder();
+};
+
+artwork_advanced_preferences::artwork_advanced_preferences(preferences_page_callback::ptr callback) 
+    : m_hwnd(nullptr), m_callback(callback), m_has_changes(false) {
+}
+
+HWND artwork_advanced_preferences::get_wnd() {
+    return m_hwnd;
+}
+
+t_uint32 artwork_advanced_preferences::get_state() {
+    t_uint32 state = preferences_state::resettable | preferences_state::dark_mode_supported;
+    if (m_has_changes) {
+        state |= preferences_state::changed;
+    }
+    return state;
+}
+
+void artwork_advanced_preferences::apply() {
+    apply_settings();
+    m_has_changes = false;
+    m_callback->on_state_changed();
+}
+
+void artwork_advanced_preferences::reset() {
+    reset_settings();
+    m_has_changes = false;
+    m_callback->on_state_changed();
+}
+
+void artwork_advanced_preferences::on_changed() {
+    m_has_changes = true;
+    m_callback->on_state_changed();
+}
+
+bool artwork_advanced_preferences::has_changed() {
+    if (!m_hwnd) return false;
+    
+    // Check if Enable Custom Station Logos checkbox changed
+    bool enable_logos_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED) != cfg_enable_custom_logos;
+    
+    // Check if custom folder path changed
+    char current_folder[MAX_PATH];
+    GetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, current_folder, MAX_PATH);
+    bool folder_changed = strcmp(current_folder, cfg_logos_folder.get_ptr()) != 0;
+    
+    // Check if Clear panel when not playing checkbox changed
+    bool clear_panel_changed = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED) != cfg_clear_panel_when_not_playing;
+    
+    return enable_logos_changed || folder_changed || clear_panel_changed;
+}
+
+void artwork_advanced_preferences::apply_settings() {
+    if (!m_hwnd) return;
+    
+    // Apply Enable Custom Station Logos setting
+    cfg_enable_custom_logos = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
+    
+    // Apply custom folder path
+    char folder_path[MAX_PATH];
+    GetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, folder_path, MAX_PATH);
+    cfg_logos_folder = folder_path;
+    
+    // Apply Clear panel when not playing setting
+    cfg_clear_panel_when_not_playing = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED);
+    
+    // Update timers for all UI elements when setting changes
+    update_all_clear_panel_timers();
+}
+
+void artwork_advanced_preferences::reset_settings() {
+    if (!m_hwnd) return;
+    
+    // Reset to default values
+    cfg_enable_custom_logos = false;  // Default disabled
+    cfg_logos_folder = "";  // Default empty (use default path)
+    cfg_clear_panel_when_not_playing = false;  // Default disabled
+    
+    update_controls();
+}
+
+void artwork_advanced_preferences::update_controls() {
+    if (!m_hwnd) return;
+    
+    // Update Enable Custom Station Logos checkbox
+    CheckDlgButton(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS, cfg_enable_custom_logos ? BST_CHECKED : BST_UNCHECKED);
+    
+    // Update custom folder path
+    SetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, cfg_logos_folder.get_ptr());
+    
+    // Update Clear panel when not playing checkbox
+    CheckDlgButton(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING, cfg_clear_panel_when_not_playing ? BST_CHECKED : BST_UNCHECKED);
+    
+    // Enable/disable folder controls based on checkbox state
+    BOOL enable_folder_controls = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_LOGOS_FOLDER_PATH), enable_folder_controls);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_LOGOS_FOLDER), enable_folder_controls);
+}
+
+void artwork_advanced_preferences::update_control_states() {
+    if (!m_hwnd) return;
+    
+    // Enable/disable folder controls based on current checkbox state (don't change checkbox)
+    BOOL enable_folder_controls = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_LOGOS_FOLDER_PATH), enable_folder_controls);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_LOGOS_FOLDER), enable_folder_controls);
+}
+
+void artwork_advanced_preferences::browse_for_folder() {
+    pfc::string8 folder_path;
+    if (uBrowseForFolder(m_hwnd, "Select Custom Station Logos Folder", folder_path)) {
+        SetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, folder_path);
+        on_changed();
+    }
+}
+
+INT_PTR CALLBACK artwork_advanced_preferences::AdvancedConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    artwork_advanced_preferences* pThis = nullptr;
+    
+    if (msg == WM_INITDIALOG) {
+        pThis = reinterpret_cast<artwork_advanced_preferences*>(lp);
+        SetWindowLongPtr(hwnd, DWLP_USER, lp);
+        pThis->m_hwnd = hwnd;
+        pThis->m_darkMode.AddDialogWithControls(hwnd);
+        pThis->update_controls();
+        return TRUE;
+    } else {
+        pThis = reinterpret_cast<artwork_advanced_preferences*>(GetWindowLongPtr(hwnd, DWLP_USER));
+    }
+    
+    if (pThis) {
+        switch (msg) {
+            case WM_COMMAND:
+                switch (LOWORD(wp)) {
+                    case IDC_ENABLE_CUSTOM_LOGOS:
+                        if (HIWORD(wp) == BN_CLICKED) {
+                            pThis->on_changed();
+                            pThis->update_control_states();
+                        }
+                        break;
+                        
+                    case IDC_CLEAR_PANEL_WHEN_NOT_PLAYING:
+                        if (HIWORD(wp) == BN_CLICKED) {
+                            pThis->on_changed();
+                        }
+                        break;
+                        
+                    case IDC_LOGOS_FOLDER_PATH:
+                        if (HIWORD(wp) == EN_CHANGE) {
+                            pThis->on_changed();
+                        }
+                        break;
+                        
+                    case IDC_BROWSE_LOGOS_FOLDER:
+                        if (HIWORD(wp) == BN_CLICKED) {
+                            pThis->browse_for_folder();
+                        }
+                        break;
+                }
+                break;
+        }
+    }
+    
+    return FALSE;
+}
+
+//=============================================================================
+// artwork_advanced_preferences_page - Advanced preferences page factory implementation
+//=============================================================================
+
+class artwork_advanced_preferences_page : public preferences_page_v3 {
+public:
+    const char* get_name() override;
+    GUID get_guid() override;
+    GUID get_parent_guid() override;
+    preferences_page_instance::ptr instantiate(HWND parent, preferences_page_callback::ptr callback) override;
+};
+
+const char* artwork_advanced_preferences_page::get_name() {
+    return "Advanced";
+}
+
+GUID artwork_advanced_preferences_page::get_guid() {
+    return guid_preferences_page_advanced;
+}
+
+GUID artwork_advanced_preferences_page::get_parent_guid() {
+    return guid_preferences_page_artwork;  // Make this a child of the main Artwork Display page
+}
+
+preferences_page_instance::ptr artwork_advanced_preferences_page::instantiate(HWND parent, preferences_page_callback::ptr callback) {
+    auto instance = fb2k::service_new<artwork_advanced_preferences>(callback);
+    
+    HWND hwnd = CreateDialogParam(
+        g_hIns, 
+        MAKEINTRESOURCE(IDD_PREFERENCES_ADVANCED), 
+        parent, 
+        artwork_advanced_preferences::AdvancedConfigProc, 
+        reinterpret_cast<LPARAM>(instance.get_ptr())
+    );
+    
+    if (hwnd == nullptr) {
+        throw exception_win32(GetLastError());
+    }
+    
+    return instance;
+}
+
 // Service registration
 static preferences_page_factory_t<artwork_preferences_page> g_artwork_preferences_page_factory;
+static preferences_page_factory_t<artwork_advanced_preferences_page> g_artwork_advanced_preferences_page_factory;
