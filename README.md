@@ -72,14 +72,21 @@ The component supports custom logo files for internet radio stations. This featu
 #### Setup
 
 1. **Logo Directory**: Place your logo files in the `foo_artwork_data/logos/` directory within your foobar2000 profile folder
-   - **Profile location**: Usually `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\`
-   - The directory is automatically created when the component starts
+   - **Default location**: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\`
+   - **Custom location**: Can be configured through Advanced preferences
+   - The directory is automatically created when needed
 
-2. **Filename Format**: Logo files should be named using the station's domain name or identifier
-   - **Domain-based naming**: Use the full domain from the stream URL
-     - Example: For `http://maxxima.mine.nu:8000/stream` → name the file `maxxima.mine.nu.png`
-     - Example: For `http://somafm.com/groovesalad.pls` → name the file `somafm.com.jpg`
-   - **Station-based naming**: If domain extraction fails, the component will try to extract the station name from metadata
+2. **Filename Format**: The component supports **two levels of specificity** for station logos:
+
+   **Full URL Path Matching** (Most Specific):
+   - **Format**: `{full_path}.{ext}`
+   - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `ice1.somafm.com_indiepop-128-aac.png`
+   - **Use Case**: Different logos for different streams on the same domain
+
+   **Domain-Only Matching** (Fallback Compatibility):
+   - **Format**: `{domain}.{ext}`
+   - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `somafm.com.png`
+   - **Use Case**: Single logo for all streams from a domain
 
 3. **Supported Formats**: The component supports common image formats:
    - `.png` (recommended for logos with transparency)
@@ -90,76 +97,120 @@ The component supports custom logo files for internet radio stations. This featu
 #### How It Works
 
 - **Automatic Detection**: When connecting to an internet radio stream, the component automatically:
-  1. Extracts the domain name from the stream URL
-  2. Looks for a matching logo file in the `logos/` directory
-  3. Displays the custom logo if found
-  4. Falls back to normal track artwork search if no logo is found
+  1. Extracts the full URL path from the stream URL
+  2. Looks for a full-path matching logo file first
+  3. Falls back to domain-only matching if no full-path logo is found
+  4. Displays the custom logo if found
+  5. Falls back to normal track artwork search if no logo is found
 
-- **Priority**: Station logos are used as fallbacks when API artwork search fails
+- **Priority**: Station logos have the highest priority in the fallback chain when API artwork search fails
 
-- **No Configuration Required**: Simply place logo files in the correct directory with the correct filename - the component handles the rest automatically
+- **Configuration**: Enable/disable and customize folder path through Advanced preferences
 
-#### Example Setup
+#### Example Setup for Multi-Stream Domain
 
-For a radio station with URL `http://stream.example.com:8000/radio`:
+For SomaFM with multiple streams:
+- `https://ice1.somafm.com/indiepop-128-aac` (Indie Pop Rocks!)
+- `https://ice1.somafm.com/dronezone-256-mp3` (Drone Zone)
 
-1. Create logo file: `stream.example.com.png`
-2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\stream.example.com.png`
-3. Connect to the radio station
-4. The logo will appear immediately
+**Option 1: Stream-Specific Logos**
+1. Create specific logos:
+   - `ice1.somafm.com_indiepop-128-aac.png` (colorful indie logo)
+   - `ice1.somafm.com_dronezone-256-mp3.png` (ambient space logo)
+2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\`
 
-This feature is particularly useful for frequently listened radio stations, providing immediate visual identification.
+**Option 2: Domain-Wide Logo**
+1. Create: `somafm.com.png` (applies to all SomaFM streams)
+2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\somafm.com.png`
+
+#### Advanced Configuration
+
+Access **Preferences → Tools → Artwork Display → Advanced** to:
+- **Enable/disable** custom station logos feature
+- **Set custom folder path** for logo files (or leave empty for default)
+
+This feature is particularly useful for frequently listened radio stations, providing immediate visual identification and supporting both stream-specific and domain-wide customization.
 
 #### Fallback Images for Failed Artwork Searches
 
-The component also supports **fallback images** that display when artwork searches fail for specific radio stations. This is useful for stations where track artwork is rarely available.
+The component supports **fallback images** that display when artwork searches fail for specific radio stations. This is useful for stations where track artwork is rarely available.
 
 **Setup for Fallback Images:**
 
-1. **Filename Format**: Add `-noart` suffix to the domain name before the file extension
-   - Example: For `http://pub0302.101.ru:8000/stream` → create `pub0302.101.ru-noart.png`
-   - Example: For `http://stream.example.com/radio` → create `stream.example.com-noart.jpg`
+The component supports **two levels of specificity** for fallback images, allowing you to target specific streams or entire domains:
 
-2. **When It's Used**: The fallback image is displayed **only** when:
-   - Normal track artwork search fails (all APIs exhausted)
-   - The stream is an internet radio station
-   - No regular station logo exists (station logos have higher priority)
+1. **Full URL Path Matching** (Most Specific):
+   - **Format**: `{full_path}-noart.{ext}`
+   - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `ice1.somafm.com_indiepop-128-aac-noart.png`
+   - **Use Case**: Different fallback images for different streams on the same domain
 
-3. **Priority Order** for internet radio streams:
-   1. **Track artwork** from APIs - highest priority, searches using metadata (if available)
-   2. **Fallback hierarchy** - when API artwork search fails:
-      - **Station logo** (e.g., `domain.com.png`)
-      - **Station-specific fallback** (e.g., `domain.com-noart.png`)
-      - **Generic fallback** (`noart.png`)
-   3. **No artwork** message
+2. **Domain-Only Matching** (Fallback Compatibility):
+   - **Format**: `{domain}-noart.{ext}`
+   - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `somafm.com-noart.png`
+   - **Use Case**: Single fallback image for all streams from a domain
 
-**Example Setup:**
+**When It's Used**: The fallback image is displayed **only** when:
+- Normal track artwork search fails (all APIs exhausted)
+- The stream is an internet radio station
+- No regular station logo exists (station logos have higher priority)
 
-For a radio station `http://pub0302.101.ru:8000/stream/trust/mp3/128/24`:
+**Priority Order** for internet radio streams:
+1. **Track artwork** from APIs - highest priority, searches using metadata (if available)
+2. **Fallback hierarchy** - when API artwork search fails:
+   - **Station logo with full path** (e.g., `ice1.somafm.com_indiepop-128-aac.png`)
+   - **Station logo with domain** (e.g., `somafm.com.png`)
+   - **Station-specific fallback with full path** (e.g., `ice1.somafm.com_indiepop-128-aac-noart.png`)
+   - **Station-specific fallback with domain** (e.g., `somafm.com-noart.png`)
+   - **Generic fallback** (`noart.png`)
+3. **No artwork** message
 
-1. Create fallback image: `pub0302.101.ru-noart.png`
-2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\pub0302.101.ru-noart.png`
-3. When connecting to this station:
-   - If track artwork is found → shows track artwork
-   - If no track artwork is found → shows your fallback image
-   - Status will display: "No artwork - showing station fallback"
+**Example Setup for Multi-Stream Domain:**
+
+For SomaFM with multiple streams like:
+- `https://ice1.somafm.com/indiepop-128-aac` (Indie Pop Rocks!)
+- `https://ice1.somafm.com/dronezone-256-mp3` (Drone Zone)
+
+**Option 1: Stream-Specific Fallbacks**
+1. Create specific fallback images:
+   - `ice1.somafm.com_indiepop-128-aac-noart.png` (indie themed image)
+   - `ice1.somafm.com_dronezone-256-mp3-noart.png` (ambient themed image)
+2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\`
+
+**Option 2: Domain-Wide Fallback**
+1. Create: `somafm.com-noart.png` (applies to all SomaFM streams)
+2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\somafm.com-noart.png`
 
 #### Generic Fallback Image
 
-In addition to station-specific fallbacks, the component supports a **universal fallback image** that applies to all internet radio streams when artwork searches fail.
+The component supports a **universal fallback image** that applies to all internet radio streams when artwork searches fail.
 
 **Setup for Generic Fallback:**
 
-1. **Filename**: Create a file named `noart.png` (or `.jpg`, `.jpeg`, `.gif`, `.bmp`)
-2. **Location**: Place in `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\noart.png`
-3. **Usage**: This image will be displayed for **any** internet radio stream when:
-   - Track artwork search fails
-   - No station-specific logo exists
-   - No station-specific "-noart" image exists
+The generic fallback now supports the **same two-tier system**:
 
-**Priority for Generic Fallback:**
-- Lowest priority in the fallback chain
-- Only used when all other options are exhausted
+1. **Stream-Specific Generic Fallback**:
+   - **Format**: `{full_path}-noart.{ext}` (same as station-specific, but used as universal fallback)
+   - **Example**: `ice1.somafm.com_indiepop-128-aac-noart.png`
+
+2. **Domain-Specific Generic Fallback**:
+   - **Format**: `{domain}-noart.{ext}` (applies to entire domain)
+   - **Example**: `somafm.com-noart.png`
+
+3. **Universal Generic Fallback**:
+   - **Format**: `noart.{ext}` (applies to ALL streams)
+   - **Example**: `noart.png`
+
+**Location**: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\`
+
+**Usage Priority**: The generic fallback tries these in order:
+1. Stream-specific fallback (if exists)
+2. Domain-specific fallback (if exists)  
+3. Universal fallback (`noart.png`)
+
+**When Used**: Displayed for **any** internet radio stream when:
+- Track artwork search fails
+- No station-specific logo exists
+- No station-specific fallback image exists
 - Provides a consistent "no artwork" visual across all radio stations
 
 This feature ensures that radio stations always have some visual representation, even when individual track artwork cannot be found.
@@ -174,6 +225,7 @@ Configure:
 - **API Keys**: Set API keys and consumer credentials for services that require them
 - **Priority Order**: Customize the fallback chain by selecting your preferred API for each position
 - **Stream Delay**: Configure delay (1-30 seconds) before checking metadata on internet radio streams
+- **Clear panel when playback stopped**: Option to automatically clear the artwork panel when playback stops
 - All changes are saved automatically
 
 #### Priority Section
