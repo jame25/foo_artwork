@@ -45,3 +45,27 @@ BEGIN
     
     PUSHBUTTON      "Hide Artwork Source",IDC_SHOW_SOURCE,240,265,85,16
 END
+
+IDD_PREFERENCES_ADVANCED DIALOGEX 0, 0, 350, 240
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "Custom Station Logos",IDC_STATIC,10,10,320,178
+    
+    CONTROL         "Enable custom station logos",IDC_ENABLE_CUSTOM_LOGOS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,30,200,12
+    
+    LTEXT           "Custom logos folder:",IDC_STATIC,20,55,100,10
+    LTEXT           "(Leave empty to use default: %APPDATA%\\foobar2000-v2\\foo_artwork_data\\logos\\)",IDC_STATIC,20,67,295,10
+    EDITTEXT        IDC_LOGOS_FOLDER_PATH,20,82,214,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...",IDC_BROWSE_LOGOS_FOLDER,239,82,50,14
+    
+    LTEXT           "Logo files can use either full URL path or domain name:",IDC_STATIC,20,105,295,10
+    LTEXT           "Full path: ice1.somafm.com_indiepop-128-aac.png (most specific)",IDC_STATIC,35,117,280,10
+    LTEXT           "Domain: somafm.com.png (fallback for compatibility)",IDC_STATIC,35,129,280,10
+    
+    LTEXT           "Supported formats: PNG, JPG, JPEG, GIF, BMP",IDC_STATIC,20,147,200,10
+    
+    GROUPBOX        "Miscellaneous",IDC_STATIC,10,194,320,60
+    
+    CONTROL         "Clear panel when playback stopped",IDC_CLEAR_PANEL_WHEN_NOT_PLAYING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,214,200,12
+END
