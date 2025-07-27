@@ -3,6 +3,7 @@
 // Used by foo_artwork.rc
 //
 #define IDD_PREFERENCES                 101
+#define IDD_PREFERENCES_ADVANCED        102
 #define IDC_ENABLE_ITUNES              1001
 #define IDC_ENABLE_DISCOGS             1002
 #define IDC_ENABLE_LASTFM              1003
@@ -21,14 +22,18 @@
 #define IDC_STREAM_DELAY               1016
 #define IDC_STREAM_DELAY_SPIN          1017
 #define IDC_SHOW_SOURCE                1018
+#define IDC_ENABLE_CUSTOM_LOGOS        1019
+#define IDC_LOGOS_FOLDER_PATH          1020
+#define IDC_BROWSE_LOGOS_FOLDER        1021
+#define IDC_CLEAR_PANEL_WHEN_NOT_PLAYING 1022
 
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        102
+#define _APS_NEXT_RESOURCE_VALUE        103
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1019
+#define _APS_NEXT_CONTROL_VALUE         1023
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
