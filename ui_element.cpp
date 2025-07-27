@@ -7,6 +7,9 @@
 
 #pragma comment(lib, "gdiplus.lib")
 
+// External configuration variables
+extern cfg_int cfg_stream_delay;
+
 // Forward declarations for the event system (matching sdk_main.cpp)
 enum class ArtworkEventType {
     ARTWORK_LOADED,     // New artwork loaded successfully
@@ -116,6 +119,10 @@ private:
     void hide_osd();
     void update_osd_animation();
     void paint_osd(HDC hdc);
+    
+    // Stream delay functions
+    bool is_internet_stream(metadb_handle_ptr track);
+    void start_delayed_search();
 
     ui_element_instance_callback::ptr m_callback;
     
@@ -123,6 +130,11 @@ private:
     Gdiplus::Image* m_artwork_image;
     metadb_handle_ptr m_current_track;
     bool m_artwork_loading;
+    
+    // Stream delay metadata storage
+    std::string m_delayed_artist;
+    std::string m_delayed_title;
+    bool m_has_delayed_metadata;
     
     // UI state
     RECT m_client_rect;
@@ -185,7 +197,7 @@ artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_in
     : m_callback(callback), m_artwork_image(nullptr), m_artwork_loading(false), 
       m_gdiplus_token(0), m_playback_callback(this),
       m_show_osd(true), m_osd_start_time(0), m_osd_slide_offset(OSD_SLIDE_DISTANCE), 
-      m_osd_timer_id(0), m_osd_visible(false) {
+      m_osd_timer_id(0), m_osd_visible(false), m_has_delayed_metadata(false) {
     
     console::print("foo_artwork: UI element created");
     
@@ -327,11 +339,11 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
         update_osd_animation();
         bHandled = TRUE;
         return 0;
-    } else if (wParam == WM_USER + 101) {
-        // Timer for delayed artwork search on radio streams
-        KillTimer(WM_USER + 101);
-        console::print("foo_artwork: Timer expired, starting delayed artwork search");
-        start_artwork_search();
+    } else if (wParam == 101) {
+        // Timer for delayed artwork search on radio streams (stream delay)
+        KillTimer(101);
+        console::print("foo_artwork: Stream delay timer expired, starting delayed artwork search");
+        start_delayed_search();
         bHandled = TRUE;
         return 0;
     }
@@ -345,13 +357,31 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
     m_current_track = track;
     m_artwork_loading = true;
     
+    // Clear any pending delayed metadata from previous track
+    m_has_delayed_metadata = false;
+    m_delayed_artist.clear();
+    m_delayed_title.clear();
+    
     // Clear current artwork
     cleanup_gdiplus_image();
     Invalidate();
     
-    // Start artwork search immediately - metadata will be updated via on_dynamic_info_track if needed
-    console::print("foo_artwork: Starting immediate artwork search, will update if dynamic info changes");
-    start_artwork_search();
+    // Check if this is an internet stream and apply stream delay if configured
+    if (track.is_valid() && is_internet_stream(track) && cfg_stream_delay > 0) {
+        pfc::string8 delay_msg = "foo_artwork: Internet stream detected, applying ";
+        delay_msg << pfc::format_int(cfg_stream_delay) << " second delay";
+        console::print(delay_msg);
+        
+        // Kill any existing stream delay timer
+        KillTimer(101);
+        
+        // Set timer for stream delay
+        SetTimer(101, cfg_stream_delay * 1000);
+    } else {
+        // For local files or when stream delay is disabled, start search immediately
+        console::print("foo_artwork: Local file or no stream delay configured, starting immediate search");
+        start_artwork_search();
+    }
 }
 
 void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
@@ -374,19 +404,39 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                                 (!track.is_empty() && stricmp_utf8(track, "Unknown Track") != 0);
         
         if (has_real_metadata) {
-            console::print("foo_artwork: Got real metadata from radio stream, restarting artwork search");
-            // Clear current artwork and search again with new metadata
+            console::print("foo_artwork: Got real metadata from radio stream, checking if delay should be applied");
+            
+            // Clear current artwork
             cleanup_gdiplus_image();
             Invalidate();
             
-            // Use the new metadata directly instead of track metadata
-            artwork_manager::get_artwork_async_with_metadata(artist, track, [this](const artwork_manager::artwork_result& result) {
-                // Marshal callback to UI thread safely
-                if (IsWindow()) {
-                    // Post message to UI thread to handle result
-                    PostMessage(WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(new artwork_manager::artwork_result(result)));
-                }
-            });
+            // Check if this is an internet stream and apply stream delay if configured
+            if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_stream_delay > 0) {
+                pfc::string8 delay_msg = "foo_artwork: Applying ";
+                delay_msg << pfc::format_int(cfg_stream_delay) << " second delay for metadata search";
+                console::print(delay_msg);
+                
+                // Kill any existing delay timer
+                KillTimer(101);
+                
+                // Store metadata for delayed search
+                m_delayed_artist = artist.c_str();
+                m_delayed_title = track.c_str();
+                m_has_delayed_metadata = true;
+                
+                // Set timer for stream delay, metadata will be used when timer expires
+                SetTimer(101, cfg_stream_delay * 1000);
+            } else {
+                console::print("foo_artwork: No delay needed, starting immediate metadata search");
+                // Use the new metadata directly for immediate search
+                artwork_manager::get_artwork_async_with_metadata(artist, track, [this](const artwork_manager::artwork_result& result) {
+                    // Marshal callback to UI thread safely
+                    if (IsWindow()) {
+                        // Post message to UI thread to handle result
+                        PostMessage(WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(new artwork_manager::artwork_result(result)));
+                    }
+                });
+            }
         }
     } catch (...) {
         console::print("foo_artwork: Error in on_dynamic_info_track, ignoring");
@@ -785,6 +835,59 @@ void artwork_ui_element::paint_osd(HDC hdc) {
     
     // Restore original DC state (exactly like CUI)
     RestoreDC(hdc, saved_dc);
+}
+
+bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
+    if (!track.is_valid()) return false;
+    
+    try {
+        pfc::string8 path = track->get_path();
+        if (path.is_empty()) return false;
+        
+        // Check for protocol indicators (anything with :// except file://)
+        const char* protocol_pos = strstr(path.c_str(), "://");
+        if (!protocol_pos) {
+            return false; // No protocol found, likely local file
+        }
+        
+        // Exclude file:// protocol
+        if (strstr(path.c_str(), "file://") == path.c_str()) {
+            return false; // This is a file:// URL, not an internet stream
+        }
+        
+        return true; // This appears to be an internet stream
+    } catch (...) {
+        return false; // Error accessing path, assume local file
+    }
+}
+
+void artwork_ui_element::start_delayed_search() {
+    console::print("foo_artwork: Stream delay complete, starting artwork search");
+    
+    // Check if we have delayed metadata to use
+    if (m_has_delayed_metadata && !m_delayed_title.empty()) {
+        pfc::string8 metadata_msg = "foo_artwork: Using delayed metadata - Artist: '";
+        metadata_msg << m_delayed_artist.c_str() << "', Title: '" << m_delayed_title.c_str() << "'";
+        console::print(metadata_msg);
+        
+        // Use the stored metadata for search
+        artwork_manager::get_artwork_async_with_metadata(m_delayed_artist, m_delayed_title, [this](const artwork_manager::artwork_result& result) {
+            // Marshal callback to UI thread safely
+            if (IsWindow()) {
+                // Post message to UI thread to handle result
+                PostMessage(WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(new artwork_manager::artwork_result(result)));
+            }
+        });
+        
+        // Clear the delayed metadata
+        m_has_delayed_metadata = false;
+        m_delayed_artist.clear();
+        m_delayed_title.clear();
+    } else {
+        // No delayed metadata, use regular track-based search
+        console::print("foo_artwork: No delayed metadata available, using track-based search");
+        start_artwork_search();
+    }
 }
 
 // Minimal working UI element implementation
