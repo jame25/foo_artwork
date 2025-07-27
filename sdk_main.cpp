@@ -2224,8 +2224,11 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
                         pfc::string8 stream_title = pThis->m_pending_timer_title;
                         
                         if (!stream_title.is_empty()) {
-                            // Essential: Call artwork loading with metadata
-                            pThis->load_artwork_for_track_with_metadata(current_track, stream_artist, stream_title);
+                            // Essential: Call API search directly with stored metadata (bypass broken redirect)
+                            pThis->m_current_track = current_track;
+                            pThis->m_last_search_artist = stream_artist;
+                            pThis->m_last_search_title = stream_title;
+                            pThis->search_next_api_in_priority(stream_artist, stream_title, 0);
                         } else {
                             // Try fallback for streams without metadata
                             pThis->try_fallback_images_for_stream(current_track);
@@ -2507,26 +2510,20 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     // m_status_text = "Loading artwork...";
     // if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
     
-    // Try to get local artwork first
-    try {
-        static_api_ptr_t<album_art_manager_v2> aam;
-        auto aaer = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(track), 
-                              pfc::list_single_ref_t<GUID>(album_art_ids::cover_front), 
-                              fb2k::noAbort);
-        
+    // Check for embedded artwork (LOCAL FILES ONLY - never for internet streams) 
+    // is_internet_stream already declared above, reuse it
+    
+    // Only check embedded artwork for local files, never for internet streams
+    if (!is_internet_stream) {
         try {
-            auto result = aaer->query(album_art_ids::cover_front, fb2k::noAbort);
-            if (result.is_valid()) {
-                // CRITICAL: Check if this embedded artwork is for a station name
-                // This fixes SomaFM Icecast streams with embedded station artwork
-                pfc::string8 artist, title;
-                extract_metadata_for_search(track, artist, title);
-                
-                // Check if this is embedded artwork for a station name
-                if (is_station_name(artist, title)) {
-                    // Block the embedded station artwork
-                    return;
-                }
+            static_api_ptr_t<album_art_manager_v2> aam;
+            auto aaer = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(track), 
+                                  pfc::list_single_ref_t<GUID>(album_art_ids::cover_front), 
+                                  fb2k::noAbort);
+            
+            try {
+                auto result = aaer->query(album_art_ids::cover_front, fb2k::noAbort);
+                if (result.is_valid()) {
                 
                 // Convert album art data to bitmap using GDI+
                 auto data = result->get_ptr();
@@ -2543,12 +2540,14 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
                     return;
                 }
             }
+            } catch (...) {
+                // Local artwork failed, continue to online search
+            }
         } catch (...) {
-            // Local artwork failed, continue to online search
+            // Album art manager failed
         }
-    } catch (...) {
-        // Album art manager failed
     }
+    // For internet streams, skip embedded artwork completely and proceed to online search
     
     // Try online APIs if no local artwork found or if this is a new track
     bool should_search_online = false;
@@ -2607,210 +2606,18 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     // Redirect to safer artwork loading method
     load_artwork_for_track(track);
     return;
-    
-    if (!track.is_valid()) {
-        m_status_text = "No track";
-        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
-        return;
-    }
-    
-    // Check for "adbreak" in title (radio advertisement breaks - no search needed)
-    if (!title.is_empty() && strstr(title.c_str(), "adbreak")) {
-        complete_artwork_search(); // Mark search as complete to prevent further attempts
-        return;
-    }
-    
-    // Cache metadata for use in sequential API fallback chain
-    m_last_search_artist = artist;
-    m_last_search_title = title;
-    
-    // Use the already-extracted and cleaned metadata
-    pfc::string8 search_key = artist + "|" + title;
-    
-    // Reset artwork found flag and clear stale search state for new search
-    {
-        std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
-        m_artwork_found = false;
-        // Also clear any stale search state while we have the lock
-        if (search_key != m_current_search_key) {
-            m_current_search_key = "";
-        }
-    }
-    
-    // Determine search priority (higher is better)
-    int search_priority = 0;
-    if (!artist.is_empty() && !title.is_empty()) {
-        search_priority = 3; // Both artist and title = highest priority
-    } else if (!title.is_empty()) {
-        search_priority = 2; // Title only = medium priority  
-    } else {
-        search_priority = 1; // Neither artist nor title = lowest priority
-    }
-    
-    
-    // Add member variable to track last search priority
-    static int last_search_priority = 0;
-    
-    // Check if we already have artwork displayed for this track
-    if (m_artwork_bitmap && search_key == m_last_search_key) {
-        // For internet radio streams, use shorter cache timeout since artwork might change
-        // For regular files, use longer timeout since artwork is static
-        pfc::string8 path = track->get_path();
-        bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
-        
-        DWORD current_time = GetTickCount();
-        DWORD cache_timeout = is_internet_stream ? (5 * 60 * 1000) : (24 * 60 * 60 * 1000); // 5 minutes vs 24 hours
-        bool artwork_timeout_passed = (current_time - m_last_search_timestamp) > cache_timeout;
-        
-        if (!artwork_timeout_passed) {
-            return;
-        }
-    }
-    
-    // Check if search is in progress or recently failed
-    DWORD current_time = GetTickCount();
-    
-    // For internet radio streams, use shorter retry timeout since tracks change frequently
-    pfc::string8 path = track->get_path();
-    bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
-    DWORD retry_timeout = is_internet_stream ? 10000 : 30000; // 10 seconds vs 30 seconds
-    bool retry_timeout_passed = (current_time - m_last_search_timestamp) > retry_timeout;
-    
-    // Don't search if already in progress or recently attempted without success
-    // EXCEPTION: Always force search when switching from stream to local file
-    bool force_local_search = false;
-    if (!is_internet_stream && m_current_track.is_valid()) {
-        pfc::string8 old_path = m_current_track->get_path();
-        bool old_was_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
-        if (old_was_stream) {
-            force_local_search = true;
-        }
-    }
-    
-    if (!force_local_search && 
-        (search_key == m_current_search_key || 
-         (search_key == m_last_search_key && !m_artwork_bitmap && !retry_timeout_passed))) {
-        return;
-    }
-    
-    // Don't override higher priority artwork with lower priority (unless forcing local search)
-    if (!force_local_search && search_priority < last_search_priority && !retry_timeout_passed) {
-        return;
-    }
-    
-    
-    // Update priority tracking
-    last_search_priority = search_priority;
-    
-    // Update search state atomically with artwork found flag
-    {
-        std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
-        // Clear any stale search state
-        m_current_search_key = "";
-        // Mark this search as in progress
-        m_current_search_key = search_key;
-    }
-    
-    // Update search timestamp
-    m_last_search_timestamp = current_time;
-    
-    
-    // Try to get local artwork first
-    try {
-        static_api_ptr_t<album_art_manager_v2> aam;
-        auto aaer = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(track), 
-                              pfc::list_single_ref_t<GUID>(album_art_ids::cover_front), 
-                              fb2k::noAbort);
-        
-        auto aar = aaer->query(album_art_ids::cover_front, fb2k::noAbort);
-        if (aar.is_valid()) {
-            auto data = aar->get_ptr();
-            if (data && aar->get_size() > 0) {
-                const BYTE* byte_data = static_cast<const BYTE*>(data);
-                std::vector<BYTE> image_data(byte_data, byte_data + aar->get_size());
-                if (create_bitmap_from_data(image_data)) {
-                    // Mark that artwork has been found to stop any online searches
-                    {
-                        std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
-                        m_artwork_found = true;
-                    }
-                    
-                    complete_artwork_search();
-                    if (m_hWnd) {
-                        PostMessage(m_hWnd, WM_USER + 1, 0, 0);
-                    }
-                    m_current_track = track;
-                    return;
-                }
-            }
-        }
-    } catch (...) {
-        // Local artwork failed, continue to online search
-    }
-    
-    // Try to load station logo for internet streams (fallback before online search)
-    if (is_internet_stream) {
-        // Try new full path + domain fallback approach first
-        HBITMAP logo_bitmap = load_station_logo(track);
-        
-        // If that didn't work, try metadata-based approach as final fallback
-        if (!logo_bitmap) {
-            pfc::string8 logo_identifier = extract_station_name_from_metadata(track);
-            if (!logo_identifier.is_empty()) {
-                logo_bitmap = load_station_logo(logo_identifier);
-            }
-        }
-        
-        if (logo_bitmap) {
-                // Clean up any existing bitmap
-                if (m_artwork_bitmap) {
-                    DeleteObject(m_artwork_bitmap);
-                }
-                
-                m_artwork_bitmap = logo_bitmap;
-                // Don't show station logo status - not needed
-                // m_status_text = "Station logo loaded";
-                
-                // Mark that artwork has been found to stop any online searches
-                {
-                    std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
-                    m_artwork_found = true;
-                }
-                
-                complete_artwork_search();
-                if (m_hWnd) {
-                    PostMessage(m_hWnd, WM_USER + 1, 0, 0);
-                }
-                m_current_track = track;
-                return;
-            }
-        }
-    
-    // Check if we should search online
-    bool should_search_online = false;
-    if (is_internet_stream) {
-        // This looks like a stream URL, search online
-        should_search_online = true;
-    } else {
-        // For local files, search online if we have valid metadata but no local artwork
-        if (!artist.is_empty() && !title.is_empty()) {
-            should_search_online = true;
-        }
-    }
-    
-    if (should_search_online && track.is_valid()) {
-        // Use priority-based search order
-        // Set global loading flag for CUI panel communication
-        g_artwork_loading = true;
-        
-        start_priority_search(artist, title);
-    } else {
-        // Not searching - mark as complete to prevent cache issues
-        complete_artwork_search();
-    }
-    
-    m_current_track = track;
 }
+
+
+// REMOVED: Broken duplicate search_itunes_artwork function
+
+// REMOVED: Broken duplicate search_discogs_artwork function - see correct implementation below
+
+// REMOVED: Broken duplicate search_lastfm_artwork function - see correct implementation below
+
+// REMOVED: Broken duplicate search_itunes_background function - see correct implementation below
+
+// REMOVED: All broken duplicate functions - see correct implementations below
 
 // iTunes API artwork search - FIXED to use cleaned metadata
 void artwork_ui_element::search_itunes_artwork(metadb_handle_ptr track) {
@@ -4856,24 +4663,41 @@ public:
                 bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                 
                 if (is_internet_stream) {
-                    // Handle station logos for internet streams
-                    for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
-                        auto* element = g_artwork_ui_elements[i];
-                        if (element && element->m_hWnd) {
-                            // Try loading station logo immediately
-                            HBITMAP logo_bitmap = load_station_logo(p_track);
-                            if (logo_bitmap) {
-                                element->m_artwork_bitmap = logo_bitmap;
-                                // Don't show station logo status - not needed
-                                // element->m_status_text = "Station logo loaded (new track)";
+                    // Handle stream delay for internet streams
+                    if (cfg_stream_delay > 0) {
+                        // Apply stream delay - set timers on all DUI elements
+                        for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
+                            auto* element = g_artwork_ui_elements[i];
+                            if (element && element->m_hWnd) {
+                                // Kill any existing timer and start new stream delay timer
+                                KillTimer(element->m_hWnd, 9);  // Use timer ID 9 like CUI
+                                SetTimer(element->m_hWnd, 9, cfg_stream_delay * 1000, NULL);
                                 
-                                // Mark that artwork has been found
-                                {
-                                    std::lock_guard<std::mutex> lock(element->m_artwork_found_mutex);
-                                    element->m_artwork_found = true;
+                                // Store track for delayed processing
+                                element->m_current_track = p_track;
+                                
+                                // Clear pending metadata since this is a new track (metadata will come later via dynamic info)
+                                element->m_pending_timer_artist = "";
+                                element->m_pending_timer_title = "";
+                                
+                                // Mark that stream delay is active
+                                element->m_new_stream_delay_active = true;
+                            }
+                        }
+                    } else {
+                        // No delay configured, start API search immediately (station logos are now fallbacks only)
+                        for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
+                            auto* element = g_artwork_ui_elements[i];
+                            if (element && element->m_hWnd) {
+                                // Start API search immediately for internet streams with no delay
+                                pfc::string8 artist, title;
+                                element->extract_metadata_for_search(p_track, artist, title);
+                                
+                                if (!artist.is_empty() && !title.is_empty()) {
+                                    element->m_last_search_artist = artist;
+                                    element->m_last_search_title = title;
+                                    element->search_next_api_in_priority(artist, title, 0);
                                 }
-                                
-                                // Don't notify event system for station logos (no OSD needed)
                                 
                                 InvalidateRect(element->m_hWnd, NULL, TRUE);
                             }
@@ -5004,8 +4828,16 @@ public:
                                     element->m_last_search_artist = artist;
                                     element->m_last_search_title = title;
                                     
-                                    // Start direct API search - bypasses all caching
-                                    element->search_next_api_in_priority(artist, title, 0);
+                                    // Check if stream delay is still active - respect the delay
+                                    if (element->m_new_stream_delay_active) {
+                                        // Stream delay is active - store metadata for timer to use later
+                                        element->m_pending_timer_artist = artist;
+                                        element->m_pending_timer_title = title;
+                                        // Don't start search immediately - wait for timer
+                                    } else {
+                                        // No stream delay active - start search immediately
+                                        element->search_next_api_in_priority(artist, title, 0);
+                                    }
                                     
                                     // Update content AFTER successful search trigger
                                     element->m_last_update_content = fresh_content;
@@ -5027,14 +4859,20 @@ public:
                             // Don't show metadata message - causes white screen
                             // element->m_status_text = "Dynamic metadata received - no artist/title";
                             
-                            // For stations with no/invalid metadata, try loading station logo
+                            // For stations with no/invalid metadata, check if we should wait for stream delay
                             if (current_track.is_valid()) {
                                 pfc::string8 path = current_track->get_path();
                                 bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                                 
                                 if (is_internet_stream) {
-                                    HBITMAP logo_bitmap = load_station_logo(current_track);
-                                    if (logo_bitmap) {
+                                    // Check if stream delay is still active - respect the delay even for station logos
+                                    if (element->m_new_stream_delay_active) {
+                                        // Stream delay is active - don't load station logo immediately
+                                        // The timer will handle fallback logic when it expires
+                                    } else {
+                                        // No stream delay active - load station logo as immediate fallback
+                                        HBITMAP logo_bitmap = load_station_logo(current_track);
+                                        if (logo_bitmap) {
                                         // Clean up any existing bitmap
                                         if (element->m_artwork_bitmap) {
                                             DeleteObject(element->m_artwork_bitmap);
@@ -5051,6 +4889,7 @@ public:
                                         }
                                         
                                         // Don't notify event system for station logos (no OSD needed)
+                                        }
                                     }
                                 }
                             }
@@ -5332,45 +5171,7 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
         }
     }
     
-    // Check station logo first for internet streams (before API searches)
-    if (current_position == 0 && m_current_track.is_valid()) {
-        pfc::string8 path = m_current_track->get_path();
-        bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
-        
-        if (is_internet_stream) {
-            pfc::string8 domain = extract_domain_from_stream_url(m_current_track);
-            // Don't show domain check message - causes white screen
-            // m_status_text = "Checking station logo for domain: ";
-            // m_status_text += domain.c_str();
-            // if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
-            
-            HBITMAP logo_bitmap = load_station_logo(m_current_track);
-            if (logo_bitmap) {
-                // Clean up any existing bitmap
-                if (m_artwork_bitmap) {
-                    DeleteObject(m_artwork_bitmap);
-                }
-                
-                m_artwork_bitmap = logo_bitmap;
-                // Don't show station logo status - not needed
-                // m_status_text = "Station logo loaded";
-                
-                // Mark that artwork has been found to stop any API searches
-                {
-                    std::lock_guard<std::mutex> lock(m_artwork_found_mutex);
-                    m_artwork_found = true;
-                }
-                
-                // Don't notify event system for station logos (no OSD needed)
-                
-                // Redraw the element
-                if (m_hWnd) {
-                    InvalidateRect(m_hWnd, NULL, TRUE);
-                }
-                return;
-            }
-        }
-    }
+    // Station logos are now fallbacks only - API searches happen first for internet streams
     
     if (current_position >= 5) {
         // No more APIs to try - try fallback images for internet streams
