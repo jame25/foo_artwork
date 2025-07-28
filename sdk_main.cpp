@@ -158,13 +158,18 @@ public:
     
     void notify(const ArtworkEvent& event) {
         std::lock_guard<std::mutex> lock(m_listeners_mutex);
+        console::print(pfc::string8("foo_artwork: [EVENT_DEBUG] Notifying ") + pfc::format_int(m_listeners.size()) + " listeners");
         for (auto* listener : m_listeners) {
             try {
+                console::print("foo_artwork: [EVENT_DEBUG] Calling listener->on_artwork_event()");
                 listener->on_artwork_event(event);
+                console::print("foo_artwork: [EVENT_DEBUG] Listener callback completed successfully");
             } catch (...) {
+                console::print("foo_artwork: [EVENT_DEBUG] Exception in listener callback, continuing with next listener");
                 // Continue notifying other listeners even if one fails
             }
         }
+        console::print("foo_artwork: [EVENT_DEBUG] All listeners notified");
     }
 };
 
@@ -361,31 +366,45 @@ void create_appdata_directories() {
 
 // Function to extract domain from stream URL for logo matching
 pfc::string8 extract_domain_from_stream_url(metadb_handle_ptr track) {
-    if (!track.is_valid()) return "";
-    
-    pfc::string8 path = track->get_path();
-    
-    // Check if it's an internet stream
-    if (!(strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"))) {
+    // CRASH FIX: Add comprehensive safety checks
+    try {
+        if (!track.is_valid()) return "";
+        
+        pfc::string8 path = track->get_path();
+        
+        // Safety: Check path length to prevent buffer overruns
+        if (path.is_empty() || path.length() > 2048) return "";
+        
+        // Check if it's an internet stream
+        if (!(strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"))) {
+            return "";
+        }
+        
+        // Extract domain from URL (e.g., "http://somafm.com/stream" -> "somafm.com")
+        const char* start = strstr(path.c_str(), "://");
+        if (!start) return "";
+        start += 3; // Skip "://"
+        
+        // Safety: Ensure we don't go past end of string
+        if (start >= path.c_str() + path.length()) return "";
+        
+        const char* end = strchr(start, '/');
+        if (!end) end = start + strlen(start);
+        
+        const char* port = strchr(start, ':');
+        if (port && port < end) end = port;
+        
+        // Safety: Validate domain length
+        if (end > start && (end - start) > 0 && (end - start) < 256) {
+            return pfc::string8(start, end - start);
+        }
+        
+        return "";
+        
+    } catch (...) {
+        // Any exception in domain extraction should not crash the player
         return "";
     }
-    
-    // Extract domain from URL (e.g., "http://somafm.com/stream" -> "somafm.com")
-    const char* start = strstr(path.c_str(), "://");
-    if (!start) return "";
-    start += 3; // Skip "://"
-    
-    const char* end = strchr(start, '/');
-    if (!end) end = start + strlen(start);
-    
-    const char* port = strchr(start, ':');
-    if (port && port < end) end = port;
-    
-    if (end > start) {
-        return pfc::string8(start, end - start);
-    }
-    
-    return "";
 }
 
 // Function to extract full host+path from stream URL for specific logo matching
@@ -467,6 +486,57 @@ pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track) {
     return "";
 }
 
+// CRASH FIX: Helper function to safely create GDI+ bitmap from file
+HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
+    Gdiplus::Bitmap* bitmap = nullptr;
+    try {
+        // First check if file is accessible and has reasonable size
+        HANDLE hFile = CreateFileW(wide_path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER fileSize;
+            if (GetFileSizeEx(hFile, &fileSize)) {
+                // Reject files that are too large (>50MB) or too small (<100 bytes) to prevent memory issues
+                if (fileSize.QuadPart > 100 && fileSize.QuadPart < 50*1024*1024) {
+                    CloseHandle(hFile);
+                    
+                    // Now safely create bitmap
+                    bitmap = new Gdiplus::Bitmap(wide_path.c_str());
+                    if (bitmap) {
+                        Gdiplus::Status last_status = bitmap->GetLastStatus();
+                        if (last_status == Gdiplus::Ok) {
+                            // Additional validation - check bitmap dimensions
+                            UINT width = bitmap->GetWidth();
+                            UINT height = bitmap->GetHeight();
+                            if (width > 0 && height > 0 && width <= 4096 && height <= 4096) {
+                                HBITMAP gdi_bitmap = nullptr;
+                                Gdiplus::Status status = bitmap->GetHBITMAP(Gdiplus::Color(255, 255, 255, 255), &gdi_bitmap);
+                                if (status == Gdiplus::Ok && gdi_bitmap) {
+                                    delete bitmap;
+                                    return gdi_bitmap;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    CloseHandle(hFile);
+                }
+            } else {
+                CloseHandle(hFile);
+            }
+        }
+    } catch (...) {
+        // Handle any GDI+ or file system exceptions
+    }
+    
+    // Always clean up bitmap pointer on failure
+    if (bitmap) {
+        delete bitmap;
+        bitmap = nullptr;
+    }
+    
+    return NULL;
+}
+
 // Helper function to try loading a logo with a specific identifier
 HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8& logos_dir) {
     if (identifier.is_empty()) return NULL;
@@ -508,26 +578,10 @@ HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8
                     }
                 }
                 
-                // For other formats, use GDI+ with careful error handling
-                Gdiplus::Bitmap* bitmap = nullptr;
-                try {
-                    bitmap = new Gdiplus::Bitmap(wide_path.c_str());
-                    if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                        HBITMAP gdi_bitmap = nullptr;
-                        Gdiplus::Status status = bitmap->GetHBITMAP(Gdiplus::Color(255, 255, 255, 255), &gdi_bitmap);
-                        if (status == Gdiplus::Ok && gdi_bitmap) {
-                            delete bitmap;
-                            return gdi_bitmap;
-                        }
-                    }
-                } catch (...) {
-                    // Handle any GDI+ exceptions
-                }
-                
-                // Always clean up bitmap pointer
-                if (bitmap) {
-                    delete bitmap;
-                    bitmap = nullptr;
+                // CRASH FIX: Use safe helper function for GDI+ bitmap loading
+                HBITMAP gdi_bitmap = safe_load_gdiplus_bitmap(wide_path);
+                if (gdi_bitmap) {
+                    return gdi_bitmap;
                 }
             }
         }
@@ -548,6 +602,7 @@ HBITMAP load_station_logo(metadb_handle_ptr track) {
     }
     
     try {
+        
         pfc::string8 logos_dir;
         char appdata_buffer[MAX_PATH];
         HRESULT hr;
@@ -560,25 +615,34 @@ HBITMAP load_station_logo(metadb_handle_ptr track) {
                 logos_dir += "\\";
             }
         } else {
-            // Use default APPDATA path: %APPDATA%\foobar2000-v2\foo_artwork_data\logos\
-            hr = SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, appdata_buffer);
-            if (SUCCEEDED(hr)) {
-                logos_dir = pfc::string8(appdata_buffer) + "\\foobar2000-v2\\foo_artwork_data\\logos\\";
-            } else {
-                // Fallback to old behavior if APPDATA fails
-                pfc::string8 profile_url = core_api::get_profile_path();
-                pfc::string8 profile_path;
-                if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
-                    profile_path = profile_url.c_str() + 7;
-                    for (size_t i = 0; i < profile_path.length(); i++) {
-                        if (profile_path[i] == '/') {
-                            profile_path.set_char(i, '\\');
-                        }
-                    }
+            // CRASH FIX: Try APPDATA path first (safe in DUI), fall back to profile path if it fails (CUI compatibility)
+            try {
+                hr = SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, appdata_buffer);
+                if (SUCCEEDED(hr)) {
+                    logos_dir = pfc::string8(appdata_buffer) + "\\foobar2000-v2\\foo_artwork_data\\logos\\";
                 } else {
-                    profile_path = profile_url;
+                    throw std::exception(); // Force fallback to profile path
                 }
-                logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+            } catch (...) {
+                // Fallback to profile path (CUI-safe)
+                try {
+                    pfc::string8 profile_url = core_api::get_profile_path();
+                    pfc::string8 profile_path;
+                    if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+                        profile_path = profile_url.c_str() + 7;
+                        for (size_t i = 0; i < profile_path.length(); i++) {
+                            if (profile_path[i] == '/') {
+                                profile_path.set_char(i, '\\');
+                            }
+                        }
+                    } else {
+                        profile_path = profile_url;
+                    }
+                    logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+                } catch (...) {
+                    // Ultimate fallback: use relative path
+                    logos_dir = "foo_artwork_data\\logos\\";
+                }
             }
         }
         
@@ -694,15 +758,11 @@ HBITMAP load_noart_logo(metadb_handle_ptr track) {
                     wide_path.resize(noart_path.length() + 1);
                     MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
                     
-                    Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
-                    if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                        HBITMAP hBitmap;
-                        if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
-                            delete bitmap;
-                            return hBitmap;
-                        }
+                    // CRASH FIX: Use safe helper function for GDI+ bitmap loading
+                    HBITMAP hBitmap = safe_load_gdiplus_bitmap(wide_path);
+                    if (hBitmap) {
+                        return hBitmap;
                     }
-                    delete bitmap;
                 }
             }
         }
@@ -718,15 +778,11 @@ HBITMAP load_noart_logo(metadb_handle_ptr track) {
                     wide_path.resize(noart_path.length() + 1);
                     MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
                     
-                    Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
-                    if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                        HBITMAP hBitmap;
-                        if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
-                            delete bitmap;
-                            return hBitmap;
-                        }
+                    // CRASH FIX: Use safe helper function for GDI+ bitmap loading
+                    HBITMAP hBitmap = safe_load_gdiplus_bitmap(wide_path);
+                    if (hBitmap) {
+                        return hBitmap;
                     }
-                    delete bitmap;
                 }
             }
         }
@@ -774,16 +830,11 @@ HBITMAP load_noart_logo(const pfc::string8& domain) {
                 wide_path.resize(noart_path.length() + 1);
                 MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
                 
-                // Load bitmap using GDI+
-                Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
-                if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                    HBITMAP hBitmap;
-                    if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
-                        delete bitmap;
-                        return hBitmap;
-                    }
+                // CRASH FIX: Use safe helper function for GDI+ bitmap loading
+                HBITMAP hBitmap = safe_load_gdiplus_bitmap(wide_path);
+                if (hBitmap) {
+                    return hBitmap;
                 }
-                delete bitmap;
             }
         }
     } catch (...) {
@@ -825,15 +876,11 @@ HBITMAP load_generic_noart_logo(metadb_handle_ptr track) {
                         wide_path.resize(noart_path.length() + 1);
                         MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
                         
-                        Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
-                        if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                            HBITMAP hBitmap;
-                            if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
-                                delete bitmap;
-                                return hBitmap;
-                            }
+                        // CRASH FIX: Use safe helper function for GDI+ bitmap loading
+                        HBITMAP hBitmap = safe_load_gdiplus_bitmap(wide_path);
+                        if (hBitmap) {
+                            return hBitmap;
                         }
-                        delete bitmap;
                     }
                 }
             }
@@ -849,15 +896,11 @@ HBITMAP load_generic_noart_logo(metadb_handle_ptr track) {
                         wide_path.resize(noart_path.length() + 1);
                         MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
                         
-                        Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
-                        if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                            HBITMAP hBitmap;
-                            if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
-                                delete bitmap;
-                                return hBitmap;
-                            }
+                        // CRASH FIX: Use safe helper function for GDI+ bitmap loading
+                        HBITMAP hBitmap = safe_load_gdiplus_bitmap(wide_path);
+                        if (hBitmap) {
+                            return hBitmap;
                         }
-                        delete bitmap;
                     }
                 }
             }
@@ -872,15 +915,11 @@ HBITMAP load_generic_noart_logo(metadb_handle_ptr track) {
                 wide_path.resize(noart_path.length() + 1);
                 MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
                 
-                Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
-                if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                    HBITMAP hBitmap;
-                    if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
-                        delete bitmap;
-                        return hBitmap;
-                    }
+                // CRASH FIX: Use safe helper function for GDI+ bitmap loading
+                HBITMAP hBitmap = safe_load_gdiplus_bitmap(wide_path);
+                if (hBitmap) {
+                    return hBitmap;
                 }
-                delete bitmap;
             }
         }
     } catch (...) {
@@ -925,16 +964,11 @@ HBITMAP load_generic_noart_logo() {
                 wide_path.resize(noart_path.length() + 1);
                 MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
                 
-                // Load bitmap using GDI+
-                Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
-                if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                    HBITMAP hBitmap;
-                    if (bitmap->GetHBITMAP(Color(255, 255, 255, 255), &hBitmap) == Gdiplus::Ok) {
-                        delete bitmap;
-                        return hBitmap;
-                    }
+                // CRASH FIX: Use safe helper function for GDI+ bitmap loading
+                HBITMAP hBitmap = safe_load_gdiplus_bitmap(wide_path);
+                if (hBitmap) {
+                    return hBitmap;
                 }
-                delete bitmap;
             }
         }
     } catch (...) {
@@ -1008,7 +1042,8 @@ static std::vector<ApiType> get_api_search_order() {
     return ordered_apis;
 }
 
-// UI Element for displaying artwork
+// UI Element for displaying artwork - MOVED TO ui_element.cpp
+/*
 class artwork_ui_element : public service_impl_single_t<ui_element_instance>, public IArtworkEventListener {
 public:
     void initialize_window(HWND parent) {
@@ -1193,8 +1228,8 @@ public:
                 // Schedule initial artwork load using configured stream delay
                 // This handles cases where foobar2000 has resumed playback state
                 // but stream metadata takes time to populate
-                m_status_text = "Detected resumed playback - scheduling artwork load...";
-                InvalidateRect(m_hWnd, NULL, TRUE);
+                // m_status_text = "Detected resumed playback - scheduling artwork load...";
+                // InvalidateRect(m_hWnd, NULL, TRUE);
                 
                 // Use configurable stream delay instead of hardcoded 3 seconds
                 int delay_ms = cfg_stream_delay > 0 ? cfg_stream_delay * 1000 : 100;  // Minimum 100ms for responsiveness
@@ -1322,21 +1357,21 @@ public:
         // TESTING: Re-enable track updates with safety checks
         try {
             if (!track.is_valid()) {
-                m_status_text = "Invalid track";
-                if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+                // m_status_text = "Invalid track";
+                // if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
                 return;
             }
             
             // FULL FUNCTIONALITY RESTORED - All systems enabled
-            m_status_text = "Full functionality restored - testing complete system";
-            if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+            // m_status_text = "Full functionality restored - testing complete system";
+            // if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
             
             // Continue with full track update logic (remove early return)
             // Now test the complete system with all functionality
             
         } catch (...) {
-            m_status_text = "Crash caught in update_track";
-            if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+            // m_status_text = "Crash caught in update_track";
+            // if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
             return;
         }
         
@@ -1844,14 +1879,14 @@ public:
         m_last_update_timestamp = current_time;
     }
 };
+*/
 
-const GUID artwork_ui_element::g_guid = artwork_ui_element::g_get_guid();
+// const GUID artwork_ui_element::g_guid = artwork_ui_element::g_get_guid();
 
-// Function to get artwork bitmap from main component (for CUI panels)
+// Function to get artwork bitmap from main component (for CUI panels) - STUB for new implementation
 HBITMAP get_main_component_artwork_bitmap() {
-    if (g_main_ui_element) {
-        return g_main_ui_element->m_artwork_bitmap;
-    }
+    // Note: New DUI implementation handles this differently
+    // CUI panels will use their own custom logo loading system
     return nullptr;
 }
 
@@ -2016,14 +2051,10 @@ void trigger_main_component_local_search(metadb_handle_ptr track) {
         file_path = pfc::string8(file_path.c_str() + 7); // Skip "file://"
     }
     
-    // If we have a main UI element, trigger its local search directly
-    if (g_main_ui_element) {
-        if (g_main_ui_element->search_local_artwork()) {
-            return;
-        }
-    }
+    // Note: New DUI implementation handles local search internally
+    // This function now provides a simple local file search for CUI panels
     
-    // If no main UI element or local search failed, search manually
+    // Search manually using the same logic as before
     
     // Get directory of the music file
     
@@ -2168,6 +2199,20 @@ bool load_local_artwork_into_shared_bitmap(const pfc::string8& file_path) {
     }
 }
 
+#ifdef COLUMNS_UI_AVAILABLE
+extern void update_all_cui_clear_panel_timers();
+#endif
+
+// Global function to update clear panel timers for all UI elements (stub for new implementation)
+void update_all_clear_panel_timers() {
+    // Update CUI elements only (DUI elements handle this internally now)
+#ifdef COLUMNS_UI_AVAILABLE
+    update_all_cui_clear_panel_timers();
+#endif
+}
+
+// ALL ARTWORK_UI_ELEMENT METHODS MOVED TO ui_element.cpp
+/*
 // Window procedure
 LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     artwork_ui_element* pThis = nullptr;
@@ -2267,11 +2312,31 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
         HDC memDC = CreateCompatibleDC(hdc);
         if (!memDC) {
             // Fallback to direct painting if memory DC fails
-            COLORREF bg_color = GetSysColor(COLOR_BTNFACE);  // Fallback
+            COLORREF bg_color = GetSysColor(COLOR_WINDOW);  // Use proper window background
+            
+            // Check if system is in dark mode by examining window background brightness
+            BYTE r = GetRValue(bg_color);
+            BYTE g = GetGValue(bg_color);
+            BYTE b = GetBValue(bg_color);
+            int brightness = (r + g + b) / 3;
+            
+            // If system colors are light but we're in foobar2000 dark mode, use darker fallback
+            if (brightness > 200) {
+                bg_color = RGB(32, 32, 32);  // Dark gray fallback
+            }
             
             // Try to get foobar2000's actual background color
             if (m_callback.is_valid()) {
-                bg_color = m_callback->query_std_color(ui_color_background);
+                t_ui_color temp_color;
+                
+                // Try dark mode color first
+                if (m_callback->query_color(ui_color_darkmode, temp_color)) {
+                    bg_color = temp_color;
+                } else if (m_callback->query_color(ui_color_background, temp_color)) {
+                    bg_color = temp_color;
+                } else {
+                    bg_color = m_callback->query_std_color(ui_color_background);
+                }
             }
             
             HBRUSH bgBrush = CreateSolidBrush(bg_color);
@@ -2291,12 +2356,34 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
         HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
         
         // Use actual foobar2000 UI colors instead of system colors
-        COLORREF bg_color = GetSysColor(COLOR_BTNFACE);  // Fallback
-        COLORREF text_color = GetSysColor(COLOR_BTNTEXT);  // Fallback
+        COLORREF bg_color = GetSysColor(COLOR_WINDOW);  // Use proper window background
+        COLORREF text_color = GetSysColor(COLOR_WINDOWTEXT);  // Use proper window text
+        
+        // Check if system is in dark mode by examining window background brightness
+        BYTE r = GetRValue(bg_color);
+        BYTE g = GetGValue(bg_color);
+        BYTE b = GetBValue(bg_color);
+        int brightness = (r + g + b) / 3;
+        
+        // If system colors are light but we're in foobar2000 dark mode, use darker fallback
+        if (brightness > 200) {
+            bg_color = RGB(32, 32, 32);  // Dark gray fallback
+            text_color = RGB(220, 220, 220);  // Light text
+        }
         
         // Try to get foobar2000's actual background color
         if (m_callback.is_valid()) {
-            bg_color = m_callback->query_std_color(ui_color_background);
+            t_ui_color temp_color;
+            
+            // Try dark mode color first
+            if (m_callback->query_color(ui_color_darkmode, temp_color)) {
+                bg_color = temp_color;
+            } else if (m_callback->query_color(ui_color_background, temp_color)) {
+                bg_color = temp_color;
+            } else {
+                bg_color = m_callback->query_std_color(ui_color_background);
+            }
+            
             text_color = m_callback->query_std_color(ui_color_text);
         }
         
@@ -2358,10 +2445,11 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
             SetBkColor(memDC, bg_color);
             SetTextColor(memDC, text_color);
             
-            if (!m_status_text.is_empty()) {
-                DrawTextA(memDC, m_status_text.c_str(), -1, &clientRect, 
-                         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            }
+            // Status text drawing disabled to prevent "Artwork loading" white box
+            // if (!m_status_text.is_empty()) {
+            //     DrawTextA(memDC, m_status_text.c_str(), -1, &clientRect, 
+            //              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            // }
             // Don't show fallback status text - causes white screen when stopping playback
             // else {
             //     const char* status = "Complex painting enabled - testing bitmap operations";
@@ -2389,8 +2477,8 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
 // Load artwork for track
 void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     if (!track.is_valid()) {
-        m_status_text = "No track";
-        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+        // m_status_text = "No track";
+        // if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
         return;
     }
     
@@ -2580,21 +2668,21 @@ void artwork_ui_element::load_artwork_for_track_with_metadata(metadb_handle_ptr 
     
     // CRASH PREVENTION: Check for bad metadata that causes crashes
     if (artist.is_empty() || title.is_empty() || artist.get_length() == 0 || title.get_length() == 0) {
-        m_status_text = "Skipping artwork - bad metadata (artist: '";
-        m_status_text += artist.c_str();
-        m_status_text += "', title: '";
-        m_status_text += title.c_str();
-        m_status_text += "')";
-        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+        // m_status_text = "Skipping artwork - bad metadata (artist: '";
+        // m_status_text += artist.c_str();
+        // m_status_text += "', title: '";
+        // m_status_text += title.c_str();
+        // m_status_text += "')";
+        // if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
         return; // Don't proceed with empty metadata
     }
     
     // CRASH-SAFE: This function causes crashes - use basic load_artwork_for_track instead
-    m_status_text = "Redirect: ";
-    m_status_text += artist.c_str();
-    m_status_text += " - ";
-    m_status_text += title.c_str();
-    if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+    // m_status_text = "Redirect: ";
+    // m_status_text += artist.c_str();
+    // m_status_text += " - ";
+    // m_status_text += title.c_str();
+    // if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
     
     // Store the metadata for the basic loading function to use
     {
@@ -4409,7 +4497,7 @@ void artwork_ui_element::process_downloaded_image_data() {
     } else {
         // Bitmap creation failed
         complete_artwork_search();
-        m_status_text = "Failed to create artwork bitmap";
+        // m_status_text = "Failed to create artwork bitmap";
         
         // Notify event system that artwork loading failed
         ArtworkEventManager::get().notify(ArtworkEvent(
@@ -4617,8 +4705,8 @@ void artwork_ui_element::try_fallback_images_for_stream(metadb_handle_ptr track)
         
         if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
     } else {
-        m_status_text = "No artwork found";
-        if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
+        // m_status_text = "No artwork found";
+        // if (m_hWnd) InvalidateRect(m_hWnd, NULL, TRUE);
     }
 }
 
@@ -5357,7 +5445,10 @@ void update_all_clear_panel_timers() {
 #endif
 }
 
-// UI Element factory - manual implementation
+*/
+
+// UI Element factory - MOVED TO ui_element.cpp
+/*
 class artwork_ui_element_factory : public ui_element {
 public:
     GUID get_guid() override {
@@ -5390,11 +5481,13 @@ public:
         return true;
     }
 };
+*/
 
 //=============================================================================
-// OSD (On-Screen Display) Implementation
+// OSD (On-Screen Display) Implementation - MOVED TO ui_element.cpp
 //=============================================================================
 
+/*
 // Show OSD with artwork source information
 void artwork_ui_element::show_osd(const pfc::string8& source_name) {
     // Check if OSD is enabled in preferences
@@ -6154,6 +6247,7 @@ void standalone_deezer_search_with_metadata(const std::string& artist, const std
         g_artwork_loading = false;
     }
 }
+*/
 
 // Bridge functions - call main component API methods safely without UI element
 
@@ -7005,6 +7099,7 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
 #endif
             
             // Notify event system that artwork was loaded successfully
+            console::print("foo_artwork: [BRIDGE_DEBUG] Sending ARTWORK_LOADED event to all subscribers");
             ArtworkEventManager::get().notify(ArtworkEvent(
                 ArtworkEventType::ARTWORK_LOADED, 
                 hBitmap, 
@@ -7012,6 +7107,7 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
                 "", 
                 ""
             ));
+            console::print("foo_artwork: [BRIDGE_DEBUG] ARTWORK_LOADED event sent successfully");
 #ifdef _DEBUG
 #endif
             
@@ -7364,7 +7460,7 @@ bool bridge_download_image(const std::string& url, std::vector<BYTE>& data) {
 }
 
 // Station name detection helper function with SomaFM-specific patterns
-bool artwork_ui_element::is_station_name(const pfc::string8& artist, const pfc::string8& title) {
+bool is_station_name(const pfc::string8& artist, const pfc::string8& title) {
     // Only check titles when artist is empty (station name pattern)
     if (!artist.is_empty() || title.is_empty()) {
         return false;
@@ -7460,7 +7556,7 @@ bool artwork_ui_element::is_station_name(const pfc::string8& artist, const pfc::
 }
 
 // Safe internet stream detection to prevent crashes
-bool artwork_ui_element::is_safe_internet_stream(metadb_handle_ptr track) {
+bool is_safe_internet_stream(metadb_handle_ptr track) {
     try {
         if (!track.is_valid()) {
             return false;
