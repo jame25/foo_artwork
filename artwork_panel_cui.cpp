@@ -18,6 +18,12 @@
 #include <windows.h>
 #include <gdiplus.h>
 #include <shlwapi.h>
+#include <exception>
+#include <wincodec.h>
+
+// Link WIC library
+#pragma comment(lib, "windowscodecs.lib")
+
 #include <algorithm>
 #include <thread>
 #include <vector>
@@ -263,9 +269,11 @@ private:
     bool is_safe_internet_stream(metadb_handle_ptr track);
     void cleanup_gdiplus();
     bool copy_bitmap_from_main_component(HBITMAP source_bitmap);
+    bool load_custom_logo_with_wic(HBITMAP logo_bitmap);  // WIC-based safe loading for CUI
     void search_artwork_for_track(metadb_handle_ptr track);
     void search_artwork_with_metadata(const std::string& artist, const std::string& title);
     bool is_station_name(const std::string& artist, const std::string& title);  // Station name detection helper
+    bool is_metadata_valid_for_search(const char* artist, const char* title);  // Metadata validation
     
     // Constants
     static const int OSD_DELAY_DURATION = 1000;   // 1 second delay before animation starts
@@ -585,60 +593,30 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                     }
                     
                     if (is_internet_stream && cfg_enable_custom_logos) {
-                        // Try to extract domain from URL
-                        pfc::string8 domain = extract_domain_from_stream_url(current_track);
-                        if (!domain.is_empty()) {
+                        // CRASH FIX: Add safe guards before complex file operations
+                        try {
+                            // First check if track is still valid
+                            if (!current_track.is_valid()) return DefWindowProc(wnd, msg, wParam, lParam);
                             
-                            // Load directly as GDI+ bitmap (safe on main thread)
-                            try {
-                                pfc::string8 logos_dir;
-                                char appdata_buffer[MAX_PATH];
-                                const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
+                            // Try to extract domain from URL - do this safely
+                            pfc::string8 domain = extract_domain_from_stream_url(current_track);
+                            if (!domain.is_empty() && domain.length() < 256) { // Prevent overly long domains
+                            
+                                // CRASH FIX: Use safer logo loading without direct file operations in CUI
+                                // Instead of complex file path building, use the SDK functions which are already crash-protected
                                 bool fallback_loaded = false;
-                                
-                                // Use custom folder path if specified, otherwise use default
-                                if (!cfg_logos_folder.is_empty()) {
-                                    logos_dir = cfg_logos_folder.get_ptr();
-                                    if (!logos_dir.is_empty() && logos_dir[logos_dir.length() - 1] != '\\') {
-                                        logos_dir += "\\";
-                                    }
-                                } else {
-                                    // Use default APPDATA path
-                                    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, appdata_buffer))) {
-                                        logos_dir = pfc::string8(appdata_buffer) + "\\foobar2000-v2\\foo_artwork_data\\logos\\";
-                                    } else {
-                                        // Fallback to profile path
-                                        pfc::string8 profile_url = core_api::get_profile_path();
-                                        pfc::string8 profile_path;
-                                        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
-                                            profile_path = profile_url.c_str() + 7;
-                                            for (size_t i = 0; i < profile_path.length(); i++) {
-                                                if (profile_path[i] == '/') {
-                                                    profile_path.set_char(i, '\\');
-                                                }
-                                            }
-                                        } else {
-                                            profile_path = profile_url;
-                                        }
-                                        logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
-                                    }
-                                }
                                 
                                 // Priority 1: Station logo (with full path + domain fallback)
                                 if (!fallback_loaded) {
                                     HBITMAP logo_bitmap = load_station_logo(current_track);
                                     if (logo_bitmap) {
-                                        // Convert HBITMAP to GDI+ Bitmap using FromHBITMAP
-                                        Gdiplus::Bitmap* bitmap_ptr = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
-                                        if (bitmap_ptr && bitmap_ptr->GetLastStatus() == Gdiplus::Ok) {
-                                            m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(bitmap_ptr);
+                                        // CRASH FIX: Use WIC-based loading for CUI compatibility
+                                        if (load_custom_logo_with_wic(logo_bitmap)) {
                                             m_artwork_loaded = true;
                                             m_artwork_source = "Station logo";
                                             fallback_loaded = true;
-                                        } else {
-                                            delete bitmap_ptr; // Clean up if failed
                                         }
-                                        DeleteObject(logo_bitmap); // Clean up HBITMAP
+                                        DeleteObject(logo_bitmap); // Always clean up the source bitmap
                                     }
                                 }
                                 
@@ -646,17 +624,13 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                                 if (!fallback_loaded) {
                                     HBITMAP noart_bitmap = load_noart_logo(current_track);
                                     if (noart_bitmap) {
-                                        // Convert HBITMAP to GDI+ Bitmap using FromHBITMAP
-                                        Gdiplus::Bitmap* bitmap_ptr = Gdiplus::Bitmap::FromHBITMAP(noart_bitmap, NULL);
-                                        if (bitmap_ptr && bitmap_ptr->GetLastStatus() == Gdiplus::Ok) {
-                                            m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(bitmap_ptr);
+                                        // CRASH FIX: Use WIC-based loading for CUI compatibility
+                                        if (load_custom_logo_with_wic(noart_bitmap)) {
                                             m_artwork_loaded = true;
                                             m_artwork_source = "Station fallback (no artwork)";
                                             fallback_loaded = true;
-                                        } else {
-                                            delete bitmap_ptr; // Clean up if failed
                                         }
-                                        DeleteObject(noart_bitmap); // Clean up HBITMAP
+                                        DeleteObject(noart_bitmap); // Always clean up the source bitmap
                                     }
                                 }
                                 
@@ -664,17 +638,13 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                                 if (!fallback_loaded) {
                                     HBITMAP generic_bitmap = load_generic_noart_logo(current_track);
                                     if (generic_bitmap) {
-                                        // Convert HBITMAP to GDI+ Bitmap using FromHBITMAP
-                                        Gdiplus::Bitmap* bitmap_ptr = Gdiplus::Bitmap::FromHBITMAP(generic_bitmap, NULL);
-                                        if (bitmap_ptr && bitmap_ptr->GetLastStatus() == Gdiplus::Ok) {
-                                            m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(bitmap_ptr);
+                                        // CRASH FIX: Use WIC-based loading for CUI compatibility
+                                        if (load_custom_logo_with_wic(generic_bitmap)) {
                                             m_artwork_loaded = true;
                                             m_artwork_source = "Generic fallback (no artwork)";
                                             fallback_loaded = true;
-                                        } else {
-                                            delete bitmap_ptr; // Clean up if failed
                                         }
-                                        DeleteObject(generic_bitmap); // Clean up HBITMAP
+                                        DeleteObject(generic_bitmap); // Always clean up the source bitmap
                                     }
                                 }
                                 
@@ -683,12 +653,14 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                                     InvalidateRect(m_hWnd, NULL, FALSE);
                                     UpdateWindow(m_hWnd);
                                 }
-                            } catch (...) {
-                            }
+                            } // End domain check
+                        } catch (...) {
+                            // Silently handle any exceptions in custom logo loading
                         }
                     }
                 }
             } catch (...) {
+                // Silently handle any exceptions in track processing
             }
         }
         break;
@@ -961,6 +933,10 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
         std::regex dash_time_regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$");
         str = std::regex_replace(str, dash_time_regex, "");
         
+        // Remove " - MM.SS" or " - M.SS" timestamp patterns with decimal point (like " - 0.00")
+        std::regex dash_decimal_regex("\\s+-\\s+\\d{1,2}\\.\\d{2}\\s*$");
+        str = std::regex_replace(str, dash_decimal_regex, "");
+        
         // Remove " - X.XX" numeric timestamp patterns at the end
         size_t dash_pos = str.rfind(" - ");
         if (dash_pos != std::string::npos) {
@@ -1042,27 +1018,42 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
         str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
     };
     
+    // Remove all parenthetical content (like "(Vocal Version)", "(Remix)", etc.)
+    auto remove_all_parentheses = [](std::string& str) {
+        std::regex paren_content_regex("\\s*\\([^)]*\\)\\s*");
+        str = std::regex_replace(str, paren_content_regex, " ");
+        
+        // Clean up multiple spaces
+        std::regex multi_space("\\s{2,}");
+        str = std::regex_replace(str, multi_space, " ");
+        
+        // Trim leading and trailing spaces
+        str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
+    };
+    
     // Apply all cleaning rules to title
     remove_prefixes(title);
     remove_featuring_in_brackets(title);  // Remove featuring patterns first
     remove_bracketed_info(title);
     remove_duration_info(title);
+    remove_all_parentheses(title);  // Remove any remaining parenthetical content
     normalize_collaborations(title);
     clean_encoding_artifacts(title);
     
     // Apply some cleaning rules to artist as well (but be more conservative)
     remove_bracketed_info(artist);
+    remove_all_parentheses(artist);  // Remove parenthetical content from artist too
     normalize_collaborations(artist);
     clean_encoding_artifacts(artist);
     
     
-    // Check for "adbreak" in title (radio advertisement breaks - no search needed)
-    if (!title.empty() && strstr(title.c_str(), "adbreak")) {
+    // Apply comprehensive metadata validation rules (same as DUI)
+    if (!is_metadata_valid_for_search(artist.c_str(), title.c_str())) {
         return;
     }
     
     // If we have valid metadata and aren't already loading, trigger main component search
-    if (!title.empty() && !g_artwork_loading) {
+    if (!g_artwork_loading) {
         // Get current track to check if it's a stream
         auto pc = playback_control::get();
         metadb_handle_ptr current_track;
@@ -1318,15 +1309,9 @@ void CUIArtworkPanel::paint_no_artwork(HDC hdc) {
 }
 
 void CUIArtworkPanel::paint_loading(HDC hdc) {
+    // Loading indicator without text - just show background
     RECT client_rect;
     GetClientRect(m_hWnd, &client_rect);
-    
-    // Draw loading text
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(100, 100, 100));
-    
-    const char* text = "Loading artwork...";
-    DrawTextA(hdc, text, -1, &client_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
 //=============================================================================
@@ -1743,30 +1728,158 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
     }
 }
 
+// WIC-based helper for loading custom logos safely in CUI mode
+bool CUIArtworkPanel::load_custom_logo_with_wic(HBITMAP logo_bitmap) {
+    if (!logo_bitmap) return false;
+    
+    IWICImagingFactory* imaging_factory = nullptr;
+    IWICBitmap* wic_bitmap = nullptr;
+    
+    try {
+        // Create WIC factory
+        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, 
+                                      IID_IWICImagingFactory, (void**)&imaging_factory);
+        if (FAILED(hr) || !imaging_factory) return false;
+        
+        // Convert HBITMAP to WIC bitmap (WIC handles this more safely than GDI+)
+        hr = imaging_factory->CreateBitmapFromHBITMAP(logo_bitmap, nullptr, WICBitmapUseAlpha, &wic_bitmap);
+        if (FAILED(hr) || !wic_bitmap) {
+            if (imaging_factory) imaging_factory->Release();
+            return false;
+        }
+        
+        // Get bitmap dimensions for validation
+        UINT width, height;
+        hr = wic_bitmap->GetSize(&width, &height);
+        if (FAILED(hr) || width == 0 || height == 0 || width > 4096 || height > 4096) {
+            wic_bitmap->Release();
+            imaging_factory->Release();
+            return false;
+        }
+        
+        // Create a new compatible HBITMAP from WIC bitmap
+        HDC screen_dc = GetDC(NULL);
+        if (screen_dc) {
+            BITMAPINFO bmi = {};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = width;
+            bmi.bmiHeader.biHeight = -(LONG)height; // Top-down DIB
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            
+            void* pixel_data = nullptr;
+            HBITMAP safe_bitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &pixel_data, NULL, 0);
+            
+            if (safe_bitmap && pixel_data) {
+                // Copy WIC bitmap data to our safe bitmap
+                WICRect rect = {0, 0, (INT)width, (INT)height};
+                UINT stride = width * 4; // 32-bit BGRA
+                hr = wic_bitmap->CopyPixels(&rect, stride, stride * height, (BYTE*)pixel_data);
+                
+                if (SUCCEEDED(hr)) {
+                    // Use standard bitmap conversion (now safe because WIC processed it)
+                    bool result = copy_bitmap_from_main_component(safe_bitmap);
+                    
+                    DeleteObject(safe_bitmap);
+                    ReleaseDC(NULL, screen_dc);
+                    wic_bitmap->Release();
+                    imaging_factory->Release();
+                    return result;
+                }
+                DeleteObject(safe_bitmap);
+            }
+            ReleaseDC(NULL, screen_dc);
+        }
+        
+        wic_bitmap->Release();
+        imaging_factory->Release();
+        return false;
+        
+    } catch (...) {
+        // Clean up COM objects on exception
+        if (wic_bitmap) wic_bitmap->Release();
+        if (imaging_factory) imaging_factory->Release();
+        return false;
+    }
+}
+
 bool CUIArtworkPanel::copy_bitmap_from_main_component(HBITMAP source_bitmap) {
     if (!source_bitmap) return false;
     
     try {
-        // Get bitmap info
+        // CRASH FIX: Safer HBITMAP to GDI+ Bitmap conversion
+        // Get bitmap info first to validate format
         BITMAP bmp_info;
         if (!GetObject(source_bitmap, sizeof(BITMAP), &bmp_info)) {
             return false;
         }
         
-        // Create GDI+ bitmap from HBITMAP
-        auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(source_bitmap, nullptr);
-        
-        if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
-            m_artwork_bitmap = std::move(new_bitmap);
-            m_artwork_loaded = true;
-            m_current_artwork_source = "Main component";
+        // Only proceed if bitmap has valid dimensions and depth
+        if (bmp_info.bmWidth > 0 && bmp_info.bmHeight > 0 && 
+            bmp_info.bmBitsPixel >= 1 && bmp_info.bmBitsPixel <= 32) {
             
-            // Resize to fit window
-            resize_artwork_to_fit();
-            
-            return true;
+            // Create compatible DC and copy bitmap data safely
+            HDC screen_dc = GetDC(NULL);
+            if (screen_dc) {
+                HDC mem_dc = CreateCompatibleDC(screen_dc);
+                if (mem_dc) {
+                    HBITMAP old_bmp = (HBITMAP)SelectObject(mem_dc, source_bitmap);
+                    
+                    // Create new 24-bit compatible bitmap to avoid format issues
+                    BITMAPINFO bmi = {};
+                    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                    bmi.bmiHeader.biWidth = bmp_info.bmWidth;
+                    bmi.bmiHeader.biHeight = -bmp_info.bmHeight; // Top-down DIB
+                    bmi.bmiHeader.biPlanes = 1;
+                    bmi.bmiHeader.biBitCount = 24; // Force 24-bit for compatibility
+                    bmi.bmiHeader.biCompression = BI_RGB;
+                    
+                    void* pixel_data = nullptr;
+                    HBITMAP compatible_bitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &pixel_data, NULL, 0);
+                    if (compatible_bitmap && pixel_data) {
+                        HDC compatible_dc = CreateCompatibleDC(screen_dc);
+                        if (compatible_dc) {
+                            HBITMAP old_compatible_bmp = (HBITMAP)SelectObject(compatible_dc, compatible_bitmap);
+                            
+                            // Copy original bitmap to compatible format
+                            if (BitBlt(compatible_dc, 0, 0, bmp_info.bmWidth, bmp_info.bmHeight, mem_dc, 0, 0, SRCCOPY)) {
+                                // Now safely convert to GDI+ bitmap
+                                auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(compatible_bitmap, nullptr);
+                                if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
+                                    m_artwork_bitmap = std::move(new_bitmap);
+                                    m_artwork_loaded = true;
+                                    m_current_artwork_source = "Main component";
+                                    
+                                    // Resize to fit window
+                                    resize_artwork_to_fit();
+                                    
+                                    // Clean up and return success
+                                    SelectObject(compatible_dc, old_compatible_bmp);
+                                    DeleteDC(compatible_dc);
+                                    DeleteObject(compatible_bitmap);
+                                    SelectObject(mem_dc, old_bmp);
+                                    DeleteDC(mem_dc);
+                                    ReleaseDC(NULL, screen_dc);
+                                    
+                                    return true;
+                                }
+                            }
+                            
+                            SelectObject(compatible_dc, old_compatible_bmp);
+                            DeleteDC(compatible_dc);
+                        }
+                        DeleteObject(compatible_bitmap);
+                    }
+                    
+                    SelectObject(mem_dc, old_bmp);
+                    DeleteDC(mem_dc);
+                }
+                ReleaseDC(NULL, screen_dc);
+            }
         }
     } catch (...) {
+        // Silently handle any GDI+/bitmap conversion errors
     }
     
     return false;
@@ -1959,6 +2072,47 @@ bool CUIArtworkPanel::is_safe_internet_stream(metadb_handle_ptr track) {
     }
     
     return true; // This appears to be an internet stream
+}
+
+bool CUIArtworkPanel::is_metadata_valid_for_search(const char* artist, const char* title) {
+    // Convert to strings for easier manipulation
+    std::string artist_str = artist ? artist : "";
+    std::string title_str = title ? title : "";
+    
+    // Rule 1: Must have a title - no search without title
+    if (title_str.empty()) {
+        return false;
+    }
+    
+    // Rule 2: Block common invalid patterns
+    if (title_str == "?" || artist_str == "?") {
+        return false;
+    }
+    
+    // Rule 3: Block "? - ?" pattern
+    if ((artist_str == "?" && title_str == "?") || 
+        title_str == "? - ?" || artist_str == "? - ?") {
+        return false;
+    }
+    
+    // Rule 4: Block "adbreak" (advertisement breaks)
+    if (title_str.find("adbreak") != std::string::npos || 
+        artist_str.find("adbreak") != std::string::npos) {
+        return false;
+    }
+    
+    // Rule 5: Block "Unknown" patterns
+    if (title_str == "Unknown Track" || artist_str == "Unknown Artist" ||
+        title_str == "Unknown" || artist_str == "Unknown") {
+        return false;
+    }
+    
+    // Rule 6: Block very short or suspicious titles
+    if (title_str.length() < 2) {
+        return false;
+    }
+    
+    return true;
 }
 
 #endif // COLUMNS_UI_AVAILABLE
