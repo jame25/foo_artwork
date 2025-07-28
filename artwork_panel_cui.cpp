@@ -1096,9 +1096,8 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                 }
                 return;
             } else {
-                // For local files, proceed with immediate search
-                extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
-                trigger_main_component_search_with_metadata(artist, title);
+                // For local files, do NOT trigger API searches - local artwork will be handled elsewhere
+                // API searches should only occur for internet streams
             }
         }
     }
@@ -1891,6 +1890,12 @@ void CUIArtworkPanel::search_artwork_for_track(metadb_handle_ptr track) {
         return;
     }
     
+    // Only search for internet streams, never for local files
+    if (!is_safe_internet_stream(track)) {
+        g_artwork_loading = false;
+        return;
+    }
+    
     try {
         
         // Use the external trigger function which will be updated to use priority search
@@ -1902,6 +1907,8 @@ void CUIArtworkPanel::search_artwork_for_track(metadb_handle_ptr track) {
 }
 
 void CUIArtworkPanel::search_artwork_with_metadata(const std::string& artist, const std::string& title) {
+    // WARNING: This function should only be called for internet streams, never for local files
+    // Local files should never trigger API searches
     try {
         
         // Use the external trigger function which will be updated to use priority search
