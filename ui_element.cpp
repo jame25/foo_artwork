@@ -24,6 +24,7 @@ extern HBITMAP load_generic_noart_logo(metadb_handle_ptr track);
 // External functions for triggering main component search (same as CUI)
 extern void trigger_main_component_search(metadb_handle_ptr track);
 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
+extern void trigger_main_component_local_search(metadb_handle_ptr track);
 
 // Forward declarations for the event system (matching sdk_main.cpp)
 enum class ArtworkEventType {
@@ -422,7 +423,9 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
             // This gives metadata time to arrive via on_dynamic_info_track()
             SetTimer(100, 3000); // Timer ID 100, 3 second timeout
         } else {
-            // For local files, start search immediately
+            // For local files, use local search first (like CUI)
+            trigger_main_component_local_search(track);
+            // Then start the regular search which will check for existing artwork
             start_artwork_search();
         }
     }
