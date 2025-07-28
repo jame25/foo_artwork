@@ -169,9 +169,7 @@ async_io_manager::thread_pool::thread_pool(size_t threads) : stop(false) {
                 } catch (const std::exception& e) {
                     pfc::string8 error_msg = "foo_artwork: Thread pool task exception: ";
                     error_msg << e.what();
-                    console::print(error_msg);
                 } catch (...) {
-                    console::print("foo_artwork: Thread pool task unknown exception");
                 }
             }
         });
@@ -200,7 +198,6 @@ void async_io_manager::thread_pool::shutdown() {
 void async_io_manager::setup_completion_port() {
     completion_port_ = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
     if (!completion_port_) {
-        console::print("foo_artwork: Failed to create I/O completion port");
         return;
     }
     
@@ -645,9 +642,7 @@ LRESULT CALLBACK async_io_manager::main_thread_dispatcher::window_proc(HWND hwnd
             } catch (const std::exception& e) {
                 pfc::string8 error_msg = "foo_artwork: Main thread callback exception: ";
                 error_msg << e.what();
-                console::print(error_msg);
             } catch (...) {
-                console::print("foo_artwork: Main thread callback unknown exception");
             }
             callbacks.pop();
         }
