@@ -106,12 +106,17 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
 }
 
 void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
+    pfc::string8 debug_msg = "foo_artwork: [DEBUG] Checking cache for key: ";
+    debug_msg << cache_key;
+    console::print(debug_msg);
     async_io_manager::instance().cache_get_async(cache_key, 
         [cache_key, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             if (success && data.get_size() > 0) {
+                console::print("foo_artwork: [DEBUG] Cache hit, returning cached result");
                 // Cache hit - validate and return
                 validate_and_complete_result(data, callback);
             } else {
+                console::print("foo_artwork: [DEBUG] Cache miss, proceeding to local search");
                 // Cache miss - continue to local search
                 pfc::string8 file_path = track->get_path();
                 search_local_async(file_path, cache_key, track, callback);
@@ -138,8 +143,28 @@ void artwork_manager::search_apis_async_metadata(const pfc::string8& artist, con
 }
 
 void artwork_manager::search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
-    // Skip local search for non-local files
-    if (file_path.is_empty() || pfc::string_find_first(file_path, "://", 1) != pfc_infinite) {
+    pfc::string8 debug_msg = "foo_artwork: [DEBUG] search_local_async called with path: ";
+    debug_msg << file_path;
+    console::print(debug_msg);
+    
+    // Check if this is actually a local file (including file:// URLs)
+    bool is_local_file = true;
+    if (file_path.is_empty()) {
+        is_local_file = false;
+    } else {
+        // Check for internet protocols, but exclude file:// which is local
+        t_size protocol_pos = pfc::string_find_first(file_path, "://", 1);
+        if (protocol_pos != pfc_infinite) {
+            // Has a protocol - check if it's file://
+            if (pfc::string_find_first(file_path, "file://", 0) != 0) {
+                // Not file:// protocol, so it's an internet stream
+                is_local_file = false;
+            }
+        }
+    }
+    
+    if (!is_local_file) {
+        console::print("foo_artwork: [DEBUG] Not a local file, skipping to API search");
         // Not a local file - skip to API search
         metadb_info_container::ptr info_container = track->get_info_ref();
         const file_info* info = &info_container->info();
@@ -148,6 +173,8 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
         search_apis_async(artist, track_name, cache_key, callback);
         return;
     }
+    
+    console::print("foo_artwork: [DEBUG] Local file detected, searching for local artwork");
     
     find_local_artwork_async(file_path, [cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
@@ -781,6 +808,11 @@ pfc::string8 artwork_manager::detect_mime_type(const t_uint8* data, size_t size)
 
 pfc::string8 artwork_manager::get_file_directory(const char* file_path) {
     pfc::string8 directory = file_path;
+    
+    // Remove file:// prefix if present
+    if (directory.find_first("file://") == 0) {
+        directory = directory.get_ptr() + 7; // Remove "file://" by getting substring from position 7
+    }
     
     // Find last backslash or forward slash
     t_size pos = directory.find_last('\\');
