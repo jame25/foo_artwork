@@ -27,6 +27,9 @@ extern void trigger_main_component_search(metadb_handle_ptr track);
 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
 extern void trigger_main_component_local_search(metadb_handle_ptr track);
 
+// External function to get main component artwork bitmap (for priority checking)
+extern HBITMAP get_main_component_artwork_bitmap();
+
 // Forward declarations for the event system (matching sdk_main.cpp)
 enum class ArtworkEventType {
     ARTWORK_LOADED,     // New artwork loaded successfully
@@ -160,6 +163,10 @@ private:
     // Metadata validation and cleaning
     bool is_metadata_valid_for_search(const char* artist, const char* title);
     std::string clean_metadata_for_search(const char* metadata);
+    
+    // Local artwork priority checking
+    bool should_prefer_local_artwork();
+    bool load_local_artwork_from_main_component();
 
     ui_element_instance_callback::ptr m_callback;
     
@@ -455,6 +462,14 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             // Keep previous artwork visible until replaced (like CUI)
             // Don't clear artwork here - let new artwork replace it when found
             
+            // PRIORITY CHECK: For local files, prefer local artwork files over API search
+            // This mirrors the same priority protection logic used in Columns UI
+            if (should_prefer_local_artwork()) {
+                if (load_local_artwork_from_main_component()) {
+                    return; // Exit early - local artwork found and loaded, don't do API search
+                }
+            }
+            
             // FIRST: Check for custom station logos if enabled (before API search)
             if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
                 HBITMAP logo_bitmap = load_station_logo(m_current_track);
@@ -496,8 +511,12 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                 // Set timer for stream delay, metadata will be used when timer expires
                 SetTimer(101, cfg_stream_delay * 1000);
             } else {
-                // Use the main component trigger function for proper API fallback (results come via event system)
-                trigger_main_component_search_with_metadata(cleaned_artist, cleaned_track);
+                // Only trigger API searches for internet streams, never for local files
+                if (m_current_track.is_valid() && is_internet_stream(m_current_track)) {
+                    // Use the main component trigger function for proper API fallback (results come via event system)
+                    trigger_main_component_search_with_metadata(cleaned_artist, cleaned_track);
+                }
+                // For local files, do nothing - local artwork will be handled elsewhere
             }
         }
     } catch (...) {
@@ -511,6 +530,14 @@ void artwork_ui_element::start_artwork_search() {
     }
     
     try {
+        // PRIORITY CHECK: For local files, prefer local artwork files over API search
+        // This mirrors the same priority protection logic used in Columns UI
+        if (should_prefer_local_artwork()) {
+            if (load_local_artwork_from_main_component()) {
+                return; // Exit early - local artwork found and loaded, don't do API search
+            }
+        }
+        
         // FIRST: Check for custom station logos if enabled (for fallback case when no metadata)
         if (is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
             HBITMAP logo_bitmap = load_station_logo(m_current_track);
@@ -537,17 +564,21 @@ void artwork_ui_element::start_artwork_search() {
             }
         }
         
-        // Notify event system that artwork loading started
-        ArtworkEventManager::get().notify(ArtworkEvent(
-            ArtworkEventType::ARTWORK_LOADING, 
-            nullptr, 
-            "Artwork search started", 
-            "", 
-            ""
-        ));
-        
-        // Use the main component trigger function for proper API fallback (results come via event system)
-        trigger_main_component_search(m_current_track);
+        // Only trigger API searches for internet streams, never for local files
+        if (is_internet_stream(m_current_track)) {
+            // Notify event system that artwork loading started
+            ArtworkEventManager::get().notify(ArtworkEvent(
+                ArtworkEventType::ARTWORK_LOADING, 
+                nullptr, 
+                "Artwork search started", 
+                "", 
+                ""
+            ));
+            
+            // Use the main component trigger function for proper API fallback (results come via event system)
+            trigger_main_component_search(m_current_track);
+        }
+        // For local files, do nothing - local artwork will be handled elsewhere
     } catch (const std::exception& e) {
         // Handle any initialization errors silently
         m_artwork_loading = false;
@@ -1003,6 +1034,11 @@ bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
 }
 
 void artwork_ui_element::start_delayed_search() {
+    // Only search for internet streams, never for local files
+    if (!m_current_track.is_valid() || !is_internet_stream(m_current_track)) {
+        return;
+    }
+    
     // Check if we have delayed metadata to use
     if (m_has_delayed_metadata && !m_delayed_title.empty()) {
         // Use the main component trigger function for proper API fallback (results come via event system)
@@ -1096,6 +1132,13 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
     switch (event.type) {
         case ArtworkEventType::ARTWORK_LOADED:
             if (event.bitmap) {
+                // PRIORITY CHECK: Don't let API results override local artwork 
+                // (unless the source is explicitly "Local file")
+                if (event.source != "Local file" && event.source != "Cache" && should_prefer_local_artwork()) {
+                    // Local artwork has priority - don't replace it with API results
+                    return;
+                }
+                
                 m_artwork_loading = false;
                 
                 // Convert HBITMAP directly to GDI+ Image (like the existing custom logo loading)
@@ -1181,6 +1224,45 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
         case ArtworkEventType::ARTWORK_CLEARED:
             break;
     }
+}
+
+// Local artwork priority checking functions
+bool artwork_ui_element::should_prefer_local_artwork() {
+    if (!m_current_track.is_valid()) return false;
+    
+    // Only check for local artwork if this is a local file
+    if (is_internet_stream(m_current_track)) return false;
+    
+    // Check if main component already found local artwork
+    HBITMAP main_bitmap = get_main_component_artwork_bitmap();
+    return (main_bitmap != NULL);
+}
+
+bool artwork_ui_element::load_local_artwork_from_main_component() {
+    HBITMAP main_bitmap = get_main_component_artwork_bitmap();
+    if (!main_bitmap) return false;
+    
+    // Convert HBITMAP to GDI+ Image for DUI display
+    cleanup_gdiplus_image();
+    
+    try {
+        m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(main_bitmap, NULL);
+        
+        if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+            m_artwork_loading = false;
+            m_artwork_source = "Local file";
+            
+            // No OSD for local files - they should load silently
+            Invalidate(); // Trigger repaint
+            return true;
+        } else {
+            cleanup_gdiplus_image();
+        }
+    } catch (...) {
+        cleanup_gdiplus_image();
+    }
+    
+    return false;
 }
 
 // Minimal working UI element implementation
