@@ -200,17 +200,12 @@ private:
         playback_callback_impl(artwork_ui_element* parent) : m_parent(parent) {}
         
         void on_playback_new_track(metadb_handle_ptr p_track) override {
-            console::print("foo_artwork: [DUI_DEBUG] *** PLAYBACK CALLBACK FIRED *** on_playback_new_track");
             if (m_parent) {
-                console::print("foo_artwork: [DUI_DEBUG] Calling parent->on_playback_new_track");
                 m_parent->on_playback_new_track(p_track);
-            } else {
-                console::print("foo_artwork: [DUI_DEBUG] ERROR: No parent set for playback callback");
             }
         }
         
         void on_playback_stop(play_control::t_stop_reason p_reason) override {
-            console::print("foo_artwork: [DUI_DEBUG] *** PLAYBACK CALLBACK FIRED *** on_playback_stop");
             // Only clear artwork if the preference is enabled (like CUI)
             if (m_parent && cfg_clear_panel_when_not_playing) {
                 m_parent->clear_artwork();
@@ -223,10 +218,8 @@ private:
         void on_playback_pause(bool p_state) override {}
         void on_playback_edited(metadb_handle_ptr p_track) override {}
         void on_playback_dynamic_info(const file_info& p_info) override {
-            console::print("foo_artwork: [DUI_DEBUG] *** PLAYBACK CALLBACK FIRED *** on_playback_dynamic_info");
         }
         void on_playback_dynamic_info_track(const file_info& p_info) override {
-            console::print("foo_artwork: [DUI_DEBUG] *** PLAYBACK CALLBACK FIRED *** on_playback_dynamic_info_track");
             if (m_parent) m_parent->on_dynamic_info_track(p_info);
         }
         void on_playback_time(double p_time) override {}
@@ -247,17 +240,13 @@ artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_in
       m_show_osd(true), m_osd_start_time(0), m_osd_slide_offset(OSD_SLIDE_DISTANCE), 
       m_osd_timer_id(0), m_osd_visible(false), m_has_delayed_metadata(false) {
     
-    console::print("foo_artwork: *** DUI ARTWORK PANEL CREATED *** - If you see this message, the DUI component is working");
-    console::print("foo_artwork: DUI artwork panel constructor called");
     
     // Initialize GDI+
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     Gdiplus::GdiplusStartup(&m_gdiplus_token, &gdiplusStartupInput, NULL);
     
     // Subscribe to artwork events for proper API fallback
-    console::print("foo_artwork: [DUI_DEBUG] Subscribing to artwork events for API fallback");
     subscribe_to_artwork_events(this);
-    console::print("foo_artwork: [DUI_DEBUG] Successfully subscribed to artwork events");
     
     SetRect(&m_client_rect, 0, 0, 0, 0);
 }
@@ -274,29 +263,21 @@ artwork_ui_element::~artwork_ui_element() {
 }
 
 void artwork_ui_element::initialize_window(HWND parent) {
-    console::print("foo_artwork: UI element initializing window");
-    
     Create(parent, NULL, NULL, WS_CHILD | WS_VISIBLE);
     
     // Register for playback callbacks including dynamic info
     m_playback_callback.set_parent(this);
-    console::print("foo_artwork: [DUI_DEBUG] About to register playback callbacks");
     static_api_ptr_t<play_callback_manager>()->register_callback(&m_playback_callback, 
                                                                  play_callback::flag_on_playback_new_track | 
                                                                  play_callback::flag_on_playback_stop |
                                                                  play_callback::flag_on_playback_dynamic_info_track, 
                                                                  false);
     
-    console::print("foo_artwork: [DUI_DEBUG] UI element registered for playback callbacks successfully");
-    
     // Load artwork for currently playing track
     static_api_ptr_t<playback_control> pc;
     metadb_handle_ptr track;
     if (pc->get_now_playing(track)) {
-        console::print("foo_artwork: Found currently playing track, loading artwork");
         on_playback_new_track(track);
-    } else {
-        console::print("foo_artwork: No currently playing track");
     }
 }
 
@@ -313,7 +294,6 @@ void artwork_ui_element::shutdown() {
 void artwork_ui_element::notify(const GUID& p_what, t_size p_param1, const void* p_param2, t_size p_param2size) {
     // Handle color/theme change notifications
     if (p_what == ui_color_background || p_what == ui_color_darkmode) {
-        console::print("foo_artwork: Theme color changed, refreshing display");
         if (IsWindow()) {
             Invalidate();
         }
@@ -386,17 +366,12 @@ LRESULT artwork_ui_element::OnContextMenu(UINT uMsg, WPARAM wParam, LPARAM lPara
 }
 
 LRESULT artwork_ui_element::OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
-    console::print("foo_artwork: [DUI_DEBUG] OnArtworkLoaded message handler called");
-    
     // Safely handle artwork loading completion on UI thread
     bHandled = TRUE;
     
     std::unique_ptr<artwork_manager::artwork_result> result(reinterpret_cast<artwork_manager::artwork_result*>(lParam));
     if (result) {
-        console::print("foo_artwork: [DUI_DEBUG] Calling on_artwork_loaded from message handler");
         on_artwork_loaded(*result);
-    } else {
-        console::print("foo_artwork: [DUI_DEBUG] No result in message handler");
     }
     
     return 0;
@@ -411,14 +386,12 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
     } else if (wParam == 100) {
         // Metadata arrival timer - no metadata received within grace period, start fallback search (like CUI)
         KillTimer(100);
-        console::print("foo_artwork: Metadata arrival timeout, starting fallback artwork search");
         start_artwork_search();
         bHandled = TRUE;
         return 0;
     } else if (wParam == 101) {
         // Timer for delayed artwork search on radio streams (stream delay)
         KillTimer(101);
-        console::print("foo_artwork: Stream delay timer expired, starting delayed artwork search");
         start_delayed_search();
         bHandled = TRUE;
         return 0;
@@ -428,9 +401,6 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
 }
 
 void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
-    console::print("foo_artwork: [DUI_DEBUG] *** on_playback_new_track called in DUI component ***");
-    console::print("foo_artwork: on_playback_new_track called");
-    
     m_current_track = track;
     m_artwork_loading = true;
     
@@ -444,8 +414,6 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
     
     if (track.is_valid()) {
         if (is_internet_stream(track)) {
-            console::print("foo_artwork: Internet stream detected, waiting for metadata");
-            
             // Kill any existing timers
             KillTimer(100); // Metadata arrival timer
             KillTimer(101); // Stream delay timer
@@ -455,7 +423,6 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
             SetTimer(100, 3000); // Timer ID 100, 3 second timeout
         } else {
             // For local files, start search immediately
-            console::print("foo_artwork: Local file detected, starting immediate search");
             start_artwork_search();
         }
     }
@@ -463,8 +430,6 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
 
 void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
     try {
-        console::print("foo_artwork: on_dynamic_info_track called - new metadata available");
-        
         // Get artist and track from the updated info safely
         const char* artist_ptr = p_info.meta_get("ARTIST", 0);
         const char* track_ptr = p_info.meta_get("TITLE", 0);
@@ -472,32 +437,14 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         pfc::string8 artist = artist_ptr ? artist_ptr : "";
         pfc::string8 track = track_ptr ? track_ptr : "";
         
-        pfc::string8 debug_msg = "foo_artwork: New metadata - Artist: '";
-        debug_msg << artist << "', Track: '" << track << "'";
-        console::print(debug_msg);
-        
         // Clean metadata before validation
         std::string cleaned_artist = clean_metadata_for_search(artist.c_str());
         std::string cleaned_track = clean_metadata_for_search(track.c_str());
-        
-        // Debug: Show cleaned metadata
-        if (cleaned_artist != artist.c_str()) {
-            pfc::string8 clean_msg = "foo_artwork: Cleaned artist - Original: '";
-            clean_msg << artist.c_str() << "', Cleaned: '" << cleaned_artist.c_str() << "'";
-            console::print(clean_msg);
-        }
-        if (cleaned_track != track.c_str()) {
-            pfc::string8 clean_msg = "foo_artwork: Cleaned track title - Original: '";
-            clean_msg << track.c_str() << "', Cleaned: '" << cleaned_track.c_str() << "'";
-            console::print(clean_msg);
-        }
         
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = is_metadata_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
         
         if (is_valid_metadata) {
-            console::print("foo_artwork: Got real metadata from radio stream, checking if delay should be applied");
-            
             // Cancel metadata arrival timer since we got valid metadata (like CUI)
             KillTimer(100);
             
@@ -506,11 +453,8 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             
             // FIRST: Check for custom station logos if enabled (before API search)
             if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
-                console::print("foo_artwork: Custom station logos enabled, checking for logo first");
-                
                 HBITMAP logo_bitmap = load_station_logo(m_current_track);
                 if (logo_bitmap) {
-                    console::print("foo_artwork: Custom station logo found, using it instead of API search");
                     
                     // Convert HBITMAP to GDI+ Image for DUI display
                     cleanup_gdiplus_image();
@@ -519,7 +463,6 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                         m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
                         
                         if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                            console::print("foo_artwork: Custom station logo loaded successfully");
                             m_artwork_loading = false;
                             m_artwork_source = "Station logo";
                             
@@ -528,30 +471,16 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                             return; // Exit early - don't do API search
                         } else {
                             cleanup_gdiplus_image();
-                            console::print("foo_artwork: Failed to convert custom station logo, falling back to API search");
                         }
                     } catch (...) {
                         cleanup_gdiplus_image();
-                        console::print("foo_artwork: Exception loading custom station logo, falling back to API search");
                     }
-                } else {
-                    console::print("foo_artwork: No custom station logo found, proceeding with API search");
-                }
-            } else {
-                if (!cfg_enable_custom_logos) {
-                    console::print("foo_artwork: Custom station logos disabled, proceeding with API search");
-                } else {
-                    console::print("foo_artwork: Not an internet stream or invalid track, proceeding with API search");
                 }
             }
             
             // If we reach here, no custom logo was found or custom logos are disabled
             // Proceed with API search (with delay if configured)
             if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_stream_delay > 0) {
-                pfc::string8 delay_msg = "foo_artwork: Applying ";
-                delay_msg << pfc::format_int(cfg_stream_delay) << " second delay for metadata search";
-                console::print(delay_msg);
-                
                 // Kill any existing delay timer
                 KillTimer(101);
                 
@@ -563,34 +492,25 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                 // Set timer for stream delay, metadata will be used when timer expires
                 SetTimer(101, cfg_stream_delay * 1000);
             } else {
-                console::print("foo_artwork: No delay needed, starting immediate metadata search");
                 // Use the main component trigger function for proper API fallback (results come via event system)
-                console::print("foo_artwork: [DUI_DEBUG] Calling trigger_main_component_search_with_metadata - results should come via event system");
                 trigger_main_component_search_with_metadata(cleaned_artist, cleaned_track);
             }
         }
     } catch (...) {
-        console::print("foo_artwork: Error in on_dynamic_info_track, ignoring");
+        // Ignore metadata processing errors
     }
 }
 
 void artwork_ui_element::start_artwork_search() {
-    console::print("foo_artwork: [DUI_DEBUG] start_artwork_search() called");
-    
     if (!m_current_track.is_valid()) {
-        console::print("foo_artwork: [DUI_DEBUG] No valid track for artwork search");
         return;
     }
     
     try {
         // FIRST: Check for custom station logos if enabled (for fallback case when no metadata)
         if (is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
-            console::print("foo_artwork: [DUI_DEBUG] Custom station logos enabled, checking for logo first (fallback)");
-            
             HBITMAP logo_bitmap = load_station_logo(m_current_track);
             if (logo_bitmap) {
-                console::print("foo_artwork: [DUI_DEBUG] Custom station logo found, using it instead of API search (fallback)");
-                
                 // Convert HBITMAP to GDI+ Image for DUI display
                 cleanup_gdiplus_image();
                 
@@ -598,7 +518,6 @@ void artwork_ui_element::start_artwork_search() {
                     m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
                     
                     if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                        console::print("foo_artwork: [DUI_DEBUG] Custom station logo loaded successfully (fallback)");
                         m_artwork_loading = false;
                         m_artwork_source = "Station logo";
                         
@@ -607,18 +526,12 @@ void artwork_ui_element::start_artwork_search() {
                         return; // Exit early - don't do API search
                     } else {
                         cleanup_gdiplus_image();
-                        console::print("foo_artwork: [DUI_DEBUG] Failed to convert custom station logo, falling back to API search");
                     }
                 } catch (...) {
                     cleanup_gdiplus_image();
-                    console::print("foo_artwork: [DUI_DEBUG] Exception loading custom station logo, falling back to API search");
                 }
-            } else {
-                console::print("foo_artwork: [DUI_DEBUG] No custom station logo found, proceeding with API search (fallback)");
             }
         }
-        
-        console::print("foo_artwork: [DUI_DEBUG] Using main component trigger for track-based search");
         
         // Notify event system that artwork loading started
         ArtworkEventManager::get().notify(ArtworkEvent(
@@ -634,47 +547,24 @@ void artwork_ui_element::start_artwork_search() {
     } catch (const std::exception& e) {
         // Handle any initialization errors silently
         m_artwork_loading = false;
-        pfc::string8 error_msg = "foo_artwork: Error starting artwork search: ";
-        error_msg << e.what();
-        console::print(error_msg);
     }
 }
 
 void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result& result) {
-    console::print("foo_artwork: [DUI_DEBUG] on_artwork_loaded() called");
-    
     m_artwork_loading = false;
     
-    pfc::string8 result_msg = "foo_artwork: Artwork result - Success: ";
-    result_msg << (result.success ? "YES" : "NO") << ", Data size: " << pfc::format_int(result.data.get_size());
-    if (!result.source.is_empty()) {
-        result_msg << ", Source: " << result.source;
-    }
-    console::print(result_msg);
-    
-    console::print(pfc::string8("foo_artwork: [DUI_DEBUG] Will check custom logos: ") + (result.success ? "NO (artwork found)" : "YES (no artwork)"));
-    
     if (result.success && result.data.get_size() > 0) {
-        console::print("foo_artwork: Loading artwork image from memory");
         if (load_image_from_memory(result.data.get_ptr(), result.data.get_size())) {
-            console::print("foo_artwork: Artwork image loaded successfully, invalidating display");
-            
             // Store artwork source and show OSD for Default UI
             std::string source = result.source.is_empty() ? "Unknown" : result.source.c_str();
             m_artwork_source = source;
             
             // Show OSD animation for Default UI (only for online sources, not local files)
             if (source != "Local file" && !source.empty() && source != "Cache") {
-                pfc::string8 osd_msg = "foo_artwork: Showing OSD for Default UI - artwork from ";
-                osd_msg << source.c_str();
-                console::print(osd_msg);
                 show_osd("Artwork from " + source);
             }
             
             // Also notify event system for CUI panels
-            pfc::string8 notify_msg = "foo_artwork: Notifying event system - artwork loaded from ";
-            notify_msg << source.c_str();
-            console::print(notify_msg);
             ArtworkEventManager::get().notify(ArtworkEvent(
                 ArtworkEventType::ARTWORK_LOADED, 
                 nullptr,  // UI element doesn't have HBITMAP, CUI panel will get its own copy
@@ -685,8 +575,6 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             
             Invalidate();
         } else {
-            console::print("foo_artwork: Failed to load artwork image from memory");
-            
             // Notify event system that artwork loading failed
             ArtworkEventManager::get().notify(ArtworkEvent(
                 ArtworkEventType::ARTWORK_FAILED, 
@@ -697,21 +585,71 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             ));
         }
     } else {
-        console::print("foo_artwork: No artwork found from API search");
-        // Note: Custom station logos are now checked BEFORE API search, so if we reach here
-        // it means no custom logo was found and API search also failed
+        // API search failed - try fallback images (like Columns UI)
+        // This implements the same fallback hierarchy as Columns UI
         
-        // Notify event system that artwork loading failed
-        std::string error_source = result.source.is_empty() ? "Unknown source" : result.source.c_str();
-        ArtworkEventManager::get().notify(ArtworkEvent(
-            ArtworkEventType::ARTWORK_FAILED, 
-            nullptr, 
-            error_source, 
-            "", 
-            ""
-        ));
+        bool fallback_loaded = false;
         
-        Invalidate();
+        // Only try fallback images for internet streams
+        if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
+            // Priority 1: Station-specific fallback with full path (e.g., ice1.somafm.com_indiepop-128-aac-noart.png)
+            if (!fallback_loaded) {
+                HBITMAP noart_bitmap = load_noart_logo(m_current_track);
+                if (noart_bitmap) {
+                    cleanup_gdiplus_image();
+                    try {
+                        m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(noart_bitmap, NULL);
+                        if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                            m_artwork_loading = false;
+                            m_artwork_source = "Station fallback (no artwork)";
+                            fallback_loaded = true;
+                            Invalidate();
+                        } else {
+                            cleanup_gdiplus_image();
+                        }
+                    } catch (...) {
+                        cleanup_gdiplus_image();
+                    }
+                    DeleteObject(noart_bitmap); // Always clean up the source bitmap
+                }
+            }
+            
+            // Priority 2: Generic fallback with URL support (e.g., somafm.com-noart.png or noart.png)
+            if (!fallback_loaded) {
+                HBITMAP generic_bitmap = load_generic_noart_logo(m_current_track);
+                if (generic_bitmap) {
+                    cleanup_gdiplus_image();
+                    try {
+                        m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(generic_bitmap, NULL);
+                        if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                            m_artwork_loading = false;
+                            m_artwork_source = "Generic fallback (no artwork)";
+                            fallback_loaded = true;
+                            Invalidate();
+                        } else {
+                            cleanup_gdiplus_image();
+                        }
+                    } catch (...) {
+                        cleanup_gdiplus_image();
+                    }
+                    DeleteObject(generic_bitmap); // Always clean up the source bitmap
+                }
+            }
+        }
+        
+        if (!fallback_loaded) {
+            // No fallback found - notify event system that artwork loading failed
+            std::string error_source = result.source.is_empty() ? "Unknown source" : result.source.c_str();
+            ArtworkEventManager::get().notify(ArtworkEvent(
+                ArtworkEventType::ARTWORK_FAILED, 
+                nullptr, 
+                error_source, 
+                "", 
+                ""
+            ));
+            
+            Invalidate();
+        }
     }
 }
 
@@ -726,38 +664,16 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
     // Use proper DUI callback system for background color
     COLORREF bg_color = GetSysColor(COLOR_WINDOW); // Default fallback
     
-    // Debug the callback state
-    pfc::string8 callback_debug;
-    callback_debug << "foo_artwork: Callback valid=" << (m_callback.is_valid() ? "yes" : "no");
-    console::print(callback_debug.c_str());
     
     if (m_callback.is_valid()) {
-        // Test if callback works at all by trying text color first
-        t_ui_color test_color;
-        bool text_works = m_callback->query_color(ui_color_text, test_color);
-        bool bg_works = m_callback->query_color(ui_color_background, test_color);
-        
-        pfc::string8 test_debug;
-        test_debug << "foo_artwork: Text color query=" << (text_works ? "success" : "fail") << ", bg query=" << (bg_works ? "success" : "fail");
-        console::print(test_debug.c_str());
-        
         // Use the DUI callback to get the proper background color
         t_ui_color callback_color;
         if (m_callback->query_color(ui_color_background, callback_color)) {
             bg_color = callback_color;
-            console::print("foo_artwork: Got DUI background color via query_color");
         } else {
             // Try the standard color query
             bg_color = m_callback->query_std_color(ui_color_background);
-            console::print("foo_artwork: Got DUI background color via query_std_color");
         }
-        
-        // Debug output
-        pfc::string8 debug;
-        debug << "foo_artwork: DUI background RGB(" << GetRValue(bg_color) << "," << GetGValue(bg_color) << "," << GetBValue(bg_color) << ")";
-        console::print(debug.c_str());
-    } else {
-        console::print("foo_artwork: No valid DUI callback, using system color");
     }
     
     HBRUSH bg_brush = CreateSolidBrush(bg_color);
@@ -765,7 +681,6 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
     DeleteObject(bg_brush);
     
     if (m_artwork_image) {
-        console::print("foo_artwork: Drawing artwork image");
         // Draw artwork
         Gdiplus::Graphics graphics(hdc);
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
@@ -803,11 +718,9 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
         }
     } else if (m_artwork_loading) {
         // Show loading indicator (without text)
-        console::print("foo_artwork: Drawing loading indicator");
         draw_placeholder(hdc, m_client_rect);
     } else {
         // Show placeholder
-        console::print("foo_artwork: Drawing placeholder - no artwork");
         draw_placeholder(hdc, m_client_rect);
     }
 }
@@ -818,15 +731,11 @@ void artwork_ui_element::draw_placeholder(HDC hdc, const RECT& rect) {
 }
 
 bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size) {
-    pfc::string8 load_msg = "foo_artwork: load_image_from_memory called with ";
-    load_msg << pfc::format_int(size) << " bytes";
-    console::print(load_msg);
     cleanup_gdiplus_image();
     
     // Create IStream from memory
     HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, size);
     if (!hGlobal) {
-        console::print("foo_artwork: GlobalAlloc failed");
         return false;
     }
     
@@ -1084,14 +993,8 @@ bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
 }
 
 void artwork_ui_element::start_delayed_search() {
-    console::print("foo_artwork: Stream delay complete, starting artwork search");
-    
     // Check if we have delayed metadata to use
     if (m_has_delayed_metadata && !m_delayed_title.empty()) {
-        pfc::string8 metadata_msg = "foo_artwork: Using delayed metadata - Artist: '";
-        metadata_msg << m_delayed_artist.c_str() << "', Title: '" << m_delayed_title.c_str() << "'";
-        console::print(metadata_msg);
-        
         // Use the main component trigger function for proper API fallback (results come via event system)
         trigger_main_component_search_with_metadata(m_delayed_artist, m_delayed_title);
         
@@ -1101,7 +1004,6 @@ void artwork_ui_element::start_delayed_search() {
         m_delayed_title.clear();
     } else {
         // No delayed metadata, use regular track-based search
-        console::print("foo_artwork: No delayed metadata available, using track-based search");
         start_artwork_search();
     }
 }
@@ -1113,46 +1015,36 @@ bool artwork_ui_element::is_metadata_valid_for_search(const char* artist, const 
     
     // Rule 1: Must have a title - no search without title
     if (title_str.empty()) {
-        console::print("foo_artwork: Metadata validation failed - no title");
         return false;
     }
     
     // Rule 2: Block common invalid patterns
     if (title_str == "?" || artist_str == "?") {
-        console::print("foo_artwork: Metadata validation failed - contains '?'");
         return false;
     }
     
     // Rule 3: Block "? - ?" pattern
     if ((artist_str == "?" && title_str == "?") || 
         title_str == "? - ?" || artist_str == "? - ?") {
-        console::print("foo_artwork: Metadata validation failed - '? - ?' pattern");
         return false;
     }
     
     // Rule 4: Block "adbreak" (advertisement breaks)
     if (title_str.find("adbreak") != std::string::npos || 
         artist_str.find("adbreak") != std::string::npos) {
-        console::print("foo_artwork: Metadata validation failed - contains 'adbreak'");
         return false;
     }
     
     // Rule 5: Block "Unknown" patterns
     if (title_str == "Unknown Track" || artist_str == "Unknown Artist" ||
         title_str == "Unknown" || artist_str == "Unknown") {
-        console::print("foo_artwork: Metadata validation failed - contains 'Unknown'");
         return false;
     }
     
     // Rule 6: Block very short or suspicious titles
     if (title_str.length() < 2) {
-        console::print("foo_artwork: Metadata validation failed - title too short");
         return false;
     }
-    
-    pfc::string8 valid_msg = "foo_artwork: Metadata validation passed - Artist: '";
-    valid_msg << artist_str.c_str() << "', Title: '" << title_str.c_str() << "'";
-    console::print(valid_msg);
     return true;
 }
 
@@ -1191,13 +1083,9 @@ std::string artwork_ui_element::clean_metadata_for_search(const char* metadata) 
 void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
     if (!IsWindow()) return;
     
-    console::print("foo_artwork: [DUI_DEBUG] Received artwork event");
-    
     switch (event.type) {
         case ArtworkEventType::ARTWORK_LOADED:
             if (event.bitmap) {
-                console::print("foo_artwork: [DUI_DEBUG] Artwork loaded event - converting HBITMAP to GDI+");
-                
                 m_artwork_loading = false;
                 
                 // Convert HBITMAP directly to GDI+ Image (like the existing custom logo loading)
@@ -1205,8 +1093,6 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                 try {
                     m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(event.bitmap, NULL);
                     if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                        console::print("foo_artwork: [DUI_DEBUG] Successfully converted HBITMAP to GDI+ for display");
-                        
                         // Show OSD for online sources (not local files)
                         if (!event.source.empty() && event.source != "Local file" && event.source != "Cache") {
                             show_osd("Artwork from " + event.source);
@@ -1214,28 +1100,75 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                         
                         Invalidate(); // Trigger repaint
                     } else {
-                        console::print("foo_artwork: [DUI_DEBUG] Failed to convert HBITMAP to GDI+");
                         cleanup_gdiplus_image();
                     }
                 } catch (...) {
-                    console::print("foo_artwork: [DUI_DEBUG] Exception converting HBITMAP to GDI+");
                     cleanup_gdiplus_image();
                 }
             }
             break;
             
         case ArtworkEventType::ARTWORK_LOADING:
-            console::print("foo_artwork: [DUI_DEBUG] Artwork loading started");
             m_artwork_loading = true;
             break;
             
         case ArtworkEventType::ARTWORK_FAILED:
-            console::print("foo_artwork: [DUI_DEBUG] Artwork loading failed");
-            m_artwork_loading = false;
-            break;
+            {
+                m_artwork_loading = false;
+                
+                // Try fallback images when API search fails (same logic as on_artwork_loaded)
+                bool fallback_loaded = false;
+                
+                // Only try fallback images for internet streams
+                if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
+                    // Priority 1: Station-specific fallback with full path (e.g., ice1.somafm.com_indiepop-128-aac-noart.png)
+                    if (!fallback_loaded) {
+                        HBITMAP noart_bitmap = load_noart_logo(m_current_track);
+                        if (noart_bitmap) {
+                            cleanup_gdiplus_image();
+                            try {
+                                m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(noart_bitmap, NULL);
+                                if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                                    m_artwork_loading = false;
+                                    m_artwork_source = "Station fallback (no artwork)";
+                                    fallback_loaded = true;
+                                    Invalidate();
+                                } else {
+                                    cleanup_gdiplus_image();
+                                }
+                            } catch (...) {
+                                cleanup_gdiplus_image();
+                            }
+                            DeleteObject(noart_bitmap); // Always clean up the source bitmap
+                        }
+                    }
+                    
+                    // Priority 2: Generic fallback with URL support (e.g., somafm.com-noart.png or noart.png)
+                    if (!fallback_loaded) {
+                        HBITMAP generic_bitmap = load_generic_noart_logo(m_current_track);
+                        if (generic_bitmap) {
+                            cleanup_gdiplus_image();
+                            try {
+                                m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(generic_bitmap, NULL);
+                                if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                                    m_artwork_loading = false;
+                                    m_artwork_source = "Generic fallback (no artwork)";
+                                    fallback_loaded = true;
+                                    Invalidate();
+                                } else {
+                                    cleanup_gdiplus_image();
+                                }
+                            } catch (...) {
+                                cleanup_gdiplus_image();
+                            }
+                            DeleteObject(generic_bitmap); // Always clean up the source bitmap
+                        }
+                    }
+                }
+                break;
+            }
             
         case ArtworkEventType::ARTWORK_CLEARED:
-            console::print("foo_artwork: [DUI_DEBUG] Artwork cleared");
             break;
     }
 }
@@ -1245,19 +1178,11 @@ class simple_artwork_element : public ui_element_instance {
 public:
     simple_artwork_element(HWND parent, ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback) 
         : m_callback(callback), m_parent(parent), m_hwnd(NULL) {
-        console::print("foo_artwork: Simple UI element created");
-        
         // Create a simple child window that just shows text
         m_hwnd = CreateWindowEx(0, L"STATIC", L"Async Artwork System Active", 
                                WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
                                0, 0, 200, 100, parent, NULL, 
                                GetModuleHandle(NULL), NULL);
-        
-        if (m_hwnd) {
-            console::print("foo_artwork: UI element window created successfully");
-        } else {
-            console::print("foo_artwork: Failed to create UI element window");
-        }
     }
     
     ~simple_artwork_element() {
@@ -1287,11 +1212,9 @@ public:
     
     void initialize_window(HWND parent) {
         // Already initialized in constructor
-        console::print("foo_artwork: UI element initialized");
     }
     
     void shutdown() {
-        console::print("foo_artwork: UI element shutting down");
         if (m_hwnd && IsWindow(m_hwnd)) {
             DestroyWindow(m_hwnd);
             m_hwnd = NULL;
@@ -1328,15 +1251,11 @@ public:
     }
     
     ui_element_instance::ptr instantiate(HWND parent, ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback) {
-        console::print("foo_artwork: *** DUI FACTORY CALLED *** - User has DUI artwork panel in layout");
-        console::print("foo_artwork: Creating artwork UI element instance");
         try {
             artwork_ui_element* element = new artwork_ui_element(cfg, callback);
             element->initialize_window(parent);
-            console::print("foo_artwork: *** DUI ELEMENT SUCCESSFULLY CREATED ***");
             return element;
         } catch (...) {
-            console::print("foo_artwork: Failed to create artwork UI element");
             return nullptr;
         }
     }
@@ -1358,19 +1277,13 @@ static service_factory_single_t<ui_element_artwork_factory> g_ui_element_artwork
 
 // Simple test of the async artwork system - this can be called programmatically
 void test_async_artwork_system() {
-    console::print("foo_artwork: Testing async artwork system...");
-    
     // This would be called by existing UI components or other parts of the system
     // artwork_manager::get_artwork_async(track, callback);
 }
 
-// Debug: Verify UI element factory registration
 static class ui_element_debug {
 public:
     ui_element_debug() {
-        console::print("foo_artwork: *** DLL LOADED *** ui_element.cpp code is active");
-        console::print("foo_artwork: *** DUI COMPONENT AVAILABLE *** Factory registered");
-        console::print("foo_artwork: Async artwork system ready - UI element enabled");
         test_async_artwork_system();
     }
 } g_ui_element_debug;
