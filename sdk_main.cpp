@@ -8,7 +8,6 @@
 
 // CUI support is now defined in stdafx.h
 
-// Always show debug info about CUI
 static class debug_init {
 public:
     debug_init() {
@@ -25,7 +24,6 @@ public:
     // CUI panel will register itself via static initialization in artwork_panel_cui.cpp
     #include "artwork_panel_cui.h"
     
-    // Debug: Add a startup message
     static class cui_debug_init {
     public:
         cui_debug_init() {
@@ -158,18 +156,13 @@ public:
     
     void notify(const ArtworkEvent& event) {
         std::lock_guard<std::mutex> lock(m_listeners_mutex);
-        console::print(pfc::string8("foo_artwork: [EVENT_DEBUG] Notifying ") + pfc::format_int(m_listeners.size()) + " listeners");
         for (auto* listener : m_listeners) {
             try {
-                console::print("foo_artwork: [EVENT_DEBUG] Calling listener->on_artwork_event()");
                 listener->on_artwork_event(event);
-                console::print("foo_artwork: [EVENT_DEBUG] Listener callback completed successfully");
             } catch (...) {
-                console::print("foo_artwork: [EVENT_DEBUG] Exception in listener callback, continuing with next listener");
                 // Continue notifying other listeners even if one fails
             }
         }
-        console::print("foo_artwork: [EVENT_DEBUG] All listeners notified");
     }
 };
 
@@ -605,7 +598,7 @@ HBITMAP load_station_logo(metadb_handle_ptr track) {
         
         pfc::string8 logos_dir;
         char appdata_buffer[MAX_PATH];
-        HRESULT hr;
+        HRESULT hr = E_FAIL; // Initialize to prevent compiler warning
         
         // Use custom folder path if specified, otherwise use default
         if (!cfg_logos_folder.is_empty()) {
@@ -684,7 +677,7 @@ HBITMAP load_station_logo(const pfc::string8& domain) {
     try {
         pfc::string8 logos_dir;
         char appdata_buffer[MAX_PATH];
-        HRESULT hr;
+        HRESULT hr = E_FAIL; // Initialize to prevent compiler warning
         
         // Use custom folder path if specified, otherwise use default
         if (!cfg_logos_folder.is_empty()) {
@@ -5385,7 +5378,6 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
         // Store current position for fallback
         m_current_priority_position = current_position;
         
-        // Debug: Update status to show which API is being tried
         pfc::string8 debug_status = "Searching ";
         // Removed status text to prevent white screen during API searches
         
@@ -5798,7 +5790,6 @@ void artwork_ui_element::paint_osd(HDC hdc, const RECT& client_rect) {
     RestoreDC(hdc, saved_dc);
 }
 
-// Debug: UI element registration verification
 static class ui_element_debug {
 public:
     ui_element_debug() {
@@ -5813,7 +5804,6 @@ static play_callback_static_factory_t<artwork_play_callback> g_play_callback_fac
 // DISABLED: Old synchronous UI element causing freezes - replaced with async system
 static service_factory_single_t<artwork_ui_element_factory> g_ui_element_factory;
 
-// Debug: Post-registration verification
 static class ui_element_post_debug {
 public:
     ui_element_post_debug() {
@@ -7099,7 +7089,6 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
 #endif
             
             // Notify event system that artwork was loaded successfully
-            console::print("foo_artwork: [BRIDGE_DEBUG] Sending ARTWORK_LOADED event to all subscribers");
             ArtworkEventManager::get().notify(ArtworkEvent(
                 ArtworkEventType::ARTWORK_LOADED, 
                 hBitmap, 
@@ -7107,7 +7096,6 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
                 "", 
                 ""
             ));
-            console::print("foo_artwork: [BRIDGE_DEBUG] ARTWORK_LOADED event sent successfully");
 #ifdef _DEBUG
 #endif
             
@@ -7441,8 +7429,6 @@ bool bridge_download_image(const std::string& url, std::vector<BYTE>& data) {
                 
                 success = !data.empty();
                 
-                char debug_msg[256];
-                sprintf_s(debug_msg, "ARTWORK: Bridge download completed - %zu bytes received\n", data.size());
             } else {
             }
         } else {
