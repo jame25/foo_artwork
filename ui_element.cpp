@@ -15,6 +15,7 @@
 extern cfg_int cfg_stream_delay;
 extern cfg_bool cfg_enable_custom_logos;
 extern cfg_bool cfg_clear_panel_when_not_playing;
+extern cfg_bool cfg_show_osd;
 
 // External custom logo loading functions
 extern HBITMAP load_station_logo(metadb_handle_ptr track);
@@ -777,6 +778,12 @@ void artwork_ui_element::cleanup_gdiplus_image() {
 }
 
 void artwork_ui_element::show_osd(const std::string& text) {
+    // Check global preference setting first (like CUI)
+    if (!cfg_show_osd) return;
+    
+    // Then check local panel setting (like CUI)
+    if (!m_show_osd) return;
+    
     // Check if this is a local file OSD call that should be blocked (like CUI)
     if (text.find("Local file") != std::string::npos || 
         text.find("local") != std::string::npos) {
