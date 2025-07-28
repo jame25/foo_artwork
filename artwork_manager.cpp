@@ -40,11 +40,8 @@ void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callbac
     ASSERT_MAIN_THREAD();
     
     if (!initialized_) {
-        console::print("foo_artwork: Initializing artwork manager");
         initialize();
     }
-    
-    console::print("foo_artwork: Starting artwork search pipeline");
     
     try {
         // Start the fully asynchronous pipeline
@@ -61,20 +58,14 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
     ASSERT_MAIN_THREAD();
     
     if (!initialized_) {
-        console::print("foo_artwork: Initializing artwork manager");
         initialize();
     }
-    
-    console::print("foo_artwork: Starting artwork search pipeline with explicit metadata");
     
     try {
         // Use explicit metadata instead of track metadata
         pfc::string8 artist_str = artist ? artist : "Unknown Artist";
         pfc::string8 track_str = track ? track : "Unknown Track";
         
-        pfc::string8 search_msg = "foo_artwork: Searching APIs for artist='";
-        search_msg << artist_str << "', track='" << track_str << "'";
-        console::print(search_msg);
         
         pfc::string8 cache_key = generate_cache_key(artist_str, track_str);
         
@@ -106,17 +97,12 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
 }
 
 void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
-    pfc::string8 debug_msg = "foo_artwork: [DEBUG] Checking cache for key: ";
-    debug_msg << cache_key;
-    console::print(debug_msg);
     async_io_manager::instance().cache_get_async(cache_key, 
         [cache_key, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             if (success && data.get_size() > 0) {
-                console::print("foo_artwork: [DEBUG] Cache hit, returning cached result");
                 // Cache hit - validate and return
                 validate_and_complete_result(data, callback);
             } else {
-                console::print("foo_artwork: [DEBUG] Cache miss, proceeding to local search");
                 // Cache miss - continue to local search
                 pfc::string8 file_path = track->get_path();
                 search_local_async(file_path, cache_key, track, callback);
@@ -143,9 +129,6 @@ void artwork_manager::search_apis_async_metadata(const pfc::string8& artist, con
 }
 
 void artwork_manager::search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
-    pfc::string8 debug_msg = "foo_artwork: [DEBUG] search_local_async called with path: ";
-    debug_msg << file_path;
-    console::print(debug_msg);
     
     // Check if this is actually a local file (including file:// URLs)
     bool is_local_file = true;
@@ -164,7 +147,6 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
     }
     
     if (!is_local_file) {
-        console::print("foo_artwork: [DEBUG] Not a local file, skipping to API search");
         // Not a local file - skip to API search
         metadb_info_container::ptr info_container = track->get_info_ref();
         const file_info* info = &info_container->info();
@@ -174,7 +156,6 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
         return;
     }
     
-    console::print("foo_artwork: [DEBUG] Local file detected, searching for local artwork");
     
     find_local_artwork_async(file_path, [cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
@@ -194,32 +175,24 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 
 void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback) {
     // Try APIs in sequence: iTunes -> Deezer -> Last.fm -> MusicBrainz -> Discogs
-    pfc::string8 debug_msg = "foo_artwork: Searching APIs for artist='";
-    debug_msg << artist << "', track='" << track << "'";
-    console::print(debug_msg);
     
     if (cfg_enable_itunes) {
-        console::print("foo_artwork: Trying iTunes API");
     } else if (cfg_enable_deezer) {
-        console::print("foo_artwork: Skipping iTunes, trying Deezer API");
         search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
                 callback(result);
             } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
-                console::print("foo_artwork: Deezer failed, trying Last.fm API");
                 search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                     if (result.success) {
                         async_io_manager::instance().cache_set_async(cache_key, result.data);
                         callback(result);
                     } else if (cfg_enable_musicbrainz) {
-                        console::print("foo_artwork: Last.fm failed, trying MusicBrainz API");
                         search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                             if (result.success) {
                                 async_io_manager::instance().cache_set_async(cache_key, result.data);
                                 callback(result);
                             } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
-                                console::print("foo_artwork: MusicBrainz failed, trying Discogs API");
                                 search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                                     if (result.success) {
                                         async_io_manager::instance().cache_set_async(cache_key, result.data);
@@ -227,7 +200,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                                     callback(result);
                                 });
                             } else {
-                                console::print("foo_artwork: No more APIs to try");
                                 artwork_result final_result;
                                 final_result.success = false;
                                 final_result.error_message = "No artwork found";
@@ -235,7 +207,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                             }
                         });
                     } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
-                        console::print("foo_artwork: Last.fm failed, MusicBrainz disabled, trying Discogs API");
                         search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                             if (result.success) {
                                 async_io_manager::instance().cache_set_async(cache_key, result.data);
@@ -243,7 +214,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                             callback(result);
                         });
                     } else {
-                        console::print("foo_artwork: No more APIs available");
                         artwork_result final_result;
                         final_result.success = false;
                         final_result.error_message = "No artwork found";
@@ -251,13 +221,11 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                     }
                 });
             } else if (cfg_enable_musicbrainz) {
-                console::print("foo_artwork: Deezer failed, Last.fm disabled, trying MusicBrainz API");
                 search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                     if (result.success) {
                         async_io_manager::instance().cache_set_async(cache_key, result.data);
                         callback(result);
                     } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
-                        console::print("foo_artwork: MusicBrainz failed, trying Discogs API");
                         search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                             if (result.success) {
                                 async_io_manager::instance().cache_set_async(cache_key, result.data);
@@ -265,7 +233,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                             callback(result);
                         });
                     } else {
-                        console::print("foo_artwork: No more APIs to try");
                         artwork_result final_result;
                         final_result.success = false;
                         final_result.error_message = "No artwork found";
@@ -273,7 +240,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                     }
                 });
             } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
-                console::print("foo_artwork: Deezer failed, other APIs disabled, trying Discogs API");
                 search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                     if (result.success) {
                         async_io_manager::instance().cache_set_async(cache_key, result.data);
@@ -281,7 +247,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                     callback(result);
                 });
             } else {
-                console::print("foo_artwork: All APIs disabled or failed");
                 artwork_result final_result;
                 final_result.success = false;
                 final_result.error_message = "No artwork found";
@@ -292,7 +257,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
     }
     
     if (cfg_enable_itunes) {
-        console::print("foo_artwork: Trying iTunes API");
         search_itunes_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
                 // iTunes success - cache and return
@@ -675,16 +639,10 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
     pfc::string8 url = "https://api.deezer.com/search/track?q=";
     url << url_encode(search_query) << "&limit=10";
     
-    pfc::string8 debug_msg = "foo_artwork: Deezer API request: ";
-    debug_msg << url;
-    console::print(debug_msg);
     
     // Make async HTTP request
     async_io_manager::instance().http_get_async(url, [callback](bool success, const pfc::string8& response, const pfc::string8& error) {
         if (!success) {
-            pfc::string8 debug_msg = "foo_artwork: Deezer API request failed: ";
-            debug_msg << error;
-            console::print(debug_msg);
             
             artwork_result result;
             result.success = false;
@@ -694,12 +652,10 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
             return;
         }
         
-        console::print("foo_artwork: Deezer API request successful, parsing JSON");
         
         // Parse JSON response to extract artwork URL
         pfc::string8 artwork_url;
         if (!parse_deezer_json(response, artwork_url)) {
-            console::print("foo_artwork: Failed to parse Deezer JSON response");
             artwork_result result;
             result.success = false;
             result.error_message = "No artwork found in Deezer response";
@@ -905,22 +861,16 @@ bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& 
     // Look for "cover_xl" field in album data
     const char* json_str = json.get_ptr();
     
-    // Debug: log the JSON response to understand its structure
-    pfc::string8 debug_msg = "foo_artwork: Deezer JSON response: ";
-    debug_msg << pfc::string8(json_str, pfc::min_t<size_t>(500, strlen(json_str))); // First 500 chars
-    console::print(debug_msg);
     
     // Look for data array first, then find album within the first result
     const char* data_pos = strstr(json_str, "\"data\":[");
     if (!data_pos) {
-        console::print("foo_artwork: No 'data' array found in Deezer response");
         return false;
     }
     
     // Find first album object within data array
     const char* album_pos = strstr(data_pos, "\"album\":");
     if (!album_pos) {
-        console::print("foo_artwork: No 'album' field found in Deezer response data");
         return false;
     }
     
@@ -939,7 +889,6 @@ bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& 
                     
                     pfc::string8 raw_msg = "foo_artwork: Raw extracted URL: ";
                     raw_msg << artwork_url;
-                    console::print(raw_msg);
                     
                     // Unescape JSON slashes (replace \/ with /)
                     pfc::string8 unescaped_url;
@@ -958,13 +907,11 @@ bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& 
                     
                     pfc::string8 found_msg = "foo_artwork: Found cover_xl URL (unescaped): ";
                     found_msg << artwork_url;
-                    console::print(found_msg);
                     return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
                 }
             }
         }
     } else {
-        console::print("foo_artwork: No 'cover_xl' field found in album section");
     }
     
     // Fallback to cover_big
@@ -997,7 +944,6 @@ bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& 
                     
                     pfc::string8 cover_big_msg = "foo_artwork: Found cover_big URL (unescaped): ";
                     cover_big_msg << artwork_url;
-                    console::print(cover_big_msg);
                     return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
                 }
             }
