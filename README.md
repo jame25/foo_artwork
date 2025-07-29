@@ -271,7 +271,7 @@ The component uses the following priority order for artwork retrieval:
 
 ### Prerequisites
 
-- **Visual Studio 2019 or 2022** with C++ development tools
+- **Visual Studio 2022** with C++ development tools
 - **Platform Toolset v143** (Visual Studio 2022 Build Tools)
 - **Windows 10 SDK** (10.0 or later)
 - **foobar2000 SDK** (included via Columns UI SDK in `columns_ui/` directory)
