@@ -274,49 +274,67 @@ The component uses the following priority order for artwork retrieval:
 - **Visual Studio 2019 or 2022** with C++ development tools
 - **Platform Toolset v143** (Visual Studio 2022 Build Tools)
 - **Windows 10 SDK** (10.0 or later)
-- **foobar2000 SDK** (included in `lib/` directory)
+- **foobar2000 SDK** (included via Columns UI SDK in `columns_ui/` directory)
 
-### Quick Build
+### SDK Structure
 
-Use the provided batch file for easy building:
+This component uses the **Columns UI SDK** which includes the complete foobar2000 SDK. The SDK is located in:
+```
+columns_ui/
+├── foobar2000/
+│   └── SDK/           # Complete foobar2000 SDK
+├── lib/
+│   └── shared-x64.lib # Pre-compiled SDK library
+└── ...
+```
+
+This approach provides:
+- **Dual UI Support**: Both Default UI (DUI) and Columns UI (CUI) compatibility
+- **Complete SDK**: All necessary foobar2000 headers and libraries
+- **64-bit Ready**: Pre-compiled for x64 architecture
+
+### Manual Build (Recommended)
+
+Build using MSBuild command line for precise control:
 
 ```batch
 # Build Release version (recommended)
-build.bat
+msbuild foo_artwork.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /v:minimal
 
 # Build Debug version
-build.bat debug
+msbuild foo_artwork.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:PlatformToolset=v143 /v:minimal
 
-# Clean and build
-build.bat clean release
+# Clean and rebuild
+msbuild foo_artwork.vcxproj /t:Clean,Build /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /v:minimal
 ```
 
-The build script will:
-- Automatically detect Visual Studio 2019/2022 installation
-- Build all required SDK dependencies
-- Generate the `foo_artwork.dll` in the appropriate directory
-- Provide installation instructions upon successful build
+**Command Parameters:**
+- `/p:Configuration=Release` - Build optimized release version
+- `/p:Platform=x64` - Target 64-bit architecture
+- `/p:PlatformToolset=v143` - Use Visual Studio 2022 toolset
+- `/v:minimal` - Minimal build output for cleaner console
 
-### Manual Build Steps
-
-1. Open `foo_artwork.sln` in Visual Studio
-2. Select **Release** configuration and **x64** platform
-3. Build the solution (Ctrl+Shift+B)
-4. The compiled DLL will be in the `Release/` directory
-
-### Build Configuration
+- ### Build Configuration
 
 - **Target Platform**: x64 only (64-bit foobar2000)
 - **Platform Toolset**: v143 (Visual Studio 2022)
 - **C++ Standard**: C++17
 - **Runtime Library**: Multi-threaded (Release) / Multi-threaded Debug (Debug)
+- **UI Compatibility**: Both Default UI and Columns UI supported
 
 ### Dependencies
 
 The component links against:
-- `shared-x64.lib` (foobar2000 SDK for 64-bit)
+- `shared-x64.lib` (foobar2000 SDK for 64-bit, via Columns UI)
 - `wininet.lib` (Windows HTTP API)
 - `gdiplus.lib` (GDI+ graphics)
+- `dwmapi.lib` (Desktop Window Manager API for dark mode support)
+
+### Output
+
+After successful build:
+- **Release DLL**: `Release/foo_artwork.dll`
+- **Debug DLL**: `Debug/foo_artwork.dll`
 
 ## API Implementation Details
 
