@@ -282,7 +282,7 @@ This component uses the **Columns UI SDK** which includes the complete foobar200
 ```
 columns_ui/
 ├── foobar2000/
-│   └── SDK/           # Complete foobar2000 SDK
+│   └── SDK/                  # Complete foobar2000 SDK
 │   └── shared/shared-x64.lib # Pre-compiled SDK library
 └── ...
 ```
