@@ -341,14 +341,6 @@ msbuild foo_artwork.vcxproj /t:Clean,Build /p:Configuration=Release /p:Platform=
 - **Runtime Library**: Multi-threaded (Release) / Multi-threaded Debug (Debug)
 - **UI Compatibility**: Both Default UI and Columns UI supported
 
-### Dependencies
-
-The component links against:
-- `shared-x64.lib` (foobar2000 SDK for 64-bit, via Columns UI)
-- `wininet.lib` (Windows HTTP API)
-- `gdiplus.lib` (GDI+ graphics)
-- `dwmapi.lib` (Desktop Window Manager API for dark mode support)
-
 ### Output
 
 After successful build:
