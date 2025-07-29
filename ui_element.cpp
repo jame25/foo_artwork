@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "artwork_manager.h"
+#include "artwork_viewer_popup.h"
 #include <gdiplus.h>
 #include <atlbase.h>
 #include <atlwin.h>
@@ -80,7 +81,7 @@ public:
     artwork_ui_element(ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback);
     virtual ~artwork_ui_element();
 
-    DECLARE_WND_CLASS_EX(L"foo_artwork_ui_element", 0, NULL);
+    DECLARE_WND_CLASS_EX(L"foo_artwork_ui_element", CS_DBLCLKS, NULL);
 
     BEGIN_MSG_MAP(artwork_ui_element)
         MESSAGE_HANDLER(WM_CREATE, OnCreate)
@@ -89,6 +90,7 @@ public:
         MESSAGE_HANDLER(WM_SIZE, OnSize)
         MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
         MESSAGE_HANDLER(WM_CONTEXTMENU, OnContextMenu)
+        MESSAGE_HANDLER(WM_LBUTTONDBLCLK, OnLButtonDblClk)
         MESSAGE_HANDLER(WM_USER_ARTWORK_LOADED, OnArtworkLoaded)
         MESSAGE_HANDLER(WM_TIMER, OnTimer)
     END_MSG_MAP()
@@ -112,6 +114,9 @@ public:
     // IArtworkEventListener implementation
     void on_artwork_event(const ArtworkEvent& event) override;
     
+    // Getter for artwork source (for main component access)
+    std::string get_artwork_source() const { return m_artwork_source; }
+    
     // service_base implementation
     int service_add_ref() throw() { return 1; }
     int service_release() throw() { return 1; }
@@ -131,6 +136,7 @@ private:
     LRESULT OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnContextMenu(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+    LRESULT OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
 
@@ -371,6 +377,31 @@ LRESULT artwork_ui_element::OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam
 LRESULT artwork_ui_element::OnContextMenu(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
     // Could add context menu for artwork options
     bHandled = FALSE; // Let default handler process
+    return 0;
+}
+
+LRESULT artwork_ui_element::OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    // Open artwork viewer popup on double-click
+    if (m_artwork_image) {
+        try {
+            // Create source info string
+            std::string source_info = m_artwork_source;
+            if (source_info.empty()) {
+                source_info = "Local file"; // Default assumption for unknown source
+            }
+            
+            // Create and show the popup viewer
+            ArtworkViewerPopup* popup = new ArtworkViewerPopup(m_artwork_image, source_info);
+            if (popup) {
+                popup->ShowPopup(m_hWnd);
+                // Note: The popup will delete itself when closed
+            }
+        } catch (...) {
+            // Handle any errors silently
+        }
+    }
+    
+    bHandled = TRUE;
     return 0;
 }
 
@@ -1146,6 +1177,9 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                 try {
                     m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(event.bitmap, NULL);
                     if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                        // Set the artwork source - this was missing!
+                        m_artwork_source = event.source;
+                        
                         // Show OSD for online sources (not local files)
                         if (!event.source.empty() && event.source != "Local file" && event.source != "Cache") {
                             show_osd("Artwork from " + event.source);
@@ -1242,6 +1276,11 @@ bool artwork_ui_element::load_local_artwork_from_main_component() {
     HBITMAP main_bitmap = get_main_component_artwork_bitmap();
     if (!main_bitmap) return false;
     
+    // If we already have artwork with a valid source (like "Deezer"), don't override it
+    if (m_artwork_image && !m_artwork_source.empty() && m_artwork_source != "Unknown") {
+        return false; // Keep existing artwork and source
+    }
+    
     // Convert HBITMAP to GDI+ Image for DUI display
     cleanup_gdiplus_image();
     
@@ -1250,6 +1289,8 @@ bool artwork_ui_element::load_local_artwork_from_main_component() {
         
         if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
             m_artwork_loading = false;
+            
+            // Only set to "Local file" for truly local artwork
             m_artwork_source = "Local file";
             
             // No OSD for local files - they should load silently
