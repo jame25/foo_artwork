@@ -295,7 +295,24 @@ This approach provides:
 
 ### Manual Build (Recommended)
 
-Build using MSBuild command line for precise control:
+#### Step 1: Build SDK Dependencies
+
+First, compile the required SDK components with the correct platform toolset:
+
+```batch
+# Build foobar2000 SDK
+msbuild columns_ui/foobar2000/SDK/foobar2000_SDK.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /v:minimal
+
+# Build PFC library
+msbuild columns_ui/pfc/pfc.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /v:minimal
+
+# Build Columns UI SDK
+msbuild columns_ui/columns_ui-sdk/columns_ui-sdk.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /v:minimal
+```
+
+#### Step 2: Build Main Component
+
+After SDK dependencies are built, compile the main component:
 
 ```batch
 # Build Release version (recommended)
@@ -311,8 +328,10 @@ msbuild foo_artwork.vcxproj /t:Clean,Build /p:Configuration=Release /p:Platform=
 **Command Parameters:**
 - `/p:Configuration=Release` - Build optimized release version
 - `/p:Platform=x64` - Target 64-bit architecture
-- `/p:PlatformToolset=v143` - Use Visual Studio 2022 toolset
+- `/p:PlatformToolset=v143` - Use Visual Studio 2022 toolset (required for all projects)
 - `/v:minimal` - Minimal build output for cleaner console
+
+**Important:** All SDK dependencies must be compiled with the same platform toolset (`v143`) to ensure compatibility.
 
 - ### Build Configuration
 
