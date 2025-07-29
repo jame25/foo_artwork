@@ -10,6 +10,14 @@
 
 #pragma comment(lib, "dwmapi.lib")
 
+// Registry key for storing window state
+static const WCHAR* REGISTRY_KEY = L"Software\\foobar2000\\foo_artwork\\ArtworkViewer";
+static const WCHAR* REG_WINDOW_X = L"WindowX";
+static const WCHAR* REG_WINDOW_Y = L"WindowY";
+static const WCHAR* REG_WINDOW_WIDTH = L"WindowWidth";
+static const WCHAR* REG_WINDOW_HEIGHT = L"WindowHeight";
+static const WCHAR* REG_WINDOW_MAXIMIZED = L"WindowMaximized";
+
 using namespace Gdiplus;
 
 ArtworkViewerPopup::ArtworkViewerPopup(Gdiplus::Image* artwork_image, const std::string& source_info)
@@ -80,9 +88,24 @@ void ArtworkViewerPopup::ShowPopup(HWND parent_hwnd) {
         WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0);
     
     if (hwnd) {
-        // Resize and center the window
-        ::SetWindowPos(hwnd, HWND_TOP, 0, 0, window_width, window_height, SWP_NOMOVE);
-        CenterWindow(parent_hwnd);
+        // Try to restore saved window state, otherwise use calculated size and center
+        RECT saved_rect;
+        bool was_maximized = false;
+        if (GetSavedWindowRect(saved_rect, was_maximized)) {
+            // Restore saved position and size first
+            ::SetWindowPos(hwnd, HWND_TOP, saved_rect.left, saved_rect.top, 
+                          saved_rect.right - saved_rect.left, 
+                          saved_rect.bottom - saved_rect.top, 0);
+            
+            // Then maximize if it was maximized before
+            if (was_maximized) {
+                ShowWindow(SW_MAXIMIZE);
+            }
+        } else {
+            // Use calculated size and center the window
+            ::SetWindowPos(hwnd, HWND_TOP, 0, 0, window_width, window_height, SWP_NOMOVE);
+            CenterWindow(parent_hwnd);
+        }
         
         // Set focus
         SetFocus();
@@ -335,6 +358,7 @@ LRESULT ArtworkViewerPopup::OnCtlColorStatic(UINT uMsg, WPARAM wParam, LPARAM lP
 }
 
 LRESULT ArtworkViewerPopup::OnClose(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    SaveWindowState();
     DestroyWindow();
     bHandled = TRUE;
     return 0;
@@ -624,4 +648,107 @@ int ArtworkViewerPopup::GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
 
     free(pImageCodecInfo);
     return -1;  // Failure
+}
+
+void ArtworkViewerPopup::SaveWindowState() {
+    if (!IsWindow()) return;
+    
+    HKEY hkey;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, REGISTRY_KEY, 0, NULL, 0, KEY_WRITE, NULL, &hkey, NULL) != ERROR_SUCCESS) {
+        return;
+    }
+    
+    // Check if window is maximized
+    WINDOWPLACEMENT wp = {};
+    wp.length = sizeof(WINDOWPLACEMENT);
+    bool is_maximized = false;
+    
+    if (::GetWindowPlacement(m_hWnd, &wp)) {
+        is_maximized = (wp.showCmd == SW_SHOWMAXIMIZED);
+        
+        // For maximized windows, save the restored position/size, not the maximized one
+        RECT rect_to_save;
+        if (is_maximized) {
+            rect_to_save = wp.rcNormalPosition;
+        } else {
+            ::GetWindowRect(m_hWnd, &rect_to_save);
+        }
+        
+        DWORD x = rect_to_save.left;
+        DWORD y = rect_to_save.top;
+        DWORD width = rect_to_save.right - rect_to_save.left;
+        DWORD height = rect_to_save.bottom - rect_to_save.top;
+        DWORD maximized = is_maximized ? 1 : 0;
+        
+        RegSetValueExW(hkey, REG_WINDOW_X, 0, REG_DWORD, (BYTE*)&x, sizeof(DWORD));
+        RegSetValueExW(hkey, REG_WINDOW_Y, 0, REG_DWORD, (BYTE*)&y, sizeof(DWORD));
+        RegSetValueExW(hkey, REG_WINDOW_WIDTH, 0, REG_DWORD, (BYTE*)&width, sizeof(DWORD));
+        RegSetValueExW(hkey, REG_WINDOW_HEIGHT, 0, REG_DWORD, (BYTE*)&height, sizeof(DWORD));
+        RegSetValueExW(hkey, REG_WINDOW_MAXIMIZED, 0, REG_DWORD, (BYTE*)&maximized, sizeof(DWORD));
+    }
+    
+    RegCloseKey(hkey);
+}
+
+bool ArtworkViewerPopup::GetSavedWindowRect(RECT& rect, bool& was_maximized) {
+    HKEY hkey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, REGISTRY_KEY, 0, KEY_READ, &hkey) != ERROR_SUCCESS) {
+        return false;
+    }
+    
+    DWORD x, y, width, height, maximized = 0;
+    DWORD size = sizeof(DWORD);
+    
+    bool success = true;
+    success &= (RegQueryValueExW(hkey, REG_WINDOW_X, NULL, NULL, (BYTE*)&x, &size) == ERROR_SUCCESS);
+    success &= (RegQueryValueExW(hkey, REG_WINDOW_Y, NULL, NULL, (BYTE*)&y, &size) == ERROR_SUCCESS);
+    success &= (RegQueryValueExW(hkey, REG_WINDOW_WIDTH, NULL, NULL, (BYTE*)&width, &size) == ERROR_SUCCESS);
+    success &= (RegQueryValueExW(hkey, REG_WINDOW_HEIGHT, NULL, NULL, (BYTE*)&height, &size) == ERROR_SUCCESS);
+    
+    // Maximized flag is optional for backward compatibility
+    RegQueryValueExW(hkey, REG_WINDOW_MAXIMIZED, NULL, NULL, (BYTE*)&maximized, &size);
+    
+    RegCloseKey(hkey);
+    
+    if (!success) return false;
+    
+    was_maximized = (maximized != 0);
+    
+    // Validate the saved position is still on screen
+    int screen_width = GetSystemMetrics(SM_CXSCREEN);
+    int screen_height = GetSystemMetrics(SM_CYSCREEN);
+    
+    // Check if window would be completely off-screen
+    if (x >= screen_width || y >= screen_height || 
+        x + width <= 0 || y + height <= 0) {
+        return false; // Position is invalid
+    }
+    
+    // Ensure minimum size
+    if (width < 400) width = 400;
+    if (height < 300) height = 300;
+    
+    // Ensure window fits on screen (only if not maximized, since maximized windows handle this automatically)
+    if (!was_maximized) {
+        if (x + width > screen_width) {
+            x = screen_width - width;
+        }
+        if (y + height > screen_height) {
+            y = screen_height - height;
+        }
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+    }
+    
+    rect.left = x;
+    rect.top = y;
+    rect.right = x + width;
+    rect.bottom = y + height;
+    
+    return true;
+}
+
+void ArtworkViewerPopup::RestoreWindowState(HWND parent_hwnd) {
+    // This method is kept for potential future use
+    // Currently the restore logic is integrated into ShowPopup()
 }
