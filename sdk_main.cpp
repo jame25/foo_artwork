@@ -277,7 +277,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.2",
+    "1.5.3",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -294,7 +294,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.2",
+    "1.5.3",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -1881,6 +1881,12 @@ HBITMAP get_main_component_artwork_bitmap() {
     // Note: New DUI implementation handles this differently
     // CUI panels will use their own custom logo loading system
     return nullptr;
+}
+
+// Function to get artwork source from main component (for DUI panels)
+std::string get_main_component_artwork_source() {
+    // This will be implemented directly in ui_element.cpp to avoid circular dependencies
+    return "";
 }
 
 // Forward declarations for standalone search (legacy)
