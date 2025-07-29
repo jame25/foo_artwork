@@ -10,13 +10,19 @@
 
 #pragma comment(lib, "dwmapi.lib")
 
-// Registry key for storing window state
-static const WCHAR* REGISTRY_KEY = L"Software\\foobar2000\\foo_artwork\\ArtworkViewer";
-static const WCHAR* REG_WINDOW_X = L"WindowX";
-static const WCHAR* REG_WINDOW_Y = L"WindowY";
-static const WCHAR* REG_WINDOW_WIDTH = L"WindowWidth";
-static const WCHAR* REG_WINDOW_HEIGHT = L"WindowHeight";
-static const WCHAR* REG_WINDOW_MAXIMIZED = L"WindowMaximized";
+// GUIDs for the configuration variables
+static const GUID guid_artwork_viewer_window_x = { 0x12345601, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf1 } };
+static const GUID guid_artwork_viewer_window_y = { 0x12345602, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf2 } };
+static const GUID guid_artwork_viewer_window_width = { 0x12345603, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf3 } };
+static const GUID guid_artwork_viewer_window_height = { 0x12345604, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf4 } };
+static const GUID guid_artwork_viewer_window_maximized = { 0x12345605, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf5 } };
+
+// foobar2000 configuration variables for window state persistence
+static cfg_int cfg_viewer_window_x(guid_artwork_viewer_window_x, -1);
+static cfg_int cfg_viewer_window_y(guid_artwork_viewer_window_y, -1);
+static cfg_int cfg_viewer_window_width(guid_artwork_viewer_window_width, 800);
+static cfg_int cfg_viewer_window_height(guid_artwork_viewer_window_height, 600);
+static cfg_bool cfg_viewer_window_maximized(guid_artwork_viewer_window_maximized, false);
 
 using namespace Gdiplus;
 
@@ -653,18 +659,12 @@ int ArtworkViewerPopup::GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
 void ArtworkViewerPopup::SaveWindowState() {
     if (!IsWindow()) return;
     
-    HKEY hkey;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, REGISTRY_KEY, 0, NULL, 0, KEY_WRITE, NULL, &hkey, NULL) != ERROR_SUCCESS) {
-        return;
-    }
-    
     // Check if window is maximized
     WINDOWPLACEMENT wp = {};
     wp.length = sizeof(WINDOWPLACEMENT);
-    bool is_maximized = false;
     
     if (::GetWindowPlacement(m_hWnd, &wp)) {
-        is_maximized = (wp.showCmd == SW_SHOWMAXIMIZED);
+        bool is_maximized = (wp.showCmd == SW_SHOWMAXIMIZED);
         
         // For maximized windows, save the restored position/size, not the maximized one
         RECT rect_to_save;
@@ -674,53 +674,39 @@ void ArtworkViewerPopup::SaveWindowState() {
             ::GetWindowRect(m_hWnd, &rect_to_save);
         }
         
-        DWORD x = rect_to_save.left;
-        DWORD y = rect_to_save.top;
-        DWORD width = rect_to_save.right - rect_to_save.left;
-        DWORD height = rect_to_save.bottom - rect_to_save.top;
-        DWORD maximized = is_maximized ? 1 : 0;
-        
-        RegSetValueExW(hkey, REG_WINDOW_X, 0, REG_DWORD, (BYTE*)&x, sizeof(DWORD));
-        RegSetValueExW(hkey, REG_WINDOW_Y, 0, REG_DWORD, (BYTE*)&y, sizeof(DWORD));
-        RegSetValueExW(hkey, REG_WINDOW_WIDTH, 0, REG_DWORD, (BYTE*)&width, sizeof(DWORD));
-        RegSetValueExW(hkey, REG_WINDOW_HEIGHT, 0, REG_DWORD, (BYTE*)&height, sizeof(DWORD));
-        RegSetValueExW(hkey, REG_WINDOW_MAXIMIZED, 0, REG_DWORD, (BYTE*)&maximized, sizeof(DWORD));
+        // Save to foobar2000 configuration
+        cfg_viewer_window_x = rect_to_save.left;
+        cfg_viewer_window_y = rect_to_save.top;
+        cfg_viewer_window_width = rect_to_save.right - rect_to_save.left;
+        cfg_viewer_window_height = rect_to_save.bottom - rect_to_save.top;
+        cfg_viewer_window_maximized = is_maximized;
     }
-    
-    RegCloseKey(hkey);
 }
 
 bool ArtworkViewerPopup::GetSavedWindowRect(RECT& rect, bool& was_maximized) {
-    HKEY hkey;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, REGISTRY_KEY, 0, KEY_READ, &hkey) != ERROR_SUCCESS) {
+    // Check if we have saved window state (-1 means never saved)
+    if (cfg_viewer_window_x == -1 || cfg_viewer_window_y == -1) {
         return false;
     }
     
-    DWORD x, y, width, height, maximized = 0;
-    DWORD size = sizeof(DWORD);
+    int x = cfg_viewer_window_x;
+    int y = cfg_viewer_window_y;
+    int width = cfg_viewer_window_width;
+    int height = cfg_viewer_window_height;
+    was_maximized = cfg_viewer_window_maximized;
     
-    bool success = true;
-    success &= (RegQueryValueExW(hkey, REG_WINDOW_X, NULL, NULL, (BYTE*)&x, &size) == ERROR_SUCCESS);
-    success &= (RegQueryValueExW(hkey, REG_WINDOW_Y, NULL, NULL, (BYTE*)&y, &size) == ERROR_SUCCESS);
-    success &= (RegQueryValueExW(hkey, REG_WINDOW_WIDTH, NULL, NULL, (BYTE*)&width, &size) == ERROR_SUCCESS);
-    success &= (RegQueryValueExW(hkey, REG_WINDOW_HEIGHT, NULL, NULL, (BYTE*)&height, &size) == ERROR_SUCCESS);
+    // Validate the saved position is still on screen (multi-monitor aware)
+    // Get virtual desktop dimensions (covers all monitors)
+    int virtual_left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int virtual_top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    int virtual_right = virtual_left + virtual_width;
+    int virtual_bottom = virtual_top + virtual_height;
     
-    // Maximized flag is optional for backward compatibility
-    RegQueryValueExW(hkey, REG_WINDOW_MAXIMIZED, NULL, NULL, (BYTE*)&maximized, &size);
-    
-    RegCloseKey(hkey);
-    
-    if (!success) return false;
-    
-    was_maximized = (maximized != 0);
-    
-    // Validate the saved position is still on screen
-    int screen_width = GetSystemMetrics(SM_CXSCREEN);
-    int screen_height = GetSystemMetrics(SM_CYSCREEN);
-    
-    // Check if window would be completely off-screen
-    if (x >= screen_width || y >= screen_height || 
-        x + width <= 0 || y + height <= 0) {
+    // Check if window would be completely off the virtual desktop
+    if (x >= virtual_right || y >= virtual_bottom || 
+        x + width <= virtual_left || y + height <= virtual_top) {
         return false; // Position is invalid
     }
     
@@ -728,17 +714,9 @@ bool ArtworkViewerPopup::GetSavedWindowRect(RECT& rect, bool& was_maximized) {
     if (width < 400) width = 400;
     if (height < 300) height = 300;
     
-    // Ensure window fits on screen (only if not maximized, since maximized windows handle this automatically)
-    if (!was_maximized) {
-        if (x + width > screen_width) {
-            x = screen_width - width;
-        }
-        if (y + height > screen_height) {
-            y = screen_height - height;
-        }
-        if (x < 0) x = 0;
-        if (y < 0) y = 0;
-    }
+    // For multi-monitor setups, we don't need to force the window onto the primary monitor
+    // Just ensure it's not completely off the virtual desktop (which we already checked above)
+    // Windows will handle moving the window to a visible area if needed
     
     rect.left = x;
     rect.top = y;
