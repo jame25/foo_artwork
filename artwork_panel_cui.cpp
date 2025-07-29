@@ -40,6 +40,9 @@
 // Also include base UI extension headers
 #include "columns_ui/columns_ui-sdk/base.h"
 
+// Include the unified artwork viewer popup
+#include "artwork_viewer_popup.h"
+
 // Include necessary foobar2000 SDK headers for artwork and playback callbacks
 #include "columns_ui/foobar2000/SDK/album_art.h"
 #include "columns_ui/foobar2000/SDK/playback_control.h"
@@ -175,7 +178,7 @@ public:
         // Do NOT add WS_EX_CLIENTEDGE or WS_EX_STATICEDGE (which cause borders)
         // This matches how JScript Panel creates borderless panels
         
-        // Add flicker-reduction window styles
+        // Add flicker-reduction window styles and enable double-clicks
         config.window_styles |= WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
         config.class_styles = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
         config.class_cursor = IDC_ARROW;
@@ -669,6 +672,28 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         // Show/hide OSD on right click
         m_show_osd = !m_show_osd;
         break;
+        
+    case WM_LBUTTONDBLCLK:
+        // Open artwork viewer popup on double-click
+        if (m_artwork_loaded && m_artwork_bitmap) {
+            try {
+                // Create source info string from current source
+                std::string source_info = m_artwork_source;
+                if (source_info.empty()) {
+                    source_info = "Local file"; // Default assumption for unknown source
+                }
+                
+                // Create and show the popup viewer
+                ArtworkViewerPopup* popup = new ArtworkViewerPopup(m_artwork_bitmap.get(), source_info);
+                if (popup) {
+                    popup->ShowPopup(wnd);
+                    // Note: The popup will delete itself when closed
+                }
+            } catch (...) {
+                // Handle any errors silently
+            }
+        }
+        break;
     }
     
     return DefWindowProc(wnd, msg, wParam, lParam);
@@ -733,19 +758,19 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
             // If no local artwork found or this is a stream, use embedded artwork
             if (!should_prefer_local) {
                 load_artwork_from_data(data);
-                m_artwork_source = "Album data";
+                m_artwork_source = "Local file"; // Use consistent label for all local sources
             }
         } else {
-            // Keep previous artwork visible - don't clear
-            m_artwork_source = "";
+            // Keep previous artwork visible - don't clear source info
+            // m_artwork_source remains unchanged to preserve last known source
         }
         
         InvalidateRect(m_hWnd, NULL, FALSE);
         UpdateWindow(m_hWnd); // Force immediate repaint
     } catch (...) {
         // Handle any exceptions gracefully
-        // Keep previous artwork visible - don't clear
-        m_artwork_source = "";
+        // Keep previous artwork visible - don't clear source info
+        // m_artwork_source remains unchanged to preserve last known source
         InvalidateRect(m_hWnd, NULL, FALSE);
         UpdateWindow(m_hWnd); // Force immediate repaint
     }
@@ -754,8 +779,8 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
 void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
     if (!m_hWnd) return;
     
-    // Keep previous artwork visible - don't clear
-    m_artwork_source = "";
+    // Keep previous artwork visible - don't clear source info
+    // m_artwork_source remains unchanged to preserve last known source
     // Don't invalidate here - let new artwork trigger the redraw
     
     if (p_track.is_valid()) {
@@ -1149,7 +1174,7 @@ void CUIArtworkPanel::load_artwork_from_data(album_art_data::ptr data) {
         if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
             m_artwork_bitmap = std::move(new_bitmap);
             m_artwork_loaded = true;
-            m_current_artwork_source = "Album data";
+            m_current_artwork_source = "Local file"; // Use consistent label for all local sources
             
             // Resize to fit window
             resize_artwork_to_fit();
