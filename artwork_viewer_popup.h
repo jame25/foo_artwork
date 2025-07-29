@@ -65,6 +65,11 @@ private:
     std::string GetImageInfo() const;
     void CenterWindow(HWND parent_hwnd);
     int GetEncoderClsid(const WCHAR* format, CLSID* pClsid);
+    
+    // Window state persistence
+    void SaveWindowState();
+    void RestoreWindowState(HWND parent_hwnd);
+    bool GetSavedWindowRect(RECT& rect, bool& was_maximized);
 
     // Member variables
     std::unique_ptr<Gdiplus::Image> m_artwork_image;
