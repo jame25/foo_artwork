@@ -16,7 +16,7 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 - **High-Quality Display**: Uses GDI+ for smooth, high-quality artwork rendering with aspect ratio preservation
 - **Responsive Scaling**: Automatically scales artwork to fit window size while maintaining aspect ratio
 - **Dark Theme Support**: Seamless integration with foobar2000's dark mode
-- **Artwork Viewer**: Double-click on artwork to open a full-screen popup viewer
+- **Artwork Viewer**: Double-click on artwork to open a popup viewer
 
 ## Installation
 
