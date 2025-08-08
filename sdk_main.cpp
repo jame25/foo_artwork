@@ -401,55 +401,45 @@ pfc::string8 extract_domain_from_stream_url(metadb_handle_ptr track) {
 }
 
 // Function to extract full host+path from stream URL for specific logo matching
-// e.g., "https://ice1.somafm.com/indiepop-128-aac" -> "ice1.somafm.com_indiepop-128-aac"
+// e.g., "https://ice1.somafm.com/indiepop-128-aac" -> "https---ice1.somafm.com-indiepop-128-aac"
 pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
     if (!track.is_valid()) return "";
     
     pfc::string8 path = track->get_path();
     
     // Check if it's an internet stream
-    if (!(strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"))) {
+    double length = track->get_length();
+    if (length > 0) {
         return "";
     }
     
-    // Extract host+path from URL (e.g., "https://ice1.somafm.com/indiepop-128-aac" -> "ice1.somafm.com_indiepop-128-aac")
-    const char* start = strstr(path.c_str(), "://");
-    if (!start) return "";
-    start += 3; // Skip "://"
-    
-    // Find the end of the URL (might have query parameters)
-    const char* end = strchr(start, '?');
-    if (!end) end = start + strlen(start);
-    
-    // Remove port numbers from host part
-    pfc::string8 host_path(start, end - start);
-    
-    // Replace forward slashes with underscores for filename compatibility
-    pfc::string8 result = host_path;
+    // Replace illegal characters for filename compatibility
+    //$replace(%path%,/,-,\-,|,-,:,-,*,x,",'',<,_,>_,?,_)
+    //Usable also with other artwork readers defining in artwork sources eg C:\Users\xxx\foobar2000\profile\foo_artwork_data\logos\$replace(%path%,/,-,\-,|,-,:,-,*,x,",'',<,_,>_,?,_).*
+    pfc::string8 result = path;
     for (size_t i = 0; i < result.length(); i++) {
-        if (result[i] == '/') {
-            result.set_char(i, '_');
-        } else if (result[i] == ':') {
-            // Remove port numbers by finding the next slash or end
-            size_t port_start = i;
-            size_t port_end = i + 1;
-            while (port_end < result.length() && result[port_end] >= '0' && result[port_end] <= '9') {
-                port_end++;
-            }
-            if (port_end < result.length() && result[port_end] == '_') {
-                // Port followed by path - remove port
-                result = pfc::string8(result.c_str(), port_start) + pfc::string8(result.c_str() + port_end);
-                i = port_start - 1; // Adjust index since we modified the string
-            } else if (port_end == result.length()) {
-                // Port at end - remove it
-                result = pfc::string8(result.c_str(), port_start);
-                break;
-            }
-        }
+        if (result[i] == '/') {result.set_char(i, '-');}
+        else if (result[i] == '\\') {result.set_char(i, '-');} 
+        else if (result[i] == '|') {result.set_char(i, '-');} 
+        else if (result[i] == ':') {result.set_char(i, '-');}
+        else if (result[i] == '*') {result.set_char(i, 'x');}
+        else if (result[i] == '"') { result.set_char(i, '\'\''); }
+        else if (result[i] == '<') { result.set_char(i, '_'); }
+        else if (result[i] == '>') { result.set_char(i, '_'); }
+        else if (result[i] == '?') { result.set_char(i, '_'); }
+
     }
+
+    std::string str = "foo_artwork - Filename for Full URL Path Matching LOGO: ";
+    str.append(result);
+    const char* cstr = str.c_str();
     
+    //console log it for the user to know what filename to use
+    console::info(cstr);
+
     return result;
 }
+
 
 // Function to extract station name from metadata for logo matching
 pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track) {
@@ -7605,3 +7595,4 @@ bool is_safe_internet_stream(metadb_handle_ptr track) {
 //=============================================================================
 
 // CUI implementation is now in artwork_panel_cui.cpp
+

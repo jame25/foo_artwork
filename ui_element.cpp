@@ -1046,17 +1046,12 @@ bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
     try {
         pfc::string8 path = track->get_path();
         if (path.is_empty()) return false;
-        
-        // Check for protocol indicators (anything with :// except file://)
-        const char* protocol_pos = strstr(path.c_str(), "://");
-        if (!protocol_pos) {
-            return false; // No protocol found, likely local file
-        }
-        
-        // Exclude file:// protocol
-        if (strstr(path.c_str(), "file://") == path.c_str()) {
-            return false; // This is a file:// URL, not an internet stream
-        }
+
+        //If has length, assume it is a local file
+        const double length = track->get_length();
+        if (length > 0) {
+            return false; 
+        }     
         
         return true; // This appears to be an internet stream
     } catch (...) {
@@ -1146,6 +1141,10 @@ std::string artwork_ui_element::clean_metadata_for_search(const char* metadata) 
     // Remove all parenthetical content (like "(Vocal Version)", "(Remix)", etc.)
     std::regex paren_content_regex("\\s*\\([^)]*\\)\\s*");
     str = std::regex_replace(str, paren_content_regex, " ");
+
+    // Remove all square bracket content (like "[Vocal Version]", "[Remix]", etc.)
+    std::regex sqbrack_content_regex("\\s*\\[[^)]*\\]\\s*");
+    str = std::regex_replace(str, sqbrack_content_regex, " ");
     
     // Clean up multiple spaces
     std::regex multi_space("\\s{2,}");
@@ -1422,3 +1421,5 @@ public:
 } g_ui_element_debug;
 
 // Async UI element is now active - using truly asynchronous artwork system
+
+
