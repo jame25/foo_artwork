@@ -905,7 +905,17 @@ bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& 
                     }
                     artwork_url = unescaped_url;
                     
-                    pfc::string8 found_msg = "foo_artwork: Found cover_xl URL (unescaped): ";
+                    // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
+                    const char* size_pos = strstr(artwork_url.get_ptr(), "1000x1000");
+                    if (size_pos) {
+                        pfc::string8 upgraded_url;
+                        upgraded_url << pfc::string8(artwork_url.get_ptr(), size_pos - artwork_url.get_ptr());
+                        upgraded_url << "1200x1200";
+                        upgraded_url << (size_pos + 9); // Skip past "1000x1000"
+                        artwork_url = upgraded_url;
+                    }
+                    
+                    pfc::string8 found_msg = "foo_artwork: Found cover_xl URL (upgraded to 1200x1200): ";
                     found_msg << artwork_url;
                     return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
                 }
