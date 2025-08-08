@@ -29,7 +29,7 @@ using namespace Gdiplus;
 ArtworkViewerPopup::ArtworkViewerPopup(Gdiplus::Image* artwork_image, const std::string& source_info)
     : m_artwork_image(nullptr)
     , m_source_info(source_info)
-    , m_fit_to_window(true)
+    , m_fit_to_window(false)  // Default to original size when popup opens
     , m_fit_button(NULL)
     , m_save_button(NULL)
     , m_info_label(NULL)
@@ -532,7 +532,7 @@ void ArtworkViewerPopup::SaveArtwork() {
 
 void ArtworkViewerPopup::CreateControls() {
     // Create fit/original size button
-    m_fit_button = CreateWindowA("BUTTON", "Show original size",
+    m_fit_button = CreateWindowA("BUTTON", "Fit to window size",  // Button shows opposite of current mode
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         0, 0, 0, 0, m_hWnd, (HMENU)ID_FIT_BUTTON, GetModuleHandle(NULL), NULL);
     
