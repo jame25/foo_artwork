@@ -277,7 +277,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.4",
+    "1.5.5",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -294,7 +294,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.4",
+    "1.5.5",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -2404,14 +2404,14 @@ void artwork_ui_element::paint_artwork(HDC hdc) {
                 
                 // Avoid division by zero
                 if (windowWidth > 0 && windowHeight > 0 && bm.bmWidth > 0 && bm.bmHeight > 0) {
-                    // Simple scaling - fit to window
+                    // Auto-resize with aspect ratio preservation - fit to panel
                     double scaleX = (double)windowWidth / bm.bmWidth;
                     double scaleY = (double)windowHeight / bm.bmHeight;
-                    double scale = (scaleX < scaleY) ? scaleX : scaleY;
+                    double scale = (scaleX < scaleY) ? scaleX : scaleY;  // Use smaller scale to maintain aspect ratio
                     
-                    // Apply reasonable scale limits
-                    if (scale > 10.0) scale = 10.0;
-                    if (scale < 0.1) scale = 0.1;
+                    // Apply reasonable scale limits to prevent extreme scaling
+                    if (scale > 10.0) scale = 10.0;  // Max 10x zoom
+                    if (scale < 0.05) scale = 0.05;  // Min scale for very small panels
                     
                     int scaledWidth = (int)(bm.bmWidth * scale);
                     int scaledHeight = (int)(bm.bmHeight * scale);
@@ -4186,7 +4186,17 @@ bool artwork_ui_element::parse_deezer_response(const pfc::string8& json, pfc::st
                  strstr(potential_url.c_str(), ".jpeg") ||
                  strstr(potential_url.c_str(), ".png"))) {
                 
-                artwork_url = potential_url;
+                // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
+                const char* size_pos = strstr(potential_url.c_str(), "1000x1000");
+                if (size_pos) {
+                    pfc::string8 upgraded_url;
+                    upgraded_url << pfc::string8(potential_url.c_str(), size_pos - potential_url.c_str());
+                    upgraded_url << "1200x1200";
+                    upgraded_url << (size_pos + 9); // Skip past "1000x1000"
+                    artwork_url = upgraded_url;
+                } else {
+                    artwork_url = potential_url;
+                }
                 
                 
                 return true;
@@ -6739,6 +6749,12 @@ bool parse_deezer_json_response(const std::string& json, std::string& artwork_ur
     while ((pos = artwork_url.find("\\/", pos)) != std::string::npos) {
         artwork_url.replace(pos, 2, "/");
         pos += 1;
+    }
+    
+    // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
+    size_t size_pos = artwork_url.find("1000x1000");
+    if (size_pos != std::string::npos) {
+        artwork_url.replace(size_pos, 9, "1200x1200");
     }
     
     // Validate URL
