@@ -5970,6 +5970,12 @@ namespace standalone {
                             pos += 1;
                         }
                         
+                        // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
+                        size_t size_pos = artwork_url.find("1000x1000");
+                        if (size_pos != std::string::npos) {
+                            artwork_url.replace(size_pos, 9, "1200x1200");
+                        }
+                        
                         return true;
                     }
                 }
@@ -5993,6 +5999,12 @@ namespace standalone {
                         while ((pos = artwork_url.find("\\/", pos)) != std::string::npos) {
                             artwork_url.replace(pos, 2, "/");
                             pos += 1;
+                        }
+                        
+                        // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
+                        size_t size_pos = artwork_url.find("1000x1000");
+                        if (size_pos != std::string::npos) {
+                            artwork_url.replace(size_pos, 9, "1200x1200");
                         }
                         
                         return true;
@@ -7595,4 +7607,3 @@ bool is_safe_internet_stream(metadb_handle_ptr track) {
 //=============================================================================
 
 // CUI implementation is now in artwork_panel_cui.cpp
-
