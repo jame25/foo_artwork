@@ -441,6 +441,33 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
 }
 
 void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
+
+    // Check if it's an internet stream and custom logos enabled
+    double length = track->get_length();
+    if (length <= 0 && cfg_enable_custom_logos) {
+        pfc::string8 path = track->get_path();
+        pfc::string8 result = path;
+        for (size_t i = 0; i < result.length(); i++) {
+            if (result[i] == '/') { result.set_char(i, '-'); }
+            else if (result[i] == '\\') { result.set_char(i, '-'); }
+            else if (result[i] == '|') { result.set_char(i, '-'); }
+            else if (result[i] == ':') { result.set_char(i, '-'); }
+            else if (result[i] == '*') { result.set_char(i, 'x'); }
+            else if (result[i] == '"') { result.set_char(i, '\'\''); }
+            else if (result[i] == '<') { result.set_char(i, '_'); }
+            else if (result[i] == '>') { result.set_char(i, '_'); }
+            else if (result[i] == '?') { result.set_char(i, '_'); }
+
+        }
+
+        std::string str = "foo_artwork - Filename for Full URL Path Matching LOGO: ";
+        str.append(result);
+        const char* cstr = str.c_str();
+
+        //console log it for the user to know what filename to use
+        console::info(cstr);
+    }
+   
     m_current_track = track;
     m_artwork_loading = true;
     
@@ -1425,6 +1452,7 @@ public:
 } g_ui_element_debug;
 
 // Async UI element is now active - using truly asynchronous artwork system
+
 
 
 
