@@ -501,32 +501,8 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                 }
             }
             
-            // FIRST: Check for custom station logos if enabled (before API search)
-            if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
-                HBITMAP logo_bitmap = load_station_logo(m_current_track);
-                if (logo_bitmap) {
-                    
-                    // Convert HBITMAP to GDI+ Image for DUI display
-                    cleanup_gdiplus_image();
-                    
-                    try {
-                        m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
-                        
-                        if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                            m_artwork_loading = false;
-                            m_artwork_source = "Station logo";
-                            
-                            // No OSD for local files (station logos)
-                            Invalidate(); // Trigger repaint
-                            return; // Exit early - don't do API search
-                        } else {
-                            cleanup_gdiplus_image();
-                        }
-                    } catch (...) {
-                        cleanup_gdiplus_image();
-                    }
-                }
-            }
+            // FIXED: Removed premature station logo check - station logos should be fallbacks only
+            // API searches have priority according to README.md fallback chain
             
             // If we reach here, no custom logo was found or custom logos are disabled
             // Proceed with API search (with delay if configured)
@@ -569,31 +545,8 @@ void artwork_ui_element::start_artwork_search() {
             }
         }
         
-        // FIRST: Check for custom station logos if enabled (for fallback case when no metadata)
-        if (is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
-            HBITMAP logo_bitmap = load_station_logo(m_current_track);
-            if (logo_bitmap) {
-                // Convert HBITMAP to GDI+ Image for DUI display
-                cleanup_gdiplus_image();
-                
-                try {
-                    m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
-                    
-                    if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                        m_artwork_loading = false;
-                        m_artwork_source = "Station logo";
-                        
-                        // No OSD for local files (station logos)
-                        Invalidate(); // Trigger repaint
-                        return; // Exit early - don't do API search
-                    } else {
-                        cleanup_gdiplus_image();
-                    }
-                } catch (...) {
-                    cleanup_gdiplus_image();
-                }
-            }
-        }
+        // FIXED: Removed second premature station logo check
+        // Station logos should only be used as fallback after API search fails
         
         // Only trigger API searches for internet streams, never for local files
         if (is_internet_stream(m_current_track)) {
@@ -1207,7 +1160,29 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                 
                 // Only try fallback images for internet streams
                 if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
-                    // Priority 1: Station-specific fallback with full path (e.g., ice1.somafm.com_indiepop-128-aac-noart.png)
+                    // Priority 1: Station logo (e.g., ice1.somafm.com_indiepop-128-aac.png, somafm.com.png)
+                    if (!fallback_loaded) {
+                        HBITMAP logo_bitmap = load_station_logo(m_current_track);
+                        if (logo_bitmap) {
+                            cleanup_gdiplus_image();
+                            try {
+                                m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
+                                if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                                    m_artwork_loading = false;
+                                    m_artwork_source = "Station logo";
+                                    fallback_loaded = true;
+                                    Invalidate();
+                                } else {
+                                    cleanup_gdiplus_image();
+                                }
+                            } catch (...) {
+                                cleanup_gdiplus_image();
+                            }
+                            DeleteObject(logo_bitmap); // Always clean up the source bitmap
+                        }
+                    }
+                    
+                    // Priority 2: Station-specific fallback with full path (e.g., ice1.somafm.com_indiepop-128-aac-noart.png)
                     if (!fallback_loaded) {
                         HBITMAP noart_bitmap = load_noart_logo(m_current_track);
                         if (noart_bitmap) {
@@ -1229,7 +1204,7 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                         }
                     }
                     
-                    // Priority 2: Generic fallback with URL support (e.g., somafm.com-noart.png or noart.png)
+                    // Priority 3: Generic fallback with URL support (e.g., somafm.com-noart.png or noart.png)
                     if (!fallback_loaded) {
                         HBITMAP generic_bitmap = load_generic_noart_logo(m_current_track);
                         if (generic_bitmap) {
@@ -1421,5 +1396,3 @@ public:
 } g_ui_element_debug;
 
 // Async UI element is now active - using truly asynchronous artwork system
-
-
