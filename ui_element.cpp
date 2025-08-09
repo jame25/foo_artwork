@@ -1145,6 +1145,10 @@ std::string artwork_ui_element::clean_metadata_for_search(const char* metadata) 
     // Remove all square bracket content (like "[Vocal Version]", "[Remix]", etc.)
     std::regex sqbrack_content_regex("\\s*\\[[^)]*\\]\\s*");
     str = std::regex_replace(str, sqbrack_content_regex, " ");
+
+    //Remove everything after pipe | (like "Hit 'N Run Lover || 4153 || S || 2ca82642-1c07-42f0-972b-1a663c1c39b9")
+    std::regex pipe_content_regex("\\|.*");
+    str = std::regex_replace(str, pipe_content_regex, " ");
     
     // Clean up multiple spaces
     std::regex multi_space("\\s{2,}");
@@ -1421,5 +1425,6 @@ public:
 } g_ui_element_debug;
 
 // Async UI element is now active - using truly asynchronous artwork system
+
 
 
