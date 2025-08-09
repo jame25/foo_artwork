@@ -24,6 +24,9 @@
 // Link WIC library
 #pragma comment(lib, "windowscodecs.lib")
 
+// Link GDI library for AlphaBlend function
+#pragma comment(lib, "msimg32.lib")
+
 #include <algorithm>
 #include <thread>
 #include <vector>
@@ -1291,8 +1294,22 @@ void CUIArtworkPanel::paint_artwork(HDC hdc) {
         if (memDC) {
             HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, m_scaled_gdi_bitmap);
             
-            // Use BitBlt for fast, flicker-free drawing (like Default UI)
-            BitBlt(hdc, x, y, bm.bmWidth, bm.bmHeight, memDC, 0, 0, SRCCOPY);
+            // PNG transparency fix: Check if bitmap has alpha channel (32-bit) and use AlphaBlend for transparency
+            // This fixes the issue where PNG transparency works in DUI mode but not CUI mode
+            if (bm.bmBitsPixel == 32) {
+                // Use AlphaBlend for PNG transparency support (preserves alpha channel)
+                BLENDFUNCTION blend = {};
+                blend.BlendOp = AC_SRC_OVER;
+                blend.BlendFlags = 0;
+                blend.SourceConstantAlpha = 255; // Fully opaque (use per-pixel alpha)
+                blend.AlphaFormat = AC_SRC_ALPHA; // Use source alpha channel
+                
+                AlphaBlend(hdc, x, y, bm.bmWidth, bm.bmHeight, 
+                          memDC, 0, 0, bm.bmWidth, bm.bmHeight, blend);
+            } else {
+                // Fall back to BitBlt for non-alpha bitmaps
+                BitBlt(hdc, x, y, bm.bmWidth, bm.bmHeight, memDC, 0, 0, SRCCOPY);
+            }
             
             // Cleanup
             SelectObject(memDC, oldBitmap);
@@ -1850,13 +1867,13 @@ bool CUIArtworkPanel::copy_bitmap_from_main_component(HBITMAP source_bitmap) {
                 if (mem_dc) {
                     HBITMAP old_bmp = (HBITMAP)SelectObject(mem_dc, source_bitmap);
                     
-                    // Create new 24-bit compatible bitmap to avoid format issues
+                    // Create 32-bit ARGB bitmap to preserve transparency
                     BITMAPINFO bmi = {};
                     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
                     bmi.bmiHeader.biWidth = bmp_info.bmWidth;
                     bmi.bmiHeader.biHeight = -bmp_info.bmHeight; // Top-down DIB
                     bmi.bmiHeader.biPlanes = 1;
-                    bmi.bmiHeader.biBitCount = 24; // Force 24-bit for compatibility
+                    bmi.bmiHeader.biBitCount = 32; // Use 32-bit to preserve alpha channel
                     bmi.bmiHeader.biCompression = BI_RGB;
                     
                     void* pixel_data = nullptr;
@@ -1866,8 +1883,24 @@ bool CUIArtworkPanel::copy_bitmap_from_main_component(HBITMAP source_bitmap) {
                         if (compatible_dc) {
                             HBITMAP old_compatible_bmp = (HBITMAP)SelectObject(compatible_dc, compatible_bitmap);
                             
-                            // Copy original bitmap to compatible format
-                            if (BitBlt(compatible_dc, 0, 0, bmp_info.bmWidth, bmp_info.bmHeight, mem_dc, 0, 0, SRCCOPY)) {
+                            // Copy original bitmap to compatible format, preserving alpha if present
+                            bool copy_success = false;
+                            if (bmp_info.bmBitsPixel == 32) {
+                                // Use AlphaBlend for 32-bit bitmaps to preserve alpha channel
+                                BLENDFUNCTION blend = {};
+                                blend.BlendOp = AC_SRC_OVER;
+                                blend.BlendFlags = 0;
+                                blend.SourceConstantAlpha = 255; // Use per-pixel alpha
+                                blend.AlphaFormat = AC_SRC_ALPHA;
+                                
+                                copy_success = AlphaBlend(compatible_dc, 0, 0, bmp_info.bmWidth, bmp_info.bmHeight,
+                                                        mem_dc, 0, 0, bmp_info.bmWidth, bmp_info.bmHeight, blend);
+                            } else {
+                                // Use BitBlt for non-alpha bitmaps
+                                copy_success = BitBlt(compatible_dc, 0, 0, bmp_info.bmWidth, bmp_info.bmHeight, mem_dc, 0, 0, SRCCOPY);
+                            }
+                            
+                            if (copy_success) {
                                 // Now safely convert to GDI+ bitmap
                                 auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(compatible_bitmap, nullptr);
                                 if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
