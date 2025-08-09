@@ -431,13 +431,6 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
 
     }
 
-    std::string str = "foo_artwork - Filename for Full URL Path Matching LOGO: ";
-    str.append(result);
-    const char* cstr = str.c_str();
-    
-    //console log it for the user to know what filename to use
-    console::info(cstr);
-
     return result;
 }
 
@@ -7608,4 +7601,5 @@ bool is_safe_internet_stream(metadb_handle_ptr track) {
 //=============================================================================
 
 // CUI implementation is now in artwork_panel_cui.cpp
+
 
