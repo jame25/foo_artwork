@@ -521,8 +521,30 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             // Use stored metadata for delayed search
             if (!m_delayed_search_title.empty()) {
                 
+                // Apply final metadata cleaning for consistency with DUI mode
+                std::string final_artist = m_delayed_search_artist;
+                std::string final_title = m_delayed_search_title;
+                
+                auto apply_final_cleaning = [](std::string& str) {
+                    if (str.empty()) return;
+                    
+                    // Apply the same cleaning logic as clean_metadata_for_search (UTF-8 safe)
+                    str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$"), "");
+                    str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}\\.\\d{2}\\s*$"), "");
+                    str = std::regex_replace(str, std::regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*"), " ");
+                    str = std::regex_replace(str, std::regex("\\s*\\((?:live|acoustic|unplugged|remix|remaster|demo|instrumental|explicit|clean|radio edit|extended|single version|album version)(?:\\s+[^)]*)?\\)\\s*", std::regex_constants::icase), " ");
+                    str = std::regex_replace(str, std::regex("\\s*\\((?:feat\\.|featuring|ft\\.|with)\\s+[^)]*\\)\\s*", std::regex_constants::icase), " ");
+                    str = std::regex_replace(str, std::regex("\\s*\\([^)]*\\)\\s*"), " ");
+                    str = std::regex_replace(str, std::regex("\\s*\\[[^\\]]*\\]\\s*"), " ");
+                    str = std::regex_replace(str, std::regex("\\s{2,}"), " ");
+                    str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
+                };
+                
+                apply_final_cleaning(final_artist);
+                apply_final_cleaning(final_title);
+                
                 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
-                trigger_main_component_search_with_metadata(m_delayed_search_artist, m_delayed_search_title);
+                trigger_main_component_search_with_metadata(final_artist, final_title);
                 
                 // Clear stored metadata
                 m_delayed_search_artist.clear();
@@ -1074,6 +1096,34 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     normalize_collaborations(artist);
     clean_encoding_artifacts(artist);
     
+    // FIX: Apply unified metadata cleaning to ensure consistency with DUI mode
+    // This ensures both modes apply the same final cleaning logic consistent with clean_metadata_for_search
+    auto apply_final_cleaning = [](std::string& str) {
+        if (str.empty()) return;
+        
+        // Apply the same cleaning logic as clean_metadata_for_search (regex-based, UTF-8 safe)
+        // Remove timestamp patterns at the end
+        str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$"), "");
+        str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}\\.\\d{2}\\s*$"), "");
+        
+        // Remove parenthetical timestamps 
+        str = std::regex_replace(str, std::regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*"), " ");
+        
+        // Remove common patterns in parentheses (case insensitive)
+        str = std::regex_replace(str, std::regex("\\s*\\((?:live|acoustic|unplugged|remix|remaster|demo|instrumental|explicit|clean|radio edit|extended|single version|album version)(?:\\s+[^)]*)?\\)\\s*", std::regex_constants::icase), " ");
+        str = std::regex_replace(str, std::regex("\\s*\\((?:feat\\.|featuring|ft\\.|with)\\s+[^)]*\\)\\s*", std::regex_constants::icase), " ");
+        
+        // Remove remaining parenthetical and square bracket content
+        str = std::regex_replace(str, std::regex("\\s*\\([^)]*\\)\\s*"), " ");
+        str = std::regex_replace(str, std::regex("\\s*\\[[^\\]]*\\]\\s*"), " ");
+        
+        // Clean up spaces
+        str = std::regex_replace(str, std::regex("\\s{2,}"), " ");
+        str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
+    };
+    
+    apply_final_cleaning(artist);
+    apply_final_cleaning(title);
     
     // Apply comprehensive metadata validation rules (same as DUI)
     if (!is_metadata_valid_for_search(artist.c_str(), title.c_str())) {
