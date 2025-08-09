@@ -4,6 +4,7 @@
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <regex>
 #include <shlobj.h>
 
 // CUI support is now defined in stdafx.h
@@ -277,7 +278,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.5",
+    "1.5.6",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -294,7 +295,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.5",
+    "1.5.6",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -3332,166 +3333,51 @@ void artwork_ui_element::store_safe_metadata(const pfc::string8& artist, const p
 }
 
 
-// Clean metadata text from encoding issues and unwanted content - ENHANCED VERSION
+// Clean metadata text from encoding issues and unwanted content - UTF-8 SAFE VERSION
+// Fixed: Replaced problematic manual byte-level parsing with regex-based approach
+// This ensures proper handling of Cyrillic and other multi-byte UTF-8 characters
+// Addresses CUI mode having fewer artwork hits for non-Latin scripts
 pfc::string8 artwork_ui_element::clean_metadata_text(const pfc::string8& text) {
-    pfc::string8 cleaned = text;
-    const char* text_cstr;
+    if (!text || text.length() == 0) return "";
     
+    // Convert to std::string for UTF-8 safe regex processing
+    std::string str(text.c_str());
     
-    // Fix common encoding issues (using hex escape sequences)
-    // Handle all variants of apostrophes and quotes
-    cleaned.replace_string("\xE2\x80\x98", "'");  // Left single quotation mark
-    cleaned.replace_string("\xE2\x80\x99", "'");  // Right single quotation mark
-    cleaned.replace_string("\xE2\x80\x9A", "'");  // Single low-9 quotation mark
+    // Fix common encoding issues first
+    // Handle all variants of apostrophes and quotes (UTF-8 safe)
+    str = std::regex_replace(str, std::regex("\xE2\x80\x98"), "'");  // Left single quotation mark
+    str = std::regex_replace(str, std::regex("\xE2\x80\x99"), "'");  // Right single quotation mark
+    str = std::regex_replace(str, std::regex("\xE2\x80\x9A"), "'");  // Single low-9 quotation mark
     
-    // Remove common subtitle patterns in brackets/parentheses
-    // These patterns often prevent artwork APIs from finding matches
+    // Remove timestamp patterns at the end (UTF-8 safe)
+    // Pattern 1: " - MM:SS" or " - M:SS" (like " - 0:00")
+    str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$"), "");
     
-    // Remove parentheses with common live/acoustic/remix patterns (case insensitive)
-    text_cstr = cleaned.c_str();
+    // Pattern 2: " - MM.SS" or " - M.SS" (like " - 0.00") - handle decimal point
+    str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}\\.\\d{2}\\s*$"), "");
     
-    // Pattern 1: (live...)
-    const char* live_patterns[] = {
-        "(live)",
-        "(live at",
-        "(acoustic)",
-        "(acoustic version)",
-        "(unplugged)",
-        "(radio edit)",
-        "(extended)",
-        "(extended version)", 
-        "(single version)",
-        "(album version)",
-        "(remix)",
-        "(remaster)",
-        "(remastered)",
-        "(demo)",
-        "(instrumental)",
-        "(explicit)",
-        "(clean)",
-        "(feat.",
-        "(featuring",
-        "(ft.",
-        "(with"
-    };
+    // Remove parenthetical timestamps (MM:SS) or (M:SS)
+    str = std::regex_replace(str, std::regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*"), " ");
     
-    for (int i = 0; i < 20; i++) {
-        // Find pattern (case insensitive)
-        const char* found_pos = text_cstr;
-        bool pattern_found = false;
-        
-        while (*found_pos) {
-            if (*found_pos == '(' || *found_pos == '[') {
-                // Check if this bracket contains our pattern
-                bool matches = true;
-                const char* pattern = live_patterns[i];
-                const char* check_pos = found_pos + 1;
-                const char* pattern_pos = pattern + 1; // Skip opening bracket in pattern
-                
-                while (*pattern_pos && *check_pos) {
-                    char p_char = *pattern_pos >= 'A' && *pattern_pos <= 'Z' ? *pattern_pos + 32 : *pattern_pos;
-                    char c_char = *check_pos >= 'A' && *check_pos <= 'Z' ? *check_pos + 32 : *check_pos;
-                    
-                    if (p_char != c_char) {
-                        matches = false;
-                        break;
-                    }
-                    pattern_pos++;
-                    check_pos++;
-                }
-                
-                if (matches) {
-                    // Found the pattern, now find the closing bracket or end of string
-                    char closing_bracket = (*found_pos == '(') ? ')' : ']';
-                    const char* end_pos = check_pos;
-                    while (*end_pos && *end_pos != closing_bracket) {
-                        end_pos++;
-                    }
-                    
-                    // Handle both closed and unclosed brackets
-                    if (*end_pos == closing_bracket) {
-                        end_pos++; // Include closing bracket
-                    } else if (*end_pos == '\0') {
-                        // Unclosed bracket - remove from opening bracket to end of string
-                        // This handles cases like "Song Title (Ft. Artist" (missing closing bracket)
-                    }
-                    
-                    // Remove this entire bracketed section
-                    size_t start_offset = found_pos - text_cstr;
-                    size_t end_offset = end_pos - text_cstr;
-                    pfc::string8 before = cleaned.subString(0, start_offset);
-                    pfc::string8 after = cleaned.subString(end_offset);
-                    cleaned = before + after;
-                    
-                    // Update text_cstr for next iteration
-                    text_cstr = cleaned.c_str();
-                    pattern_found = true;
-                    break;
-                }
-            }
-            found_pos++;
-        }
-        
-        if (pattern_found) {
-            // Start over with updated string
-            i = -1; // Will be incremented to 0
-            continue;
-        }
-    }
+    // Remove common remix/version patterns in parentheses (case insensitive, UTF-8 safe)
+    str = std::regex_replace(str, std::regex("\\s*\\((?:live|acoustic|unplugged|remix|remaster|demo|instrumental|explicit|clean|radio edit|extended|single version|album version)(?:\\s+[^)]*)?\\)\\s*", std::regex_constants::icase), " ");
     
-    // Remove trailing timestamp patterns like " - 0:00", " - 3:45", " - 12.34"
-    // These are commonly added by radio streaming software
-    text_cstr = cleaned.c_str();
-    const char* hyphen_pos = text_cstr;
+    // Remove featuring patterns in parentheses (case insensitive, UTF-8 safe)
+    str = std::regex_replace(str, std::regex("\\s*\\((?:feat\\.|featuring|ft\\.|with)\\s+[^)]*\\)\\s*", std::regex_constants::icase), " ");
     
-    // Look for " - " pattern near the end
-    while (*hyphen_pos) {
-        if (*hyphen_pos == ' ' && *(hyphen_pos + 1) == '-' && *(hyphen_pos + 2) == ' ') {
-            // Found " - ", check if followed by digits/time pattern
-            const char* after_hyphen = hyphen_pos + 3;
-            bool is_timestamp = true;
-            int digit_count = 0;
-            int colon_count = 0;
-            
-            // Check if it's a timestamp pattern (digits, colons, dots)
-            const char* check_pos = after_hyphen;
-            while (*check_pos && *check_pos != '\0') {
-                char c = *check_pos;
-                if ((c >= '0' && c <= '9') || c == ':' || c == '.') {
-                    if (c >= '0' && c <= '9') digit_count++;
-                    if (c == ':') colon_count++;
-                    check_pos++;
-                } else {
-                    is_timestamp = false;
-                    break;
-                }
-            }
-            
-            // Enhanced timestamp detection:
-            // - At least 1 digit required
-            // - Allow time formats like "0:00", "3:45" (colon + digits)
-            // - Allow decimal formats like "12.34" (dot + digits)
-            bool valid_time_format = (colon_count == 1 && digit_count >= 1); // MM:SS format
-            bool valid_decimal_format = (colon_count == 0 && digit_count >= 1); // X.XX format
-            
-            if (is_timestamp && (valid_time_format || valid_decimal_format)) {
-                size_t remove_start = hyphen_pos - text_cstr;
-                cleaned = cleaned.subString(0, remove_start);
-                break; // Only remove the first occurrence
-            }
-        }
-        hyphen_pos++;
-    }
+    // Remove all remaining parenthetical content (like "(Vocal Version)", etc.)
+    str = std::regex_replace(str, std::regex("\\s*\\([^)]*\\)\\s*"), " ");
+
+    // Remove all square bracket content (like "[Vocal Version]", "[Remix]", etc.)
+    str = std::regex_replace(str, std::regex("\\s*\\[[^\\]]*\\]\\s*"), " ");
     
-    // Remove leading and trailing whitespace
-    while (cleaned.length() > 0 && cleaned[0] == ' ') {
-        cleaned = cleaned.subString(1);
-    }
-    while (cleaned.length() > 0 && cleaned[cleaned.length()-1] == ' ') {
-        cleaned = cleaned.subString(0, cleaned.length()-1);
-    }
+    // Clean up multiple spaces
+    str = std::regex_replace(str, std::regex("\\s{2,}"), " ");
     
-    return cleaned;
+    // Trim leading and trailing spaces
+    str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
+    
+    return pfc::string8(str.c_str());
 }
 
 // Extract metadata directly from file_info (for radio streams)
