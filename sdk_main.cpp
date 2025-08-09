@@ -278,7 +278,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.7",
+    "1.5.8",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -295,7 +295,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.7",
+    "1.5.8",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -3810,15 +3810,16 @@ bool artwork_ui_element::parse_itunes_response(const pfc::string8& json, pfc::st
         }
     }
     
-    // Try multiple artwork URL fields in order of preference (highest resolution first)
+    // Try multiple artwork URL fields in order of preference
     const char* artwork_fields[] = {
-        "\"artworkUrl600\":\"",
-        "\"artworkUrl100\":\"",
-        "\"artworkUrl60\":\"",
-        "\"artworkUrl30\":\""
+        "\"artworkUrl600\":\"",   // 600x600 (if available)
+        "\"artworkUrl512\":\"",   // 512x512 (if available)
+        "\"artworkUrl100\":\"",   // 100x100 (most common)
+        "\"artworkUrl60\":\"",    // 60x60 (fallback)
+        "\"artworkUrl30\":\""     // 30x30 (smallest)
     };
     
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         const char* start = strstr(json.c_str(), artwork_fields[i]);
         if (start) {
             start += strlen(artwork_fields[i]);
@@ -3826,14 +3827,38 @@ bool artwork_ui_element::parse_itunes_response(const pfc::string8& json, pfc::st
             if (end) {
                 artwork_url = pfc::string8(start, end - start);
                 
-                
-                // Convert lower resolutions to higher resolution if possible
+                // Upgrade any resolution to 1200x1200 using iTunes URL manipulation
                 if (strstr(artwork_fields[i], "100")) {
-                    artwork_url.replace_string("100x100", "600x600");
+                    artwork_url.replace_string("100x100", "1200x1200");
                 } else if (strstr(artwork_fields[i], "60")) {
-                    artwork_url.replace_string("60x60", "600x600");
+                    artwork_url.replace_string("60x60", "1200x1200");
                 } else if (strstr(artwork_fields[i], "30")) {
-                    artwork_url.replace_string("30x30", "600x600");
+                    artwork_url.replace_string("30x30", "1200x1200");
+                } else if (strstr(artwork_fields[i], "600")) {
+                    artwork_url.replace_string("600x600", "1200x1200");
+                } else if (strstr(artwork_fields[i], "512")) {
+                    artwork_url.replace_string("512x512", "1200x1200");
+                }
+                
+                // Set compression quality: 80 for PNG files, 90 for JPEG files
+                if (artwork_url.find_first(".png") != pfc_infinite) {
+                    // For PNG files: add bb-80 quality parameter  
+                    if (artwork_url.find_first("bb.png") != pfc_infinite) {
+                        artwork_url.replace_string("bb.png", "bb-80.png");
+                    } else if (artwork_url.find_first("bf.png") != pfc_infinite) {
+                        artwork_url.replace_string("bf.png", "bb-80.png");
+                    } else if (artwork_url.find_first("1200x1200.png") != pfc_infinite) {
+                        artwork_url.replace_string("1200x1200.png", "1200x1200bb-80.png");
+                    }
+                } else if (artwork_url.find_first(".jpg") != pfc_infinite || artwork_url.find_first(".jpeg") != pfc_infinite) {
+                    // For JPEG files: add bb-90 quality parameter for better quality
+                    if (artwork_url.find_first("bb.jpg") != pfc_infinite) {
+                        artwork_url.replace_string("bb.jpg", "bb-90.jpg");
+                    } else if (artwork_url.find_first("bf.jpg") != pfc_infinite) {
+                        artwork_url.replace_string("bf.jpg", "bb-90.jpg");
+                    } else if (artwork_url.find_first("1200x1200.jpg") != pfc_infinite) {
+                        artwork_url.replace_string("1200x1200.jpg", "1200x1200bb-90.jpg");
+                    }
                 }
                 
                 if (artwork_url.length() > 0) {
@@ -6652,7 +6677,7 @@ bool parse_deezer_json_response(const std::string& json, std::string& artwork_ur
 
 bool parse_itunes_json_response(const std::string& json, std::string& artwork_url) {
     // Simple JSON parsing for iTunes response
-    // Look for "results" array and "artworkUrl100" field
+    // Look for "results" array and artwork URL fields
     
     size_t results_pos = json.find("\"results\"");
     if (results_pos == std::string::npos) {
@@ -6661,49 +6686,111 @@ bool parse_itunes_json_response(const std::string& json, std::string& artwork_ur
         return false;
     }
     
-    // Find artworkUrl100 field after results
-    size_t artwork_pos = json.find("\"artworkUrl100\"", results_pos);
-    if (artwork_pos == std::string::npos) {
-#ifdef _DEBUG
-#endif
-        return false;
+    // Try artwork URLs in order of preference
+    const char* artwork_fields[] = {
+        "\"artworkUrl600\"",   // 600x600 (if available)
+        "\"artworkUrl512\"",   // 512x512 (if available)
+        "\"artworkUrl100\"",   // 100x100 (most common)
+        "\"artworkUrl60\"",    // 60x60 (fallback)
+        "\"artworkUrl30\""     // 30x30 (smallest)
+    };
+    
+    for (int i = 0; i < 5; i++) {
+        size_t artwork_pos = json.find(artwork_fields[i], results_pos);
+        if (artwork_pos != std::string::npos) {
+            // Find the URL value
+            size_t colon_pos = json.find(":", artwork_pos);
+            if (colon_pos == std::string::npos) continue;
+            
+            size_t quote_start = json.find("\"", colon_pos);
+            if (quote_start == std::string::npos) continue;
+            
+            size_t url_start = quote_start + 1;
+            size_t quote_end = json.find("\"", url_start);
+            if (quote_end == std::string::npos) continue;
+            
+            artwork_url = json.substr(url_start, quote_end - url_start);
+            
+            // Unescape JSON forward slashes (replace \/ with /)
+            size_t pos = 0;
+            while ((pos = artwork_url.find("\\/", pos)) != std::string::npos) {
+                artwork_url.replace(pos, 2, "/");
+                pos += 1;
+            }
+            
+            // Upgrade any resolution to 1200x1200 using iTunes URL manipulation
+            pos = artwork_url.find("100x100");
+            if (pos != std::string::npos) {
+                artwork_url.replace(pos, 7, "1200x1200");
+            } else {
+                pos = artwork_url.find("600x600");
+                if (pos != std::string::npos) {
+                    artwork_url.replace(pos, 7, "1200x1200");
+                } else {
+                    pos = artwork_url.find("512x512");
+                    if (pos != std::string::npos) {
+                        artwork_url.replace(pos, 7, "1200x1200");
+                    } else {
+                        pos = artwork_url.find("60x60");
+                        if (pos != std::string::npos) {
+                            artwork_url.replace(pos, 5, "1200x1200");
+                        } else {
+                            pos = artwork_url.find("30x30");
+                            if (pos != std::string::npos) {
+                                artwork_url.replace(pos, 5, "1200x1200");
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Set compression quality: 80 for PNG files, 90 for JPEG files
+            pos = artwork_url.find(".png");
+            if (pos != std::string::npos) {
+                // For PNG files: add bb-80 quality parameter  
+                size_t bb_pos = artwork_url.find("bb.png");
+                if (bb_pos != std::string::npos) {
+                    artwork_url.replace(bb_pos, 6, "bb-80.png");
+                } else {
+                    size_t bf_pos = artwork_url.find("bf.png");
+                    if (bf_pos != std::string::npos) {
+                        artwork_url.replace(bf_pos, 6, "bb-80.png");
+                    } else {
+                        size_t res_pos = artwork_url.find("1200x1200.png");
+                        if (res_pos != std::string::npos) {
+                            artwork_url.replace(res_pos, 13, "1200x1200bb-80.png");
+                        }
+                    }
+                }
+            } else {
+                pos = artwork_url.find(".jpg");
+                if (pos != std::string::npos) {
+                    // For JPEG files: add bb-90 quality parameter
+                    size_t bb_pos = artwork_url.find("bb.jpg");
+                    if (bb_pos != std::string::npos) {
+                        artwork_url.replace(bb_pos, 6, "bb-90.jpg");
+                    } else {
+                        size_t bf_pos = artwork_url.find("bf.jpg");
+                        if (bf_pos != std::string::npos) {
+                            artwork_url.replace(bf_pos, 6, "bb-90.jpg");
+                        } else {
+                            size_t res_pos = artwork_url.find("1200x1200.jpg");
+                            if (res_pos != std::string::npos) {
+                                artwork_url.replace(res_pos, 13, "1200x1200bb-90.jpg");
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Validate URL
+            if (!artwork_url.empty() && artwork_url.find("http") == 0) {
+                return true;
+            }
+        }
     }
     
-    // Find the URL value
-    size_t colon_pos = json.find(":", artwork_pos);
-    if (colon_pos == std::string::npos) return false;
-    
-    size_t quote_start = json.find("\"", colon_pos);
-    if (quote_start == std::string::npos) return false;
-    
-    size_t url_start = quote_start + 1;
-    size_t quote_end = json.find("\"", url_start);
-    if (quote_end == std::string::npos) return false;
-    
-    artwork_url = json.substr(url_start, quote_end - url_start);
-    
-    // Unescape JSON forward slashes (replace \/ with /)
-    size_t pos = 0;
-    while ((pos = artwork_url.find("\\/", pos)) != std::string::npos) {
-        artwork_url.replace(pos, 2, "/");
-        pos += 1;
-    }
-    
-    // iTunes returns 100x100 by default, upgrade to 600x600 for better quality
-    pos = artwork_url.find("100x100");
-    if (pos != std::string::npos) {
-        artwork_url.replace(pos, 7, "600x600");
-    }
-    
-    // Validate URL
-    if (artwork_url.empty() || artwork_url.find("http") != 0) {
-#ifdef _DEBUG
-#endif
-        return false;
-    }
-    
-    
-    return true;
+    return false;
 }
 
 bool parse_lastfm_json_response(const std::string& json, std::string& artwork_url) {
