@@ -98,14 +98,17 @@ The component supports custom logo files for internet radio stations. This featu
 #### How It Works
 
 - **Automatic Detection**: When connecting to an internet radio stream, the component automatically:
-  1. Extracts the full URL path from the stream URL
-  2. Looks for a full-path matching logo file first
-  3. Falls back to domain-only matching if no full-path logo is found
-  4. Displays the custom logo if found
-  5. Falls back to normal track artwork search if no logo is found
+  1. Attempts to search for track artwork using metadata via configured APIs
+  2. If API search fails, extracts the full URL path from the stream URL
+  3. Looks for a full-path matching station logo file first
+  4. Falls back to domain-only matching if no full-path logo is found
+  5. Falls back to station-specific fallback images (-noart.png files)
+  6. Falls back to generic fallback image (noart.png)
 
-- **Priority**: Station logos have the highest priority in the fallback chain when API artwork search fails
-
+- **Priority**: Station logos are used as fallback when API artwork search fails (not as primary source)
+  
+  **Note**: API-based track artwork searches always take priority over station logos for internet radio streams. Station logos serve as visual fallbacks when metadata-based artwork searches are unsuccessful.
+  
 - **Configuration**: Enable/disable and customize folder path through Advanced preferences
 
 #### Example Setup for Multi-Stream Domain
@@ -153,7 +156,7 @@ The component supports **two levels of specificity** for fallback images, allowi
 **When It's Used**: The fallback image is displayed **only** when:
 - Normal track artwork search fails (all APIs exhausted)
 - The stream is an internet radio station
-- No regular station logo exists (station logos have higher priority)
+- No station logo exists (checked before fallback images in the hierarchy)
 
 **Priority Order** for internet radio streams:
 1. **Track artwork** from APIs - highest priority, searches using metadata (if available)
