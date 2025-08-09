@@ -415,7 +415,8 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
     
     // Replace illegal characters for filename compatibility
     //$replace(%path%,/,-,\-,|,-,:,-,*,x,",'',<,_,>_,?,_)
-    //Usable also with other artwork readers defining in artwork sources eg C:\Users\xxx\foobar2000\profile\foo_artwork_data\logos\$replace(%path%,/,-,\-,|,-,:,-,*,x,",'',<,_,>_,?,_).*
+    //$replace(%path%,$char(47),$char(45),$char(92),$char(45),$char(448),$char(45),$char(58),$char(45),$char(42),$char(140),$char(34),$char(39)$char(39),$char(60),$char(95),$char(62),$char(95),$char(63),$char(95))
+    //Usable also with other artwork readers defining in artwork sources eg C:\Users\xxx\foobar2000\profile\foo_artwork_data\logos\$replace(%path%,$char(47),$char(45),$char(92),$char(45),$char(448),$char(45),$char(58),$char(45),$char(42),$char(140),$char(34),$char(39)$char(39),$char(60),$char(95),$char(62),$char(95),$char(63),$char(95)).*
     pfc::string8 result = path;
     for (size_t i = 0; i < result.length(); i++) {
         if (result[i] == '/') {result.set_char(i, '-');}
@@ -7607,3 +7608,4 @@ bool is_safe_internet_stream(metadb_handle_ptr track) {
 //=============================================================================
 
 // CUI implementation is now in artwork_panel_cui.cpp
+
