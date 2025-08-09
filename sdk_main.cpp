@@ -278,7 +278,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.6",
+    "1.5.7",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -295,7 +295,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.6",
+    "1.5.7",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -416,7 +416,8 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
     
     // Replace illegal characters for filename compatibility
     //$replace(%path%,/,-,\-,|,-,:,-,*,x,",'',<,_,>_,?,_)
-    //Usable also with other artwork readers defining in artwork sources eg C:\Users\xxx\foobar2000\profile\foo_artwork_data\logos\$replace(%path%,/,-,\-,|,-,:,-,*,x,",'',<,_,>_,?,_).*
+    //$replace(%path%,$char(47),$char(45),$char(92),$char(45),$char(448),$char(45),$char(58),$char(45),$char(42),$char(140),$char(34),$char(39)$char(39),$char(60),$char(95),$char(62),$char(95),$char(63),$char(95))
+    //Usable also with other artwork readers defining in artwork sources eg C:\Users\xxx\foobar2000\profile\foo_artwork_data\logos\$replace(%path%,$char(47),$char(45),$char(92),$char(45),$char(448),$char(45),$char(58),$char(45),$char(42),$char(140),$char(34),$char(39)$char(39),$char(60),$char(95),$char(62),$char(95),$char(63),$char(95)).*
     pfc::string8 result = path;
     for (size_t i = 0; i < result.length(); i++) {
         if (result[i] == '/') {result.set_char(i, '-');}
@@ -430,13 +431,6 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
         else if (result[i] == '?') { result.set_char(i, '_'); }
 
     }
-
-    std::string str = "foo_artwork - Filename for Full URL Path Matching LOGO: ";
-    str.append(result);
-    const char* cstr = str.c_str();
-    
-    //console log it for the user to know what filename to use
-    console::info(cstr);
 
     return result;
 }
