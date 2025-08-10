@@ -250,6 +250,8 @@ HINSTANCE g_hIns = NULL;
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH: {
+        // Debug: Component loading notification
+        console::info("FOO_ARTWORK DEBUG: Component DLL loaded successfully");
 #ifdef _DEBUG
 #ifdef _DEBUG
 #endif
@@ -278,7 +280,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.8",
+    "1.5.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -295,7 +297,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.8",
+    "1.5.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -466,6 +468,12 @@ pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track) {
 
 // CRASH FIX: Helper function to safely create GDI+ bitmap from file
 HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
+    char debug_path[512];
+    WideCharToMultiByte(CP_UTF8, 0, wide_path.c_str(), -1, debug_path, sizeof(debug_path), NULL, NULL);
+    char debug_msg[512];
+    sprintf_s(debug_msg, "LOGO DEBUG: safe_load_gdiplus_bitmap called for: %s", debug_path);
+    console::info(debug_msg);
+    
     Gdiplus::Bitmap* bitmap = nullptr;
     try {
         // First check if file is accessible and has reasonable size
@@ -486,9 +494,72 @@ HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
                             UINT width = bitmap->GetWidth();
                             UINT height = bitmap->GetHeight();
                             if (width > 0 && height > 0 && width <= 4096 && height <= 4096) {
+                                // Debug: Check GDI+ bitmap pixel format before conversion
+                                Gdiplus::PixelFormat format = bitmap->GetPixelFormat();
+                                char format_debug[256];
+                                sprintf_s(format_debug, "LOGO DEBUG: GDI+ bitmap format: 0x%08X, Has Alpha: %s", 
+                                         format, (format & PixelFormatAlpha) ? "YES" : "NO");
+                                console::info(format_debug);
+                                
                                 HBITMAP gdi_bitmap = nullptr;
-                                Gdiplus::Status status = bitmap->GetHBITMAP(Gdiplus::Color(255, 255, 255, 255), &gdi_bitmap);
-                                if (status == Gdiplus::Ok && gdi_bitmap) {
+                                
+                                // Use alpha-preserving method for 32-bit ARGB images
+                                if (format == PixelFormat32bppARGB) {
+                                    // Create DIB section that preserves alpha channel
+                                    HDC screen_dc = GetDC(NULL);
+                                    if (screen_dc) {
+                                        BITMAPINFO bmi = {};
+                                        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                                        bmi.bmiHeader.biWidth = width;
+                                        bmi.bmiHeader.biHeight = -(LONG)height; // Top-down DIB
+                                        bmi.bmiHeader.biPlanes = 1;
+                                        bmi.bmiHeader.biBitCount = 32;
+                                        bmi.bmiHeader.biCompression = BI_RGB;
+                                        
+                                        void* pixel_data = nullptr;
+                                        gdi_bitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &pixel_data, NULL, 0);
+                                        
+                                        if (gdi_bitmap && pixel_data) {
+                                            // Lock bitmap bits and copy with alpha preservation
+                                            Gdiplus::Rect rect(0, 0, width, height);
+                                            Gdiplus::BitmapData bitmapData;
+                                            if (bitmap->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bitmapData) == Gdiplus::Ok) {
+                                                // Calculate stride for DIB section
+                                                int stride = ((width * 32 + 31) / 32) * 4;
+                                                
+                                                // Copy pixel data row by row to preserve alpha
+                                                BYTE* src = (BYTE*)bitmapData.Scan0;
+                                                BYTE* dst = (BYTE*)pixel_data;
+                                                for (UINT y = 0; y < height; y++) {
+                                                    memcpy(dst + y * stride, src + y * bitmapData.Stride, width * 4);
+                                                }
+                                                
+                                                bitmap->UnlockBits(&bitmapData);
+                                                
+                                                console::info("LOGO DEBUG: Created alpha-preserving HBITMAP");
+                                            } else {
+                                                DeleteObject(gdi_bitmap);
+                                                gdi_bitmap = nullptr;
+                                            }
+                                        }
+                                        ReleaseDC(NULL, screen_dc);
+                                    }
+                                } else {
+                                    // Use standard method for non-alpha images
+                                    Gdiplus::Status status = bitmap->GetHBITMAP(NULL, &gdi_bitmap);
+                                    if (status != Gdiplus::Ok) {
+                                        gdi_bitmap = nullptr;
+                                    }
+                                }
+                                
+                                if (gdi_bitmap) {
+                                    // Debug: Check resulting HBITMAP
+                                    BITMAP bm;
+                                    GetObject(gdi_bitmap, sizeof(BITMAP), &bm);
+                                    char hbitmap_debug[256];
+                                    sprintf_s(hbitmap_debug, "LOGO DEBUG: Created HBITMAP %dx%d, %d bits", 
+                                             bm.bmWidth, bm.bmHeight, bm.bmBitsPixel);
+                                    console::info(hbitmap_debug);
                                     delete bitmap;
                                     return gdi_bitmap;
                                 }
@@ -517,6 +588,10 @@ HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
 
 // Helper function to try loading a logo with a specific identifier
 HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8& logos_dir) {
+    char debug_msg[512];
+    sprintf_s(debug_msg, "LOGO DEBUG: try_load_station_logo called with identifier: %s", identifier.c_str());
+    console::info(debug_msg);
+    
     if (identifier.is_empty()) return NULL;
     
     // Simple safe version without __try (to avoid object unwinding issues)
@@ -559,6 +634,9 @@ HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8
                 // CRASH FIX: Use safe helper function for GDI+ bitmap loading
                 HBITMAP gdi_bitmap = safe_load_gdiplus_bitmap(wide_path);
                 if (gdi_bitmap) {
+                    char logo_debug[256];
+                    sprintf_s(logo_debug, "LOGO DEBUG: Successfully loaded logo: %s", ext);
+                    console::info(logo_debug);
                     return gdi_bitmap;
                 }
             }
@@ -572,6 +650,7 @@ HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8
 
 // Function to load station logo with full path fallback to domain-only
 HBITMAP load_station_logo(metadb_handle_ptr track) {
+    console::info("LOGO DEBUG: load_station_logo called");
     if (!track.is_valid()) return NULL;
     
     // Check if custom station logos are enabled
@@ -648,6 +727,117 @@ HBITMAP load_station_logo(metadb_handle_ptr track) {
     }
     
     return NULL;
+}
+
+// New function to load station logo directly as GDI+ bitmap (preserves alpha)
+Gdiplus::Bitmap* try_load_station_logo_gdiplus(const pfc::string8& identifier, const pfc::string8& logos_dir) {
+    
+    if (identifier.is_empty()) return nullptr;
+    
+    try {
+        // Try PNG first (most likely to have alpha)
+        pfc::string8 png_path = logos_dir + identifier + ".png";
+        
+        if (PathFileExistsA(png_path.get_ptr())) {
+            
+            // Convert to wide string for GDI+
+            std::wstring wide_path;
+            wide_path.resize(png_path.length() + 1);
+            int result = MultiByteToWideChar(CP_UTF8, 0, png_path.c_str(), -1, &wide_path[0], (int)wide_path.size());
+            if (result > 0) {
+                // Load directly with GDI+ to preserve alpha
+                Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
+                if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                    return bitmap;
+                } else {
+                    delete bitmap;
+                }
+            }
+        }
+        
+        // Try other formats (fallback)
+        const char* extensions[] = { ".jpg", ".jpeg", ".gif", ".bmp" };
+        for (const char* ext : extensions) {
+            pfc::string8 logo_path = logos_dir + identifier + ext;
+            
+            if (PathFileExistsA(logo_path.get_ptr())) {
+                
+                // Convert to wide string
+                std::wstring wide_path;
+                wide_path.resize(logo_path.length() + 1);
+                int result = MultiByteToWideChar(CP_UTF8, 0, logo_path.c_str(), -1, &wide_path[0], (int)wide_path.size());
+                if (result > 0) {
+                    Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(wide_path.c_str());
+                    if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                        return bitmap;
+                    } else {
+                        delete bitmap;
+                    }
+                }
+            }
+        }
+    } catch (...) {
+        // Silently handle exceptions
+    }
+    
+    return nullptr;
+}
+
+// Function to load station logo directly as GDI+ bitmap (preserves alpha)
+Gdiplus::Bitmap* load_station_logo_gdiplus(metadb_handle_ptr track) {
+    
+    // Check if custom station logos are enabled
+    if (!cfg_enable_custom_logos) {
+        return nullptr;
+    }
+    
+    if (!track.is_valid()) return nullptr;
+    
+    // Get the directory path (using same logic as existing functions)
+    pfc::string8 profile_url = core_api::get_profile_path();
+    pfc::string8 profile_path;
+    if (profile_url.startsWith("file://")) {
+        profile_path = profile_url.c_str() + 7; // Skip "file://"
+        for (size_t i = 0; i < profile_path.length(); i++) {
+            if (profile_path[i] == '/') {
+                profile_path.set_char(i, '\\');
+            }
+        }
+    } else {
+        profile_path = profile_url;
+    }
+    
+    pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+    
+    try {
+        // Get stream URL or path
+        const char* url = track->get_path();
+        if (!url || strlen(url) == 0) return nullptr;
+        
+        // Extract domain and full path using existing functions
+        pfc::string8 full_path = extract_full_path_from_stream_url(track);
+        pfc::string8 domain = extract_domain_from_stream_url(track);
+        
+        // Try full path first
+        if (!full_path.is_empty()) {
+            Gdiplus::Bitmap* result = try_load_station_logo_gdiplus(full_path, logos_dir);
+            if (result) {
+                return result;
+            }
+        }
+        
+        // Try domain fallback
+        if (!domain.is_empty()) {
+            Gdiplus::Bitmap* result = try_load_station_logo_gdiplus(domain, logos_dir);
+            if (result) {
+                return result;
+            }
+        }
+    } catch (...) {
+        // Silently handle exceptions
+    }
+    
+    return nullptr;
 }
 
 // Legacy function to load station logo from domain string (for backward compatibility)
@@ -963,6 +1153,9 @@ private:
     
 public:
     void on_init() override {
+        // Debug: Initialization notification
+        console::info("FOO_ARTWORK DEBUG: Component initialization started");
+        
         // Initialize GDI+
         GdiplusStartupInput gdiplusStartupInput;
         GdiplusStartup(&m_gdiplusToken, &gdiplusStartupInput, NULL);
@@ -2151,7 +2344,7 @@ bool load_local_artwork_into_shared_bitmap(const pfc::string8& file_path) {
         
         // Convert to HBITMAP
         HBITMAP hBitmap = NULL;
-        if (pBitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBitmap) == Gdiplus::Ok) {
+        if (pBitmap->GetHBITMAP(NULL, &hBitmap) == Gdiplus::Ok) {
             // Clean up old shared bitmap
             if (g_shared_artwork_bitmap) {
                 DeleteObject(g_shared_artwork_bitmap);
@@ -4293,6 +4486,21 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
         return false;
     }
     
+    // Debug: Check pixel format to see if alpha channel is present
+    Gdiplus::PixelFormat format = pBitmap->GetPixelFormat();
+    char debug_msg[256];
+    sprintf_s(debug_msg, "SDK_MAIN DEBUG: Loaded bitmap pixel format: 0x%08X, Has Alpha: %s", 
+             format, (format & PixelFormatAlpha) ? "YES" : "NO");
+    console::info(debug_msg);
+    
+    if (format == PixelFormat32bppARGB) {
+        console::info("SDK_MAIN DEBUG: Bitmap is 32-bit ARGB with alpha channel");
+    } else if (format == PixelFormat32bppRGB) {
+        console::info("SDK_MAIN DEBUG: Bitmap is 32-bit RGB without alpha channel");
+    } else if (format == PixelFormat24bppRGB) {
+        console::info("SDK_MAIN DEBUG: Bitmap is 24-bit RGB");
+    }
+    
     // Use faster DIB creation instead of GetHBITMAP to prevent freeze
     
     UINT width = pBitmap->GetWidth();
@@ -6045,9 +6253,24 @@ namespace standalone {
             return false;
         }
         
+        // Debug: Check pixel format to see if alpha channel is present
+        Gdiplus::PixelFormat format = pBitmap->GetPixelFormat();
+        char debug_msg[256];
+        sprintf_s(debug_msg, "SDK_MAIN DEBUG 2: Loaded bitmap pixel format: 0x%08X, Has Alpha: %s", 
+                 format, (format & PixelFormatAlpha) ? "YES" : "NO");
+        console::info(debug_msg);
+        
+        if (format == PixelFormat32bppARGB) {
+            console::info("SDK_MAIN DEBUG 2: Bitmap is 32-bit ARGB with alpha channel");
+        } else if (format == PixelFormat32bppRGB) {
+            console::info("SDK_MAIN DEBUG 2: Bitmap is 32-bit RGB without alpha channel");
+        } else if (format == PixelFormat24bppRGB) {
+            console::info("SDK_MAIN DEBUG 2: Bitmap is 24-bit RGB");
+        }
+        
         // Convert to HBITMAP
         HBITMAP hBitmap = NULL;
-        if (pBitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBitmap) != Gdiplus::Ok) {
+        if (pBitmap->GetHBITMAP(NULL, &hBitmap) != Gdiplus::Ok) {
             delete pBitmap;
             return false;
         }
@@ -7069,7 +7292,7 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
         
         // Convert to HBITMAP and store in shared bitmap
         HBITMAP hBitmap = nullptr;
-        if (bitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0), &hBitmap) == Gdiplus::Ok && hBitmap) {
+        if (bitmap->GetHBITMAP(NULL, &hBitmap) == Gdiplus::Ok && hBitmap) {
             // Clean up old shared bitmap
             if (g_shared_artwork_bitmap) {
                 DeleteObject(g_shared_artwork_bitmap);
