@@ -91,6 +91,7 @@ extern pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track);
 extern pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track);
 extern HBITMAP load_station_logo(const pfc::string8& domain);
 extern HBITMAP load_station_logo(metadb_handle_ptr track);
+extern Gdiplus::Bitmap* load_station_logo_gdiplus(metadb_handle_ptr track);
 extern HBITMAP load_noart_logo(metadb_handle_ptr track);
 extern HBITMAP load_noart_logo(const pfc::string8& domain);
 extern HBITMAP load_generic_noart_logo(metadb_handle_ptr track);
@@ -636,15 +637,31 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                                 
                                 // Priority 1: Station logo (with full path + domain fallback)
                                 if (!fallback_loaded) {
-                                    HBITMAP logo_bitmap = load_station_logo(current_track);
-                                    if (logo_bitmap) {
-                                        // CRASH FIX: Use WIC-based loading for CUI compatibility
-                                        if (load_custom_logo_with_wic(logo_bitmap)) {
-                                            m_artwork_loaded = true;
-                                            m_artwork_source = "Station logo";
-                                            fallback_loaded = true;
+                                    // First try direct GDI+ loading to preserve transparency
+                                    Gdiplus::Bitmap* gdi_logo = load_station_logo_gdiplus(current_track);
+                                    if (gdi_logo && gdi_logo->GetLastStatus() == Gdiplus::Ok) {
+                                        
+                                        // Set the artwork directly from GDI+ bitmap
+                                        m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(gdi_logo);
+                                        m_artwork_loaded = true;
+                                        m_artwork_source = "Station logo";
+                                        fallback_loaded = true;
+                                        InvalidateRect(get_wnd(), NULL, TRUE);
+                                    } else {
+                                        // Clean up failed GDI+ bitmap
+                                        delete gdi_logo;
+                                        
+                                        // Fallback to HBITMAP method
+                                        HBITMAP logo_bitmap = load_station_logo(current_track);
+                                        if (logo_bitmap) {
+                                            // CRASH FIX: Use WIC-based loading for CUI compatibility
+                                            if (load_custom_logo_with_wic(logo_bitmap)) {
+                                                m_artwork_loaded = true;
+                                                m_artwork_source = "Station logo";
+                                                fallback_loaded = true;
+                                            }
+                                            DeleteObject(logo_bitmap); // Always clean up the source bitmap
                                         }
-                                        DeleteObject(logo_bitmap); // Always clean up the source bitmap
                                     }
                                 }
                                 
@@ -1731,9 +1748,9 @@ void CUIArtworkPanel::resize_artwork_to_fit() {
             g.DrawImage(m_artwork_bitmap.get(), dest_rect, 0, 0, img_width, img_height, 
                        Gdiplus::UnitPixel, &img_attr);
             
-            // Convert to GDI HBITMAP
-            Gdiplus::Color transparent(0, 0, 0, 0);
-            if (temp_scaled->GetHBITMAP(transparent, &m_scaled_gdi_bitmap) != Gdiplus::Ok) {
+            // Convert to GDI HBITMAP - preserve alpha channel for transparency
+            // Don't pass background color to preserve 32-bit ARGB format with alpha channel
+            if (temp_scaled->GetHBITMAP(NULL, &m_scaled_gdi_bitmap) != Gdiplus::Ok) {
                 m_scaled_gdi_bitmap = NULL;
             }
         }
@@ -1951,8 +1968,10 @@ bool CUIArtworkPanel::copy_bitmap_from_main_component(HBITMAP source_bitmap) {
                             }
                             
                             if (copy_success) {
-                                // Now safely convert to GDI+ bitmap
-                                auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(compatible_bitmap, nullptr);
+                                
+                                // Create GDI+ bitmap using safer method
+                                std::unique_ptr<Gdiplus::Bitmap> new_bitmap = std::make_unique<Gdiplus::Bitmap>(compatible_bitmap, nullptr);
+                                
                                 if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
                                     m_artwork_bitmap = std::move(new_bitmap);
                                     m_artwork_loaded = true;
