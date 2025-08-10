@@ -444,14 +444,8 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
 }
 
 void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
-    // Debug: Track DUI new track event
-    console::info("DUI DEBUG: on_playback_new_track called");
-    
     if (track.is_valid()) {
         pfc::string8 track_path = track->get_path();
-        char debug_msg[512];
-        sprintf_s(debug_msg, "DUI DEBUG: Track path: %s", track_path.c_str());
-        console::info(debug_msg);
     }
 
     // Check if it's an internet stream and custom logos enabled
@@ -611,12 +605,6 @@ void artwork_ui_element::start_artwork_search() {
 void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result& result) {
     m_artwork_loading = false;
     
-    // Debug: Track artwork loading results
-    console::info("DUI DEBUG: on_artwork_loaded called");
-    char debug_msg[256];
-    sprintf_s(debug_msg, "DUI DEBUG: Result success: %s, data size: %d", 
-             result.success ? "YES" : "NO", (int)result.data.get_size());
-    console::info(debug_msg);
     
     if (result.success && result.data.get_size() > 0) {
         if (load_image_from_memory(result.data.get_ptr(), result.data.get_size())) {
@@ -661,7 +649,6 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             if (!fallback_loaded) {
                 HBITMAP noart_bitmap = load_noart_logo(m_current_track);
                 if (noart_bitmap) {
-                    console::info("DUI DEBUG: Loading noart fallback bitmap (main)");
                     cleanup_gdiplus_image();
                     try {
                         m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(noart_bitmap, NULL);
@@ -684,7 +671,6 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             if (!fallback_loaded) {
                 HBITMAP generic_bitmap = load_generic_noart_logo(m_current_track);
                 if (generic_bitmap) {
-                    console::info("DUI DEBUG: Loading generic fallback bitmap (main)");
                     cleanup_gdiplus_image();
                     try {
                         m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(generic_bitmap, NULL);
@@ -752,7 +738,6 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
     if (m_artwork_image) {
         Gdiplus::PixelFormat format = m_artwork_image->GetPixelFormat();
         has_alpha = (format == PixelFormat32bppARGB);
-        console::printf("DUI DEBUG: Image format check - has alpha: %d", has_alpha);
     }
     
     // Fill background (simpler approach)
@@ -875,8 +860,6 @@ void artwork_ui_element::draw_placeholder(HDC hdc, const RECT& rect) {
 }
 
 bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size) {
-    // Debug: Track DUI image loading
-    console::info("DUI DEBUG: load_image_from_memory called");
     
     cleanup_gdiplus_image();
     
@@ -922,11 +905,11 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
             
             // Also check if it's specifically 32-bit ARGB
             if (format == PixelFormat32bppARGB) {
-                console::info("ARTWORK DEBUG: Image is 32-bit ARGB with alpha channel");
+                // 32-bit ARGB with alpha channel
             } else if (format == PixelFormat32bppRGB) {
-                console::info("ARTWORK DEBUG: Image is 32-bit RGB without alpha channel");
+                // 32-bit RGB without alpha channel
             } else if (format == PixelFormat24bppRGB) {
-                console::info("ARTWORK DEBUG: Image is 24-bit RGB");
+                // 24-bit RGB
             }
         }
     }
@@ -1280,25 +1263,15 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                 // Convert HBITMAP directly to GDI+ Image (like the existing custom logo loading)
                 cleanup_gdiplus_image();
                 
-                // Debug: Check HBITMAP info before conversion
+                // Convert HBITMAP info
                 BITMAP bm;
                 GetObject(event.bitmap, sizeof(BITMAP), &bm);
-                char bmp_debug[256];
-                sprintf_s(bmp_debug, "DUI DEBUG: Converting HBITMAP %dx%d, %d bits", bm.bmWidth, bm.bmHeight, bm.bmBitsPixel);
-                console::info(bmp_debug);
                 
                 try {
                     // Use regular conversion for now to avoid crashes
                     m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(event.bitmap, NULL);
-                    console::printf("DUI DEBUG: Using regular HBITMAP conversion");
                     
                     if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                        // Debug: Check GDI+ bitmap format after conversion
-                        Gdiplus::PixelFormat format = m_artwork_image->GetPixelFormat();
-                        char debug_msg[256];
-                        sprintf_s(debug_msg, "DUI DEBUG: GDI+ bitmap format: 0x%08X, Has Alpha: %s", 
-                                 format, (format & PixelFormatAlpha) ? "YES" : "NO");
-                        console::info(debug_msg);
                         // Set the artwork source - this was missing!
                         m_artwork_source = event.source;
                         
@@ -1443,7 +1416,6 @@ bool artwork_ui_element::load_local_artwork_from_main_component() {
     cleanup_gdiplus_image();
     
     try {
-        console::info("DUI DEBUG: Loading main component bitmap");
         m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(main_bitmap, NULL);
         
         if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
