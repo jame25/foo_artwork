@@ -40,7 +40,6 @@ void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callbac
     ASSERT_MAIN_THREAD();
     
     // Debug: Track artwork loading
-    console::info("ARTWORK_MANAGER DEBUG: get_artwork_async called");
     
     if (!initialized_) {
         initialize();
@@ -61,7 +60,6 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
     ASSERT_MAIN_THREAD();
     
     // Debug: Track artwork loading with metadata
-    console::info("ARTWORK_MANAGER DEBUG: get_artwork_async_with_metadata called");
     
     if (!initialized_) {
         initialize();
