@@ -736,6 +736,13 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             }
         }
         break;
+        
+    case WM_SYSCOLORCHANGE:
+    case WM_THEMECHANGED:
+    case WM_SETTINGCHANGE:
+        // Handle system color/theme changes
+        InvalidateRect(wnd, NULL, TRUE);
+        break;
     }
     
     return DefWindowProc(wnd, msg, wParam, lParam);
