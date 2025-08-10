@@ -251,7 +251,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH: {
         // Debug: Component loading notification
-        console::info("FOO_ARTWORK DEBUG: Component DLL loaded successfully");
 #ifdef _DEBUG
 #ifdef _DEBUG
 #endif
@@ -536,7 +535,6 @@ HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
                                                 
                                                 bitmap->UnlockBits(&bitmapData);
                                                 
-                                                console::info("LOGO DEBUG: Created alpha-preserving HBITMAP");
                                             } else {
                                                 DeleteObject(gdi_bitmap);
                                                 gdi_bitmap = nullptr;
@@ -650,7 +648,6 @@ HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8
 
 // Function to load station logo with full path fallback to domain-only
 HBITMAP load_station_logo(metadb_handle_ptr track) {
-    console::info("LOGO DEBUG: load_station_logo called");
     if (!track.is_valid()) return NULL;
     
     // Check if custom station logos are enabled
@@ -1154,7 +1151,6 @@ private:
 public:
     void on_init() override {
         // Debug: Initialization notification
-        console::info("FOO_ARTWORK DEBUG: Component initialization started");
         
         // Initialize GDI+
         GdiplusStartupInput gdiplusStartupInput;
@@ -4494,11 +4490,8 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
     console::info(debug_msg);
     
     if (format == PixelFormat32bppARGB) {
-        console::info("SDK_MAIN DEBUG: Bitmap is 32-bit ARGB with alpha channel");
     } else if (format == PixelFormat32bppRGB) {
-        console::info("SDK_MAIN DEBUG: Bitmap is 32-bit RGB without alpha channel");
     } else if (format == PixelFormat24bppRGB) {
-        console::info("SDK_MAIN DEBUG: Bitmap is 24-bit RGB");
     }
     
     // Use faster DIB creation instead of GetHBITMAP to prevent freeze
@@ -6261,11 +6254,8 @@ namespace standalone {
         console::info(debug_msg);
         
         if (format == PixelFormat32bppARGB) {
-            console::info("SDK_MAIN DEBUG 2: Bitmap is 32-bit ARGB with alpha channel");
         } else if (format == PixelFormat32bppRGB) {
-            console::info("SDK_MAIN DEBUG 2: Bitmap is 32-bit RGB without alpha channel");
         } else if (format == PixelFormat24bppRGB) {
-            console::info("SDK_MAIN DEBUG 2: Bitmap is 24-bit RGB");
         }
         
         // Convert to HBITMAP
