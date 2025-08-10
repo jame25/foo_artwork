@@ -837,6 +837,141 @@ Gdiplus::Bitmap* load_station_logo_gdiplus(metadb_handle_ptr track) {
     return nullptr;
 }
 
+// New function to load noart logo directly as GDI+ bitmap (preserves alpha)
+std::unique_ptr<Gdiplus::Bitmap> try_load_noart_logo_gdiplus(const pfc::string8& identifier, const pfc::string8& logos_dir) {
+    if (identifier.is_empty()) return nullptr;
+    
+    try {
+        // Try PNG first (most likely to have alpha)
+        const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
+        
+        for (const char* ext : extensions) {
+            pfc::string8 noart_path = logos_dir + identifier + "-noart" + ext;
+            
+            if (PathFileExistsA(noart_path.get_ptr())) {
+                // Convert to wide string for GDI+
+                std::wstring wide_path;
+                wide_path.resize(noart_path.length() + 1);
+                int result = MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], (int)wide_path.size());
+                if (result > 0) {
+                    // Load directly with GDI+ to preserve alpha
+                    auto bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
+                    if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                        return bitmap;
+                    }
+                }
+            }
+        }
+    } catch (...) {
+        // Silently handle exceptions
+    }
+    
+    return nullptr;
+}
+
+// Function to load noart logo directly as GDI+ bitmap (preserves alpha)
+std::unique_ptr<Gdiplus::Bitmap> load_noart_logo_gdiplus(metadb_handle_ptr track) {
+    // Check if custom station logos are enabled
+    if (!cfg_enable_custom_logos) {
+        return nullptr;
+    }
+    
+    if (!track.is_valid()) return nullptr;
+    
+    // Get the directory path (using same logic as existing functions)
+    pfc::string8 profile_url = core_api::get_profile_path();
+    pfc::string8 profile_path;
+    if (profile_url.startsWith("file://")) {
+        profile_path = profile_url.c_str() + 7; // Skip "file://"
+        for (size_t i = 0; i < profile_path.length(); i++) {
+            if (profile_path[i] == '/') {
+                profile_path.set_char(i, '\\');
+            }
+        }
+    } else {
+        profile_path = profile_url;
+    }
+    
+    pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+    
+    try {
+        // Extract domain and full path using existing functions
+        pfc::string8 full_path = extract_full_path_from_stream_url(track);
+        pfc::string8 domain = extract_domain_from_stream_url(track);
+        
+        // Try full path first
+        if (!full_path.is_empty()) {
+            auto result = try_load_noart_logo_gdiplus(full_path, logos_dir);
+            if (result) {
+                return result;
+            }
+        }
+        
+        // Try domain fallback
+        if (!domain.is_empty()) {
+            auto result = try_load_noart_logo_gdiplus(domain, logos_dir);
+            if (result) {
+                return result;
+            }
+        }
+    } catch (...) {
+        // Silently handle exceptions
+    }
+    
+    return nullptr;
+}
+
+// Function to load generic noart logo directly as GDI+ bitmap (preserves alpha)
+std::unique_ptr<Gdiplus::Bitmap> load_generic_noart_logo_gdiplus() {
+    // Check if custom station logos are enabled
+    if (!cfg_enable_custom_logos) {
+        return nullptr;
+    }
+    
+    // Get the directory path (using same logic as existing functions)
+    pfc::string8 profile_url = core_api::get_profile_path();
+    pfc::string8 profile_path;
+    if (profile_url.startsWith("file://")) {
+        profile_path = profile_url.c_str() + 7; // Skip "file://"
+        for (size_t i = 0; i < profile_path.length(); i++) {
+            if (profile_path[i] == '/') {
+                profile_path.set_char(i, '\\');
+            }
+        }
+    } else {
+        profile_path = profile_url;
+    }
+    
+    pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
+    
+    try {
+        // Try common image extensions for generic noart.png
+        const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
+        
+        for (const char* ext : extensions) {
+            pfc::string8 noart_path = logos_dir + "noart" + ext;
+            
+            if (PathFileExistsA(noart_path.get_ptr())) {
+                // Convert to wide string for GDI+
+                std::wstring wide_path;
+                wide_path.resize(noart_path.length() + 1);
+                int result = MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], (int)wide_path.size());
+                if (result > 0) {
+                    // Load directly with GDI+ to preserve alpha
+                    auto bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
+                    if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                        return bitmap;
+                    }
+                }
+            }
+        }
+    } catch (...) {
+        // Silently handle exceptions
+    }
+    
+    return nullptr;
+}
+
 // Legacy function to load station logo from domain string (for backward compatibility)
 HBITMAP load_station_logo(const pfc::string8& domain) {
     if (domain.is_empty()) return NULL;
