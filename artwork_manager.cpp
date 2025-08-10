@@ -39,6 +39,9 @@ void artwork_manager::shutdown() {
 void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
     
+    // Debug: Track artwork loading
+    console::info("ARTWORK_MANAGER DEBUG: get_artwork_async called");
+    
     if (!initialized_) {
         initialize();
     }
@@ -56,6 +59,9 @@ void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callbac
 
 void artwork_manager::get_artwork_async_with_metadata(const char* artist, const char* track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
+    
+    // Debug: Track artwork loading with metadata
+    console::info("ARTWORK_MANAGER DEBUG: get_artwork_async_with_metadata called");
     
     if (!initialized_) {
         initialize();
