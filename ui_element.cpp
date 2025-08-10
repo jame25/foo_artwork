@@ -311,7 +311,8 @@ void artwork_ui_element::shutdown() {
 
 void artwork_ui_element::notify(const GUID& p_what, t_size p_param1, const void* p_param2, t_size p_param2size) {
     // Handle color/theme change notifications
-    if (p_what == ui_color_background || p_what == ui_color_darkmode) {
+    if (p_what == ui_element_notify_colors_changed || p_what == ui_element_notify_font_changed) {
+        // We use global colors and fonts - trigger a repaint whenever these change
         if (IsWindow()) {
             Invalidate();
         }
