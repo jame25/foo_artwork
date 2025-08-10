@@ -23,7 +23,9 @@ extern cfg_bool cfg_show_osd;
 extern HBITMAP load_station_logo(metadb_handle_ptr track);
 extern Gdiplus::Bitmap* load_station_logo_gdiplus(metadb_handle_ptr track);
 extern HBITMAP load_noart_logo(metadb_handle_ptr track);
+extern std::unique_ptr<Gdiplus::Bitmap> load_noart_logo_gdiplus(metadb_handle_ptr track);
 extern HBITMAP load_generic_noart_logo(metadb_handle_ptr track);
+extern std::unique_ptr<Gdiplus::Bitmap> load_generic_noart_logo_gdiplus();
 
 // External functions for triggering main component search (same as CUI)
 extern void trigger_main_component_search(metadb_handle_ptr track);
@@ -648,45 +650,35 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
         if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
             // Priority 1: Station-specific fallback with full path (e.g., ice1.somafm.com_indiepop-128-aac-noart.png)
             if (!fallback_loaded) {
-                HBITMAP noart_bitmap = load_noart_logo(m_current_track);
+                auto noart_bitmap = load_noart_logo_gdiplus(m_current_track);
                 if (noart_bitmap) {
                     cleanup_gdiplus_image();
-                    try {
-                        m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(noart_bitmap, NULL);
-                        if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                            m_artwork_loading = false;
-                            m_artwork_source = "Station fallback (no artwork)";
-                            fallback_loaded = true;
-                            Invalidate();
-                        } else {
-                            cleanup_gdiplus_image();
-                        }
-                    } catch (...) {
+                    m_artwork_image = noart_bitmap.release();
+                    if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                        m_artwork_loading = false;
+                        m_artwork_source = "Station fallback (no artwork)";
+                        fallback_loaded = true;
+                        Invalidate();
+                    } else {
                         cleanup_gdiplus_image();
                     }
-                    DeleteObject(noart_bitmap); // Always clean up the source bitmap
                 }
             }
             
             // Priority 2: Generic fallback with URL support (e.g., somafm.com-noart.png or noart.png)
             if (!fallback_loaded) {
-                HBITMAP generic_bitmap = load_generic_noart_logo(m_current_track);
+                auto generic_bitmap = load_generic_noart_logo_gdiplus();
                 if (generic_bitmap) {
                     cleanup_gdiplus_image();
-                    try {
-                        m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(generic_bitmap, NULL);
-                        if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                            m_artwork_loading = false;
-                            m_artwork_source = "Generic fallback (no artwork)";
-                            fallback_loaded = true;
-                            Invalidate();
-                        } else {
-                            cleanup_gdiplus_image();
-                        }
-                    } catch (...) {
+                    m_artwork_image = generic_bitmap.release();
+                    if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                        m_artwork_loading = false;
+                        m_artwork_source = "Generic fallback (no artwork)";
+                        fallback_loaded = true;
+                        Invalidate();
+                    } else {
                         cleanup_gdiplus_image();
                     }
-                    DeleteObject(generic_bitmap); // Always clean up the source bitmap
                 }
             }
         }
@@ -1342,45 +1334,35 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                     
                     // Priority 2: Station-specific fallback with full path (e.g., ice1.somafm.com_indiepop-128-aac-noart.png)
                     if (!fallback_loaded) {
-                        HBITMAP noart_bitmap = load_noart_logo(m_current_track);
+                        auto noart_bitmap = load_noart_logo_gdiplus(m_current_track);
                         if (noart_bitmap) {
                             cleanup_gdiplus_image();
-                            try {
-                                m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(noart_bitmap, NULL);
-                                if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                                    m_artwork_loading = false;
-                                    m_artwork_source = "Station fallback (no artwork)";
-                                    fallback_loaded = true;
-                                    Invalidate();
-                                } else {
-                                    cleanup_gdiplus_image();
-                                }
-                            } catch (...) {
+                            m_artwork_image = noart_bitmap.release();
+                            if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                                m_artwork_loading = false;
+                                m_artwork_source = "Station fallback (no artwork)";
+                                fallback_loaded = true;
+                                Invalidate();
+                            } else {
                                 cleanup_gdiplus_image();
                             }
-                            DeleteObject(noart_bitmap); // Always clean up the source bitmap
                         }
                     }
                     
                     // Priority 3: Generic fallback with URL support (e.g., somafm.com-noart.png or noart.png)
                     if (!fallback_loaded) {
-                        HBITMAP generic_bitmap = load_generic_noart_logo(m_current_track);
+                        auto generic_bitmap = load_generic_noart_logo_gdiplus();
                         if (generic_bitmap) {
                             cleanup_gdiplus_image();
-                            try {
-                                m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(generic_bitmap, NULL);
-                                if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                                    m_artwork_loading = false;
-                                    m_artwork_source = "Generic fallback (no artwork)";
-                                    fallback_loaded = true;
-                                    Invalidate();
-                                } else {
-                                    cleanup_gdiplus_image();
-                                }
-                            } catch (...) {
+                            m_artwork_image = generic_bitmap.release();
+                            if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                                m_artwork_loading = false;
+                                m_artwork_source = "Generic fallback (no artwork)";
+                                fallback_loaded = true;
+                                Invalidate();
+                            } else {
                                 cleanup_gdiplus_image();
                             }
-                            DeleteObject(generic_bitmap); // Always clean up the source bitmap
                         }
                     }
                 }
