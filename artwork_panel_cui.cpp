@@ -93,9 +93,11 @@ extern HBITMAP load_station_logo(const pfc::string8& domain);
 extern HBITMAP load_station_logo(metadb_handle_ptr track);
 extern Gdiplus::Bitmap* load_station_logo_gdiplus(metadb_handle_ptr track);
 extern HBITMAP load_noart_logo(metadb_handle_ptr track);
+extern std::unique_ptr<Gdiplus::Bitmap> load_noart_logo_gdiplus(metadb_handle_ptr track);
 extern HBITMAP load_noart_logo(const pfc::string8& domain);
 extern HBITMAP load_generic_noart_logo(metadb_handle_ptr track);
 extern HBITMAP load_generic_noart_logo();
+extern std::unique_ptr<Gdiplus::Bitmap> load_generic_noart_logo_gdiplus();
 
 // External functions for triggering main component search
 extern void trigger_main_component_search(metadb_handle_ptr track);
@@ -681,29 +683,25 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                                 
                                 // Priority 2: Station-specific noart (with full URL path support)
                                 if (!fallback_loaded) {
-                                    HBITMAP noart_bitmap = load_noart_logo(current_track);
-                                    if (noart_bitmap) {
-                                        // CRASH FIX: Use WIC-based loading for CUI compatibility
-                                        if (load_custom_logo_with_wic(noart_bitmap)) {
-                                            m_artwork_loaded = true;
-                                            m_artwork_source = "Station fallback (no artwork)";
-                                            fallback_loaded = true;
-                                        }
-                                        DeleteObject(noart_bitmap); // Always clean up the source bitmap
+                                    auto noart_bitmap = load_noart_logo_gdiplus(current_track);
+                                    if (noart_bitmap && noart_bitmap->GetLastStatus() == Gdiplus::Ok) {
+                                        // Set the artwork directly from GDI+ bitmap
+                                        m_artwork_bitmap = std::move(noart_bitmap);
+                                        m_artwork_loaded = true;
+                                        m_artwork_source = "Station fallback (no artwork)";
+                                        fallback_loaded = true;
                                     }
                                 }
                                 
                                 // Priority 3: Generic noart (with full URL path support)
                                 if (!fallback_loaded) {
-                                    HBITMAP generic_bitmap = load_generic_noart_logo(current_track);
-                                    if (generic_bitmap) {
-                                        // CRASH FIX: Use WIC-based loading for CUI compatibility
-                                        if (load_custom_logo_with_wic(generic_bitmap)) {
-                                            m_artwork_loaded = true;
-                                            m_artwork_source = "Generic fallback (no artwork)";
-                                            fallback_loaded = true;
-                                        }
-                                        DeleteObject(generic_bitmap); // Always clean up the source bitmap
+                                    auto generic_bitmap = load_generic_noart_logo_gdiplus();
+                                    if (generic_bitmap && generic_bitmap->GetLastStatus() == Gdiplus::Ok) {
+                                        // Set the artwork directly from GDI+ bitmap
+                                        m_artwork_bitmap = std::move(generic_bitmap);
+                                        m_artwork_loaded = true;
+                                        m_artwork_source = "Generic fallback (no artwork)";
+                                        fallback_loaded = true;
                                     }
                                 }
                                 
