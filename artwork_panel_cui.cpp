@@ -281,6 +281,10 @@ private:
     void search_artwork_with_metadata(const std::string& artist, const std::string& title);
     bool is_station_name(const std::string& artist, const std::string& title);  // Station name detection helper
     bool is_metadata_valid_for_search(const char* artist, const char* title);  // Metadata validation
+
+public:
+    // Static color change handler (public so color client can access it)
+    static void g_on_colours_change();
     
     // Constants
     static const int OSD_DELAY_DURATION = 1000;   // 1 second delay before animation starts
@@ -308,6 +312,16 @@ static uie::window_factory<CUIArtworkPanel> g_cui_artwork_panel_factory;
 
 // Global list of CUI artwork panels for preference updates
 static pfc::list_t<CUIArtworkPanel*> g_cui_artwork_panels;
+
+// Static color change handler implementation
+void CUIArtworkPanel::g_on_colours_change() {
+    for (t_size i = 0; i < g_cui_artwork_panels.get_count(); i++) {
+        CUIArtworkPanel* panel = g_cui_artwork_panels[i];
+        if (panel && panel->get_wnd()) {
+            InvalidateRect(panel->get_wnd(), NULL, TRUE);
+        }
+    }
+}
 
 // Global function to update CUI timers (called from sdk_main.cpp)
 void update_all_cui_clear_panel_timers() {
@@ -735,13 +749,6 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 // Handle any errors silently
             }
         }
-        break;
-        
-    case WM_SYSCOLORCHANGE:
-    case WM_THEMECHANGED:
-    case WM_SETTINGCHANGE:
-        // Handle system color/theme changes
-        InvalidateRect(wnd, NULL, TRUE);
         break;
     }
     
@@ -2254,6 +2261,40 @@ bool CUIArtworkPanel::is_metadata_valid_for_search(const char* artist, const cha
     }
     
     return true;
+}
+
+//=============================================================================
+// CUI Color Change Client
+//=============================================================================
+
+class CUIArtworkColoursClient : public cui::colours::client {
+public:
+    static const GUID g_guid_colour_client;
+    
+    const GUID& get_client_guid() const override { return g_guid_colour_client; }
+    void get_name(pfc::string_base& p_out) const override { p_out = "foo_artwork CUI panel"; }
+    
+    uint32_t get_supported_colours() const override { return cui::colours::colour_flag_background; }
+    uint32_t get_supported_bools() const override { return cui::colours::bool_flag_dark_mode_enabled; }
+    bool get_themes_supported() const override { return false; }
+    
+    void on_colour_changed(uint32_t mask) const override { 
+        CUIArtworkPanel::g_on_colours_change(); 
+    }
+    void on_bool_changed(uint32_t mask) const override {
+        if ((mask & cui::colours::bool_flag_dark_mode_enabled)) {
+            CUIArtworkPanel::g_on_colours_change();
+        }
+    }
+};
+
+// GUID for the color client
+const GUID CUIArtworkColoursClient::g_guid_colour_client = 
+{ 0xC1D2E3F4, 0xA5B6, 0x7890, { 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC } };
+
+// Register the color client
+namespace {
+cui::colours::client::factory<CUIArtworkColoursClient> g_cui_artwork_colour_client;
 }
 
 #endif // COLUMNS_UI_AVAILABLE
