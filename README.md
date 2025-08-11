@@ -81,9 +81,12 @@ The component supports custom logo files for internet radio stations. This featu
 
    **Full URL Path Matching** (Most Specific):
    - **Format**: `{full_path}.{ext}`
-   - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `ice1.somafm.com_indiepop-128-aac.png`
+   - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `https---ice1.somafm.com-indiepop-128-aac.png`
    - **Use Case**: Different logos for different streams on the same domain
-
+   - **Help**: The matching filename without extension that must be created is displayed in the console when playback starts.
+   - **Using the logo with other readers**: The same file can be used to display the logo in other readers by adding for example the following Preferences>Display>Album Art (front cover)
+`C:\Users\name\Desktop\foobar2000\profile\foo_artwork_data\logos\$replace(%path%,$char(47),$char(45),$char(92),$char(45),$char(448),$char(45),$char(58),$char(45),$char(42),$char(140),$char(34),$char(39)$char(39),$char(60),$char(95),$char(62),$char(95),$char(63),$char(95)).*`
+   
    **Domain-Only Matching** (Fallback Compatibility):
    - **Format**: `{domain}.{ext}`
    - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `somafm.com.png`
@@ -119,8 +122,8 @@ For SomaFM with multiple streams:
 
 **Option 1: Stream-Specific Logos**
 1. Create specific logos:
-   - `ice1.somafm.com_indiepop-128-aac.png` (colorful indie logo)
-   - `ice1.somafm.com_dronezone-256-mp3.png` (ambient space logo)
+   - `https---ice1.somafm.com-indiepop-128-aac.png` (colorful indie logo)
+   - `https---ice1.somafm.com-dronezone-256-mp3.png` (ambient space logo)
 2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\`
 
 **Option 2: Domain-Wide Logo**
@@ -145,7 +148,7 @@ The component supports **two levels of specificity** for fallback images, allowi
 
 1. **Full URL Path Matching** (Most Specific):
    - **Format**: `{full_path}-noart.{ext}`
-   - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `ice1.somafm.com_indiepop-128-aac-noart.png`
+   - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `https---ice1.somafm.com-indiepop-128-aac-noart.png`
    - **Use Case**: Different fallback images for different streams on the same domain
 
 2. **Domain-Only Matching** (Fallback Compatibility):
@@ -161,9 +164,9 @@ The component supports **two levels of specificity** for fallback images, allowi
 **Priority Order** for internet radio streams:
 1. **Track artwork** from APIs - highest priority, searches using metadata (if available)
 2. **Fallback hierarchy** - when API artwork search fails:
-   - **Station logo with full path** (e.g., `ice1.somafm.com_indiepop-128-aac.png`)
+   - **Station logo with full path** (e.g., `https---ice1.somafm.com-indiepop-128-aac.png`)
    - **Station logo with domain** (e.g., `somafm.com.png`)
-   - **Station-specific fallback with full path** (e.g., `ice1.somafm.com_indiepop-128-aac-noart.png`)
+   - **Station-specific fallback with full path** (e.g., `https---ice1.somafm.com-indiepop-128-aac-noart.png`)
    - **Station-specific fallback with domain** (e.g., `somafm.com-noart.png`)
    - **Generic fallback** (`noart.png`)
 3. **No artwork** message
@@ -176,8 +179,8 @@ For SomaFM with multiple streams like:
 
 **Option 1: Stream-Specific Fallbacks**
 1. Create specific fallback images:
-   - `ice1.somafm.com_indiepop-128-aac-noart.png` (indie themed image)
-   - `ice1.somafm.com_dronezone-256-mp3-noart.png` (ambient themed image)
+   - `https---ice1.somafm.com-indiepop-128-aac-noart.png` (indie themed image)
+   - `https---ice1.somafm.com-dronezone-256-mp3-noart.png` (ambient themed image)
 2. Place in: `%APPDATA%\foobar2000-v2\foo_artwork_data\logos\`
 
 **Option 2: Domain-Wide Fallback**
@@ -194,7 +197,7 @@ The generic fallback now supports the **same two-tier system**:
 
 1. **Stream-Specific Generic Fallback**:
    - **Format**: `{full_path}-noart.{ext}` (same as station-specific, but used as universal fallback)
-   - **Example**: `ice1.somafm.com_indiepop-128-aac-noart.png`
+   - **Example**: `https---ice1.somafm.com-indiepop-128-aac-noart.png`
 
 2. **Domain-Specific Generic Fallback**:
    - **Format**: `{domain}-noart.{ext}` (applies to entire domain)
@@ -269,6 +272,14 @@ The component uses the following priority order for artwork retrieval:
 4. **Last.fm API**: Searches Last.fm database (if enabled and API key provided)
 5. **MusicBrainz API**: Searches MusicBrainz/Cover Art Archive (if enabled)
 6. **Discogs API**: Searches Discogs database (if enabled and API key provided)
+
+## Inverted Stations (artist is title , title is artist)
+
+For stations that send inverted metadata (Title - Artist) instead of (Artist - Title) you can invert the values to the correct values to be searched by appending the parameter `?inverted` to the url.
+
+- **Example**:  `http://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_live_32.aac` -> `http://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_live_32.aac?inverted`
+
+For those who use External Tags or m-tags components, they can get the values inverted by creating a field `%STREAM_INVERTED%` with value `1`
 
 ## Building from Source
 
