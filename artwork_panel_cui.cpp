@@ -1115,52 +1115,20 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
             bool is_internet_stream = is_safe_internet_stream(current_track);
             
             if (is_internet_stream) {
-                // For internet streams, respect the stream delay configuration
-                extern cfg_int cfg_stream_delay;
-                int delay_seconds = (int)cfg_stream_delay;
+                // IMMEDIATE SEARCH: Use v1.3.1 approach - search immediately for faster response
+                // This provides much better user experience with immediate artwork loading
                 
                 // If inverted swap artist title
-                bool is_inverted_stream = is_inverted_internet_stream(current_track, p_info);												
-                
-                if (delay_seconds > 0) {
-                    // Clear any previous artwork to respect stream delay
-                    extern HBITMAP g_shared_artwork_bitmap;
-                    if (g_shared_artwork_bitmap) {
-                        DeleteObject(g_shared_artwork_bitmap);
-                        g_shared_artwork_bitmap = NULL;
-                    }
-                    
-                    // Store metadata for delayed search
-                    if (is_inverted_stream) {
-                        m_delayed_search_artist = title;
-                        m_delayed_search_title = artist;
-                    }
-                    else
-                    {
-                        m_delayed_search_artist = artist;
-                        m_delayed_search_title = title;
-                    }
-                    
-                    // Set a timer to delay the search
-                    if (m_hWnd) {
-                        // Use timer ID 101 for stream delay
-                        SetTimer(m_hWnd, 101, delay_seconds * 1000, NULL);
-                        
-                        // Note: No polling timer needed - using event-driven updates
-                    }
-                } else {
-                    // No delay configured, search immediately
-                    if (is_inverted_stream) {
-                        std::string artist_old = artist;
-                        std::string title_old = title;
-                        artist = title_old;
-                        title = artist_old;
-                    }											 
-                    extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
-                    trigger_main_component_search_with_metadata(artist, title);
-                    
-                    // Note: No polling timer needed - using event-driven updates
+                bool is_inverted_stream = is_inverted_internet_stream(current_track, p_info);
+                if (is_inverted_stream) {
+                    std::string artist_old = artist;
+                    std::string title_old = title;
+                    artist = title_old;
+                    title = artist_old;
                 }
+                
+                extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
+                trigger_main_component_search_with_metadata(artist, title);
                 return;
             } else {
                 // For local files, do NOT trigger API searches - local artwork will be handled elsewhere
