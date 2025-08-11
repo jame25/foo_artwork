@@ -10,30 +10,49 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     
     std::string str(metadata);
     
-    // Step 1: Normalize quotes and apostrophes first (UTF-8 safe)
-    str = normalize_quotes_and_apostrophes(str);
+    // Use v1.3.1's proven approach: simple hex byte replacements for UTF-8 safety
+    // This approach preserves Cyrillic and other non-Latin characters correctly
     
-    // Step 2: Remove timestamps (safe for all character sets)
-    str = remove_timestamps(str);
-    
-    // Step 3: Check if we have Cyrillic content to preserve
-    bool has_cyrillic = contains_cyrillic(str);
-    bool should_preserve = preserve_cyrillic && has_cyrillic;
-    
-    // Step 4: Remove parenthetical and bracketed content (with Cyrillic preservation)
-    str = remove_parenthetical_content(str, should_preserve);
-    str = remove_bracketed_content(str, should_preserve);
-    
-    // Step 5: Normalize collaborations (preserving Cyrillic artist names)
-    str = normalize_collaborations(str);
-    
-    // Step 6: Preserve important characters for non-Latin scripts
-    if (should_preserve) {
-        str = preserve_important_characters(str);
+    // Handle all variants of apostrophes and quotes (UTF-8 safe using hex sequences)
+    size_t pos = 0;
+    while ((pos = str.find("\xE2\x80\x98", pos)) != std::string::npos) { // Left single quotation mark
+        str.replace(pos, 3, "'");
+        pos += 1;
+    }
+    pos = 0;
+    while ((pos = str.find("\xE2\x80\x99", pos)) != std::string::npos) { // Right single quotation mark  
+        str.replace(pos, 3, "'");
+        pos += 1;
+    }
+    pos = 0;
+    while ((pos = str.find("\xE2\x80\x9A", pos)) != std::string::npos) { // Single low-9 quotation mark
+        str.replace(pos, 3, "'");
+        pos += 1;
     }
     
-    // Step 7: Clean up whitespace (always safe)
-    str = normalize_whitespace(str);
+    // Remove only essential patterns that prevent API matches - be conservative with Cyrillic
+    const std::vector<std::string> safe_patterns = {
+        "(live)", "(acoustic)", "(remix)", "(remaster)", "(demo)", 
+        "(instrumental)", "(explicit)", "(clean)", "(radio edit)"
+    };
+    
+    for (const auto& pattern : safe_patterns) {
+        pos = 0;
+        // Simple case-insensitive search and replace
+        while ((pos = str.find(pattern, pos)) != std::string::npos) {
+            str.erase(pos, pattern.length());
+        }
+        // Also check uppercase version
+        std::string upper_pattern = pattern;
+        std::transform(upper_pattern.begin(), upper_pattern.end(), upper_pattern.begin(), ::toupper);
+        pos = 0;
+        while ((pos = str.find(upper_pattern, pos)) != std::string::npos) {
+            str.erase(pos, upper_pattern.length());
+        }
+    }
+    
+    // Clean up whitespace (safe for all character sets)
+    str = std::regex_replace(str, std::regex("\\s{2,}"), " ");
     str = trim(str);
     
     return str;
