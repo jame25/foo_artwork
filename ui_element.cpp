@@ -578,27 +578,16 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             // FIXED: Removed premature station logo check - station logos should be fallbacks only
             // API searches have priority according to README.md fallback chain
             
-            // If we reach here, no custom logo was found or custom logos are disabled
-            // Proceed with API search (with delay if configured)
-            if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_stream_delay > 0) {
-                // Kill any existing delay timer
+            // IMMEDIATE SEARCH: Use v1.3.1 approach - start search immediately for better responsiveness
+            // This provides much faster artwork loading as metadata arrives
+            if (m_current_track.is_valid() && is_internet_stream(m_current_track)) {
+                // Kill any existing delay timer - we're searching immediately
                 KillTimer(101);
                 
-                // Store cleaned metadata for delayed search
-                m_delayed_artist = cleaned_artist;
-                m_delayed_title = cleaned_track;
-                m_has_delayed_metadata = true;
-                
-                // Set timer for stream delay, metadata will be used when timer expires
-                SetTimer(101, cfg_stream_delay * 1000);
-            } else {
-                // Only trigger API searches for internet streams, never for local files
-                if (m_current_track.is_valid() && is_internet_stream(m_current_track)) {
-                    // Use the main component trigger function for proper API fallback (results come via event system)
-                    trigger_main_component_search_with_metadata(cleaned_artist, cleaned_track);
-                }
-                // For local files, do nothing - local artwork will be handled elsewhere
+                // Use the main component trigger function for proper API fallback (results come via event system)
+                trigger_main_component_search_with_metadata(cleaned_artist, cleaned_track);
             }
+            // For local files, do nothing - local artwork will be handled elsewhere
         }
     } catch (...) {
         // Ignore metadata processing errors
