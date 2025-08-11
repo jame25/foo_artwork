@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "artwork_manager.h"
 #include "artwork_viewer_popup.h"
+#include "metadata_cleaner.h"
 #include <gdiplus.h>
 #include <atlbase.h>
 #include <atlwin.h>
@@ -515,12 +516,12 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         pfc::string8 artist = artist_ptr ? artist_ptr : "";
         pfc::string8 track = track_ptr ? track_ptr : "";
         
-        // Clean metadata before validation
-        std::string cleaned_artist = clean_metadata_for_search(artist.c_str());
-        std::string cleaned_track = clean_metadata_for_search(track.c_str());
+        // Clean metadata using the unified UTF-8 safe cleaner
+        std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
+        std::string cleaned_track = MetadataCleaner::clean_for_search(track.c_str(), true);
         
         // Apply comprehensive metadata validation rules
-        bool is_valid_metadata = is_metadata_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
+        bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
         
         if (is_valid_metadata) {
             // Cancel metadata arrival timer since we got valid metadata (like CUI)
@@ -1159,83 +1160,13 @@ void artwork_ui_element::start_delayed_search() {
 }
 
 bool artwork_ui_element::is_metadata_valid_for_search(const char* artist, const char* title) {
-    // Convert to strings for easier manipulation
-    std::string artist_str = artist ? artist : "";
-    std::string title_str = title ? title : "";
-    
-    // Rule 1: Must have a title - no search without title
-    if (title_str.empty()) {
-        return false;
-    }
-    
-    // Rule 2: Block common invalid patterns
-    if (title_str == "?" || artist_str == "?") {
-        return false;
-    }
-    
-    // Rule 3: Block "? - ?" pattern
-    if ((artist_str == "?" && title_str == "?") || 
-        title_str == "? - ?" || artist_str == "? - ?") {
-        return false;
-    }
-    
-    // Rule 4: Block "adbreak" (advertisement breaks)
-    if (title_str.find("adbreak") != std::string::npos || 
-        artist_str.find("adbreak") != std::string::npos) {
-        return false;
-    }
-    
-    // Rule 5: Block "Unknown" patterns
-    if (title_str == "Unknown Track" || artist_str == "Unknown Artist" ||
-        title_str == "Unknown" || artist_str == "Unknown") {
-        return false;
-    }
-    
-    // Rule 6: Block very short or suspicious titles
-    if (title_str.length() < 2) {
-        return false;
-    }
-    return true;
+    // Use the unified metadata validation (same as CUI mode)
+    return MetadataCleaner::is_valid_for_search(artist, title);
 }
 
 std::string artwork_ui_element::clean_metadata_for_search(const char* metadata) {
-    if (!metadata) return "";
-    
-    std::string str(metadata);
-    
-    // Remove timestamp patterns at the end
-    // Pattern 1: " - MM:SS" or " - M:SS" (like " - 0:00")
-    std::regex dash_time_regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$");
-    str = std::regex_replace(str, dash_time_regex, "");
-    
-    // Pattern 2: " - MM.SS" or " - M.SS" (like " - 0.00") - handle decimal point
-    std::regex dash_decimal_regex("\\s+-\\s+\\d{1,2}\\.\\d{2}\\s*$");
-    str = std::regex_replace(str, dash_decimal_regex, "");
-    
-    // Remove parenthetical timestamps (MM:SS) or (M:SS)
-    std::regex paren_time_regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*");
-    str = std::regex_replace(str, paren_time_regex, " ");
-    
-    // Remove all parenthetical content (like "(Vocal Version)", "(Remix)", etc.)
-    std::regex paren_content_regex("\\s*\\([^)]*\\)\\s*");
-    str = std::regex_replace(str, paren_content_regex, " ");
-
-    // Remove all square bracket content (like "[Vocal Version]", "[Remix]", etc.)
-    std::regex sqbrack_content_regex("\\s*\\[[^)]*\\]\\s*");
-    str = std::regex_replace(str, sqbrack_content_regex, " ");
-
-    //Remove everything after pipe | (like "Hit 'N Run Lover || 4153 || S || 2ca82642-1c07-42f0-972b-1a663c1c39b9")
-    std::regex pipe_content_regex("\\|.*");
-    str = std::regex_replace(str, pipe_content_regex, " ");
-    
-    // Clean up multiple spaces
-    std::regex multi_space("\\s{2,}");
-    str = std::regex_replace(str, multi_space, " ");
-    
-    // Trim leading and trailing spaces
-    str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
-    
-    return str;
+    // Use the unified metadata cleaner (same as CUI mode)
+    return MetadataCleaner::clean_for_search(metadata, true);
 }
 
 void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
