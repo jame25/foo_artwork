@@ -180,6 +180,8 @@ private:
     bool should_prefer_local_artwork();
     bool load_local_artwork_from_main_component();
 
+	// Inverted stream detection
+    bool is_inverted_internet_stream(metadb_handle_ptr track, const file_info& p_info);							
     ui_element_instance_callback::ptr m_callback;
     
     // Artwork data
@@ -507,6 +509,32 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
     }
 }
 
+// HELPER Inverted internet stream detection
+bool artwork_ui_element::is_inverted_internet_stream(metadb_handle_ptr track, const file_info& p_info) {
+    if (!track.is_valid()) {
+        return false;
+    }
+
+    pfc::string8 path = track->get_path();
+    if (path.is_empty()) return false;
+
+    //  Search if parameter "?inverted" or "&inverted" in path
+    std::string path_str = path.c_str();
+
+    if ((path_str.find("?inverted") != std::string::npos) || (path_str.find("&inverted") != std::string::npos)) {
+        return true;
+    }
+
+    // Search if field %STREAM_INVERTED% exists and equals 1
+    const char* stream_inverted_ptr = p_info.meta_get("STREAM_INVERTED", 0);
+    pfc::string8 inverted = stream_inverted_ptr ? stream_inverted_ptr : "";
+
+    if (inverted == "1") {
+        return true;
+    }
+
+    return false;
+}											
 void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
     try {
         // Get artist and track from the updated info safely
@@ -520,6 +548,15 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
         std::string cleaned_track = MetadataCleaner::clean_for_search(track.c_str(), true);
         
+		//If inverted swap artist title
+        bool is_inverted_stream = is_inverted_internet_stream(m_current_track,p_info);
+
+        if (is_inverted_stream) {
+            std::string clean_artist_old = cleaned_artist;
+            std::string clean_title_old = cleaned_track;
+            cleaned_artist = clean_title_old;
+            cleaned_track = clean_artist_old;
+        }  
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
         

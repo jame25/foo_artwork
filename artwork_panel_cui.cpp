@@ -284,6 +284,7 @@ private:
     void search_artwork_with_metadata(const std::string& artist, const std::string& title);
     bool is_station_name(const std::string& artist, const std::string& title);  // Station name detection helper
     bool is_metadata_valid_for_search(const char* artist, const char* title);  // Metadata validation
+	bool is_inverted_internet_stream(metadb_handle_ptr track, const file_info& p_info); //Inverted stream detection helper																													  
 
 public:
     // Static color change handler (public so color client can access it)
@@ -816,6 +817,31 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
 void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
     if (!m_hWnd) return;
     
+	 // Check if it's an internet stream and custom logos enabled
+    double length = p_track->get_length();
+    if (length <= 0 && cfg_enable_custom_logos) {
+        pfc::string8 path = p_track->get_path();
+        pfc::string8 result = path;
+        for (size_t i = 0; i < result.length(); i++) {
+            if (result[i] == '/') { result.set_char(i, '-'); }
+            else if (result[i] == '\\') { result.set_char(i, '-'); }
+            else if (result[i] == '|') { result.set_char(i, '-'); }
+            else if (result[i] == ':') { result.set_char(i, '-'); }
+            else if (result[i] == '*') { result.set_char(i, 'x'); }
+            else if (result[i] == '"') { result.set_char(i, '\'\''); }
+            else if (result[i] == '<') { result.set_char(i, '_'); }
+            else if (result[i] == '>') { result.set_char(i, '_'); }
+            else if (result[i] == '?') { result.set_char(i, '_'); }
+
+        }
+
+        std::string str = "foo_artwork - Filename for Full URL Path Matching LOGO: ";
+        str.append(result);
+        const char* cstr = str.c_str();
+
+        //console log it for the user to know what filename to use
+        console::info(cstr);
+    }
     // Keep previous artwork visible - don't clear source info
     // m_artwork_source remains unchanged to preserve last known source
     // Don't invalidate here - let new artwork trigger the redraw
@@ -1093,6 +1119,8 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                 extern cfg_int cfg_stream_delay;
                 int delay_seconds = (int)cfg_stream_delay;
                 
+                // If inverted swap artist title
+                bool is_inverted_stream = is_inverted_internet_stream(current_track, p_info);												
                 
                 if (delay_seconds > 0) {
                     // Clear any previous artwork to respect stream delay
@@ -1103,8 +1131,15 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                     }
                     
                     // Store metadata for delayed search
-                    m_delayed_search_artist = artist;
-                    m_delayed_search_title = title;
+                    if (is_inverted_stream) {
+                        m_delayed_search_artist = title;
+                        m_delayed_search_title = artist;
+                    }
+                    else
+                    {
+                        m_delayed_search_artist = artist;
+                        m_delayed_search_title = title;
+                    }
                     
                     // Set a timer to delay the search
                     if (m_hWnd) {
@@ -1115,6 +1150,12 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                     }
                 } else {
                     // No delay configured, search immediately
+                    if (is_inverted_stream) {
+                        std::string artist_old = artist;
+                        std::string title_old = title;
+                        artist = title_old;
+                        title = artist_old;
+                    }											 
                     extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
                     trigger_main_component_search_with_metadata(artist, title);
                     
@@ -2137,6 +2178,32 @@ bool CUIArtworkPanel::is_safe_internet_stream(metadb_handle_ptr track) {
     }
     
     return true; // This appears to be an internet stream
+}
+// HELPER Inverted internet stream detection
+bool CUIArtworkPanel::is_inverted_internet_stream(metadb_handle_ptr track, const file_info& p_info) {
+    if (!track.is_valid()) {
+        return false;
+    }
+
+    pfc::string8 path = track->get_path();
+    if (path.is_empty()) return false;
+
+    //  Search if parameter "?inverted" or "&inverted" in path
+    std::string path_str = path.c_str();
+
+    if ((path_str.find("?inverted") != std::string::npos) || (path_str.find("&inverted") != std::string::npos)) {
+        return true;
+    }
+    
+    // Search if field %STREAM_INVERTED% exists and equals 1
+    const char* stream_inverted_ptr = p_info.meta_get("STREAM_INVERTED", 0);
+    pfc::string8 inverted = stream_inverted_ptr ? stream_inverted_ptr : "";
+
+    if (inverted == "1") {
+        return true;
+    }
+
+    return false;
 }
 
 bool CUIArtworkPanel::is_metadata_valid_for_search(const char* artist, const char* title) {
