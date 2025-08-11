@@ -43,8 +43,9 @@
 // Also include base UI extension headers
 #include "columns_ui/columns_ui-sdk/base.h"
 
-// Include the unified artwork viewer popup
+// Include the unified artwork viewer popup and metadata cleaner
 #include "artwork_viewer_popup.h"
+#include "metadata_cleaner.h"
 
 // Include necessary foobar2000 SDK headers for artwork and playback callbacks
 #include "columns_ui/foobar2000/SDK/album_art.h"
@@ -538,27 +539,9 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             // Use stored metadata for delayed search
             if (!m_delayed_search_title.empty()) {
                 
-                // Apply final metadata cleaning for consistency with DUI mode
-                std::string final_artist = m_delayed_search_artist;
-                std::string final_title = m_delayed_search_title;
-                
-                auto apply_final_cleaning = [](std::string& str) {
-                    if (str.empty()) return;
-                    
-                    // Apply the same cleaning logic as clean_metadata_for_search (UTF-8 safe)
-                    str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$"), "");
-                    str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}\\.\\d{2}\\s*$"), "");
-                    str = std::regex_replace(str, std::regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*"), " ");
-                    str = std::regex_replace(str, std::regex("\\s*\\((?:live|acoustic|unplugged|remix|remaster|demo|instrumental|explicit|clean|radio edit|extended|single version|album version)(?:\\s+[^)]*)?\\)\\s*", std::regex_constants::icase), " ");
-                    str = std::regex_replace(str, std::regex("\\s*\\((?:feat\\.|featuring|ft\\.|with)\\s+[^)]*\\)\\s*", std::regex_constants::icase), " ");
-                    str = std::regex_replace(str, std::regex("\\s*\\([^)]*\\)\\s*"), " ");
-                    str = std::regex_replace(str, std::regex("\\s*\\[[^\\]]*\\]\\s*"), " ");
-                    str = std::regex_replace(str, std::regex("\\s{2,}"), " ");
-                    str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
-                };
-                
-                apply_final_cleaning(final_artist);
-                apply_final_cleaning(final_title);
+                // Apply unified metadata cleaning for consistency with DUI mode
+                std::string final_artist = MetadataCleaner::clean_for_search(m_delayed_search_artist.c_str(), true);
+                std::string final_title = MetadataCleaner::clean_for_search(m_delayed_search_title.c_str(), true);
                 
                 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
                 trigger_main_component_search_with_metadata(final_artist, final_title);
@@ -916,38 +899,13 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     }
     
     
-    // Clean up metadata for better search results
+    // Clean up metadata using the unified UTF-8 safe cleaner
     std::string original_title = title;
     std::string original_artist = artist;
     
-    // Apply comprehensive metadata cleaning for radio streams
-    
-    // 1. Remove station identifiers and prefixes
-    // Remove patterns like "[WXYZ]", "(Radio Station)", "Now Playing:", "Live:", etc.
-    auto remove_prefixes = [](std::string& str) {
-        // Remove common prefixes
-        std::vector<std::string> prefixes = {
-            "Now Playing: ", "Now Playing:", "Live: ", "Live:", "Playing: ", "Playing:",
-            "Current: ", "Current:", "On Air: ", "On Air:", "♪ ", "♫ ", "🎵 ", "🎶 "
-        };
-        for (const auto& prefix : prefixes) {
-            if (str.find(prefix) == 0) {
-                str = str.substr(prefix.length());
-            }
-        }
-        
-        // Remove bracketed/parenthesized station info at start
-        while (!str.empty() && (str[0] == '[' || str[0] == '(')) {
-            size_t end = str.find(str[0] == '[' ? ']' : ')');
-            if (end != std::string::npos) {
-                str = str.substr(end + 1);
-                // Remove any leading spaces after removal
-                while (!str.empty() && str[0] == ' ') str = str.substr(1);
-            } else {
-                break;
-            }
-        }
-    };
+    // Use the unified metadata cleaner with Cyrillic preservation
+    std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
+    std::string cleaned_title = MetadataCleaner::clean_for_search(title.c_str(), true);
     
     // 2. Remove featuring patterns in parentheses/brackets (including unclosed ones)
     auto remove_featuring_in_brackets = [](std::string& str) {
@@ -1110,52 +1068,13 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
         str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
     };
     
-    // Apply all cleaning rules to title
-    remove_prefixes(title);
-    remove_featuring_in_brackets(title);  // Remove featuring patterns first
-    remove_bracketed_info(title);
-    remove_duration_info(title);
-    remove_all_parentheses(title);  // Remove any remaining parenthetical content
-    normalize_collaborations(title);
-    clean_encoding_artifacts(title);
+    // Apply the unified cleaning to both artist and title  
+    // This replaces all the complex lambda functions with UTF-8 safe processing
+    artist = cleaned_artist;
+    title = cleaned_title;
     
-    // Apply some cleaning rules to artist as well (but be more conservative)
-    remove_bracketed_info(artist);
-    remove_all_parentheses(artist);  // Remove parenthetical content from artist too
-    normalize_collaborations(artist);
-    clean_encoding_artifacts(artist);
-    
-    // FIX: Apply unified metadata cleaning to ensure consistency with DUI mode
-    // This ensures both modes apply the same final cleaning logic consistent with clean_metadata_for_search
-    auto apply_final_cleaning = [](std::string& str) {
-        if (str.empty()) return;
-        
-        // Apply the same cleaning logic as clean_metadata_for_search (regex-based, UTF-8 safe)
-        // Remove timestamp patterns at the end
-        str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$"), "");
-        str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}\\.\\d{2}\\s*$"), "");
-        
-        // Remove parenthetical timestamps 
-        str = std::regex_replace(str, std::regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*"), " ");
-        
-        // Remove common patterns in parentheses (case insensitive)
-        str = std::regex_replace(str, std::regex("\\s*\\((?:live|acoustic|unplugged|remix|remaster|demo|instrumental|explicit|clean|radio edit|extended|single version|album version)(?:\\s+[^)]*)?\\)\\s*", std::regex_constants::icase), " ");
-        str = std::regex_replace(str, std::regex("\\s*\\((?:feat\\.|featuring|ft\\.|with)\\s+[^)]*\\)\\s*", std::regex_constants::icase), " ");
-        
-        // Remove remaining parenthetical and square bracket content
-        str = std::regex_replace(str, std::regex("\\s*\\([^)]*\\)\\s*"), " ");
-        str = std::regex_replace(str, std::regex("\\s*\\[[^\\]]*\\]\\s*"), " ");
-        
-        // Clean up spaces
-        str = std::regex_replace(str, std::regex("\\s{2,}"), " ");
-        str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
-    };
-    
-    apply_final_cleaning(artist);
-    apply_final_cleaning(title);
-    
-    // Apply comprehensive metadata validation rules (same as DUI)
-    if (!is_metadata_valid_for_search(artist.c_str(), title.c_str())) {
+    // Apply comprehensive metadata validation using the unified cleaner (same as DUI)
+    if (!MetadataCleaner::is_valid_for_search(artist.c_str(), title.c_str())) {
         return;
     }
     
@@ -2221,44 +2140,8 @@ bool CUIArtworkPanel::is_safe_internet_stream(metadb_handle_ptr track) {
 }
 
 bool CUIArtworkPanel::is_metadata_valid_for_search(const char* artist, const char* title) {
-    // Convert to strings for easier manipulation
-    std::string artist_str = artist ? artist : "";
-    std::string title_str = title ? title : "";
-    
-    // Rule 1: Must have a title - no search without title
-    if (title_str.empty()) {
-        return false;
-    }
-    
-    // Rule 2: Block common invalid patterns
-    if (title_str == "?" || artist_str == "?") {
-        return false;
-    }
-    
-    // Rule 3: Block "? - ?" pattern
-    if ((artist_str == "?" && title_str == "?") || 
-        title_str == "? - ?" || artist_str == "? - ?") {
-        return false;
-    }
-    
-    // Rule 4: Block "adbreak" (advertisement breaks)
-    if (title_str.find("adbreak") != std::string::npos || 
-        artist_str.find("adbreak") != std::string::npos) {
-        return false;
-    }
-    
-    // Rule 5: Block "Unknown" patterns
-    if (title_str == "Unknown Track" || artist_str == "Unknown Artist" ||
-        title_str == "Unknown" || artist_str == "Unknown") {
-        return false;
-    }
-    
-    // Rule 6: Block very short or suspicious titles
-    if (title_str.length() < 2) {
-        return false;
-    }
-    
-    return true;
+    // Use the unified metadata validation (same as DUI mode)
+    return MetadataCleaner::is_valid_for_search(artist, title);
 }
 
 //=============================================================================
