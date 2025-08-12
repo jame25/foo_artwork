@@ -30,24 +30,35 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
         pos += 1;
     }
     
-    // Remove only essential patterns that prevent API matches - be conservative with Cyrillic
-    const std::vector<std::string> safe_patterns = {
-        "(live)", "(acoustic)", "(remix)", "(remaster)", "(demo)", 
-        "(instrumental)", "(explicit)", "(clean)", "(radio edit)"
+    // Remove timestamp patterns at the end (from v1.5.8)
+    // Pattern 1: " - MM:SS" or " - M:SS" (like " - 0:00")
+    str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$"), "");
+    
+    // Pattern 2: " - MM.SS" or " - M.SS" (like " - 0.00") - handle decimal point
+    str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}\\.\\d{2}\\s*$"), "");
+    
+    // Remove parenthetical timestamps (MM:SS) or (M:SS)
+    str = std::regex_replace(str, std::regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*"), " ");
+    
+    // Remove all parenthetical content (like "(Vocal Version)", "(Remix)", etc.)
+    str = std::regex_replace(str, std::regex("\\s*\\([^)]*\\)\\s*"), " ");
+
+    // Remove all square bracket content (like "[Vocal Version]", "[Remix]", etc.)
+    str = std::regex_replace(str, std::regex("\\s*\\[[^\\]]*\\]\\s*"), " ");
+
+    // Remove everything after pipe | (like "Hit 'N Run Lover || 4153 || S || 2ca82642-1c07-42f0-972b-1a663c1c39b9")
+    str = std::regex_replace(str, std::regex("\\|.*"), "");
+    
+    // Remove common prefixes
+    std::vector<std::string> prefixes = {
+        "Now Playing: ", "Now Playing:", "Live: ", "Live:", "Playing: ", "Playing:",
+        "Current: ", "Current:", "On Air: ", "On Air:", "♪ ", "♫ ", "🎵 ", "🎶 "
     };
     
-    for (const auto& pattern : safe_patterns) {
-        pos = 0;
-        // Simple case-insensitive search and replace
-        while ((pos = str.find(pattern, pos)) != std::string::npos) {
-            str.erase(pos, pattern.length());
-        }
-        // Also check uppercase version
-        std::string upper_pattern = pattern;
-        std::transform(upper_pattern.begin(), upper_pattern.end(), upper_pattern.begin(), ::toupper);
-        pos = 0;
-        while ((pos = str.find(upper_pattern, pos)) != std::string::npos) {
-            str.erase(pos, upper_pattern.length());
+    for (const auto& prefix : prefixes) {
+        if (str.substr(0, prefix.length()) == prefix) {
+            str = str.substr(prefix.length());
+            break; // Only remove the first matching prefix
         }
     }
     
