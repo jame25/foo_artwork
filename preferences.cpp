@@ -14,6 +14,7 @@ extern cfg_bool cfg_show_osd;
 extern cfg_bool cfg_enable_custom_logos;
 extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
+extern cfg_bool cfg_use_noart_image;
 
 // Reference to current artwork source for logging
 extern pfc::string8 g_current_artwork_source;
@@ -515,7 +516,10 @@ bool artwork_advanced_preferences::has_changed() {
     // Check if Clear panel when not playing checkbox changed
     bool clear_panel_changed = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED) != cfg_clear_panel_when_not_playing;
     
-    return enable_logos_changed || folder_changed || clear_panel_changed;
+    // Check if Use noart image checkbox changed
+    bool use_noart_changed = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED) != cfg_use_noart_image;
+    
+    return enable_logos_changed || folder_changed || clear_panel_changed || use_noart_changed;
 }
 
 void artwork_advanced_preferences::apply_settings() {
@@ -532,6 +536,9 @@ void artwork_advanced_preferences::apply_settings() {
     // Apply Clear panel when not playing setting
     cfg_clear_panel_when_not_playing = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED);
     
+    // Apply Use noart image setting
+    cfg_use_noart_image = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED);
+    
     // Update timers for all UI elements when setting changes
     update_all_clear_panel_timers();
 }
@@ -543,6 +550,7 @@ void artwork_advanced_preferences::reset_settings() {
     cfg_enable_custom_logos = false;  // Default disabled
     cfg_logos_folder = "";  // Default empty (use default path)
     cfg_clear_panel_when_not_playing = false;  // Default disabled
+    cfg_use_noart_image = false;  // Default disabled
     
     update_controls();
 }
@@ -559,6 +567,12 @@ void artwork_advanced_preferences::update_controls() {
     // Update Clear panel when not playing checkbox
     CheckDlgButton(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING, cfg_clear_panel_when_not_playing ? BST_CHECKED : BST_UNCHECKED);
     
+    // Update Use noart image checkbox
+    CheckDlgButton(m_hwnd, IDC_USE_NOART_IMAGE, cfg_use_noart_image ? BST_CHECKED : BST_UNCHECKED);
+    
+    // Enable/disable noart image checkbox based on clear panel checkbox state
+    EnableWindow(GetDlgItem(m_hwnd, IDC_USE_NOART_IMAGE), cfg_clear_panel_when_not_playing ? TRUE : FALSE);
+    
     // Enable/disable folder controls based on checkbox state
     BOOL enable_folder_controls = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
     EnableWindow(GetDlgItem(m_hwnd, IDC_LOGOS_FOLDER_PATH), enable_folder_controls);
@@ -567,6 +581,10 @@ void artwork_advanced_preferences::update_controls() {
 
 void artwork_advanced_preferences::update_control_states() {
     if (!m_hwnd) return;
+    
+    // Enable/disable noart image checkbox based on clear panel checkbox state
+    BOOL clear_panel_enabled = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_USE_NOART_IMAGE), clear_panel_enabled);
     
     // Enable/disable folder controls based on current checkbox state (don't change checkbox)
     BOOL enable_folder_controls = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
@@ -608,6 +626,13 @@ INT_PTR CALLBACK artwork_advanced_preferences::AdvancedConfigProc(HWND hwnd, UIN
                         break;
                         
                     case IDC_CLEAR_PANEL_WHEN_NOT_PLAYING:
+                        if (HIWORD(wp) == BN_CLICKED) {
+                            pThis->on_changed();
+                            pThis->update_control_states();  // Update control states when clear panel checkbox changes
+                        }
+                        break;
+                        
+                    case IDC_USE_NOART_IMAGE:
                         if (HIWORD(wp) == BN_CLICKED) {
                             pThis->on_changed();
                         }
