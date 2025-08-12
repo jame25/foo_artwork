@@ -48,7 +48,18 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
 
     // Remove everything after pipe | (like "Hit 'N Run Lover || 4153 || S || 2ca82642-1c07-42f0-972b-1a663c1c39b9")
     str = std::regex_replace(str, std::regex("\\|.*"), "");
+
+    // Process tidle (like "Electric Light Orchestra~Last Train To London~Discovery~1979")
+    std::regex pattern("^(([^~]*~){1}[^~]*)");
+    std::smatch match;
+
+    if (std::regex_search(str, match, pattern)) {
+        std::string result = match[1];
+        str = result;
+        str = std::regex_replace(str, std::regex("~"), " - ");
+    }
     
+
     // Remove common prefixes
     std::vector<std::string> prefixes = {
         "Now Playing: ", "Now Playing:", "Live: ", "Live:", "Playing: ", "Playing:",
