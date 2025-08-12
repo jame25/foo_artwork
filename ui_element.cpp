@@ -18,6 +18,7 @@
 extern cfg_int cfg_stream_delay;
 extern cfg_bool cfg_enable_custom_logos;
 extern cfg_bool cfg_clear_panel_when_not_playing;
+extern cfg_bool cfg_use_noart_image;
 extern cfg_bool cfg_show_osd;
 
 // External custom logo loading functions
@@ -166,6 +167,8 @@ private:
     void show_osd(const std::string& text);
     void hide_osd();
     void update_osd_animation();
+    void update_clear_panel_timer();  // Start/stop clear panel monitoring timer
+    void load_noart_image();  // Load noart image for "use noart image" option
     void paint_osd(HDC hdc);
     
     // Stream delay functions
@@ -208,6 +211,7 @@ private:
     int m_osd_slide_offset;
     UINT_PTR m_osd_timer_id;
     bool m_osd_visible;
+    bool m_was_playing;  // Track previous playback state for clear panel functionality
     
     // OSD constants
     static const int OSD_DELAY_DURATION = 1000;   // 1 second delay before animation starts
@@ -261,7 +265,7 @@ artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_in
     : m_callback(callback), m_artwork_image(nullptr), m_artwork_loading(false), 
       m_gdiplus_token(0), m_playback_callback(this),
       m_show_osd(true), m_osd_start_time(0), m_osd_slide_offset(OSD_SLIDE_DISTANCE), 
-      m_osd_timer_id(0), m_osd_visible(false), m_has_delayed_metadata(false) {
+      m_osd_timer_id(0), m_osd_visible(false), m_has_delayed_metadata(false), m_was_playing(false) {
     
     
     // Initialize GDI+
@@ -271,7 +275,14 @@ artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_in
     // Subscribe to artwork events for proper API fallback
     subscribe_to_artwork_events(this);
     
+    // Start playback monitoring timer if clear panel option is enabled
+    // Note: We'll start the timer after window creation
+    
     SetRect(&m_client_rect, 0, 0, 0, 0);
+    
+    // Initialize current playback state
+    static_api_ptr_t<playback_control> pc;
+    m_was_playing = pc->is_playing();
 }
 
 artwork_ui_element::~artwork_ui_element() {
@@ -324,10 +335,6 @@ void artwork_ui_element::notify(const GUID& p_what, t_size p_param1, const void*
     }
 }
 
-LRESULT artwork_ui_element::OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
-    bHandled = TRUE;
-    return 0;
-}
 
 LRESULT artwork_ui_element::OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
     cleanup_gdiplus_image();
@@ -375,6 +382,14 @@ LRESULT artwork_ui_element::OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL
     // Use RedrawWindow for flicker-free resizing instead of Invalidate()
     RedrawWindow(NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOCHILDREN);
     bHandled = TRUE;
+    return 0;
+}
+
+LRESULT artwork_ui_element::OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    // Start the clear panel monitoring timer if enabled
+    update_clear_panel_timer();
+    
+    bHandled = FALSE;  // Let default processing continue
     return 0;
 }
 
@@ -442,6 +457,32 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
         // Timer for delayed artwork search on radio streams (stream delay)
         KillTimer(101);
         start_delayed_search();
+        bHandled = TRUE;
+        return 0;
+    } else if (wParam == 102) {
+        // Timer ID 102 - playback state monitoring for clear panel functionality
+        static_api_ptr_t<playback_control> pc;
+        bool is_playing = pc->is_playing();
+        
+        // If we were playing but now we're not, handle clear panel functionality
+        if (m_was_playing && !is_playing && cfg_clear_panel_when_not_playing) {
+            if (cfg_use_noart_image) {
+                // Load and display noart image instead of clearing
+                load_noart_image();
+            } else {
+                // Just clear the panel
+                clear_artwork();
+            }
+        }
+        
+        // Update the previous state
+        m_was_playing = is_playing;
+        
+        // If option is disabled, stop the timer
+        if (!cfg_clear_panel_when_not_playing) {
+            KillTimer(102);
+        }
+        
         bHandled = TRUE;
         return 0;
     }
@@ -995,6 +1036,78 @@ void artwork_ui_element::hide_osd() {
     
     // Invalidate to trigger repaint
     Invalidate();
+}
+
+void artwork_ui_element::update_clear_panel_timer() {
+    if (!m_hWnd) return;
+    
+    if (cfg_clear_panel_when_not_playing) {
+        // Start the timer if option is enabled
+        SetTimer(102, 500);  // Timer ID 102, check every 0.5 seconds
+    } else {
+        // Stop the timer if option is disabled
+        KillTimer(102);
+    }
+}
+
+void artwork_ui_element::load_noart_image() {
+    // Try to load noart image from component data directory (logos subfolder) 
+    pfc::string8 profile_path = core_api::get_profile_path();
+    
+    // Convert file:// URL to regular file path
+    pfc::string8 file_path = profile_path;
+    if (file_path.startsWith("file://")) {
+        file_path = file_path.subString(7); // Remove "file://" prefix
+    }
+    
+    pfc::string8 data_path = file_path;
+    data_path.add_string("\\foo_artwork_data\\logos\\");
+    
+    // Try different noart image formats
+    const char* noart_filenames[] = {
+        "noart.png",
+        "noart.jpg", 
+        "noart.jpeg",
+        "noart.gif",
+        "noart.bmp",
+        nullptr
+    };
+    
+    pfc::string8 noart_file_path;
+    bool noart_loaded = false;
+    
+    for (int i = 0; noart_filenames[i] != nullptr && !noart_loaded; i++) {
+        noart_file_path = data_path;
+        noart_file_path.add_string(noart_filenames[i]);
+        
+        // Check if file exists
+        DWORD file_attrs = GetFileAttributesA(noart_file_path);
+        if (file_attrs != INVALID_FILE_ATTRIBUTES && !(file_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            // File exists, try to load it
+            
+            // Read file data and use load_image_from_memory for proper scaling
+            HANDLE hFile = CreateFileA(noart_file_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                DWORD file_size = GetFileSize(hFile, NULL);
+                if (file_size > 0) {
+                    std::vector<BYTE> file_data(file_size);
+                    DWORD bytes_read;
+                    if (ReadFile(hFile, file_data.data(), file_size, &bytes_read, NULL) && bytes_read == file_size) {
+                        if (load_image_from_memory(file_data.data(), file_data.size())) {
+                            m_artwork_source = "Noart image";
+                            noart_loaded = true;
+                        }
+                    }
+                }
+                CloseHandle(hFile);
+            }
+        }
+    }
+    
+    // Invalidate window to redraw with noart image or clear panel
+    if (m_hWnd) {
+        Invalidate();
+    }
 }
 
 void artwork_ui_element::update_osd_animation() {
