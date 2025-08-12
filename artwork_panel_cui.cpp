@@ -52,6 +52,7 @@
 #include "columns_ui/foobar2000/SDK/playback_control.h"
 #include "columns_ui/foobar2000/SDK/play_callback.h"
 #include "columns_ui/foobar2000/SDK/cfg_var.h"
+#include "columns_ui/foobar2000/SDK/console.h"
 
 // Include CUI color API
 #include "columns_ui/columns_ui-sdk/colours.h"
@@ -78,6 +79,7 @@ extern cfg_bool cfg_show_osd;
 extern cfg_bool cfg_enable_custom_logos;
 extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
+extern cfg_bool cfg_use_noart_image;
 
 // Access to main component's artwork bitmap
 extern HBITMAP get_main_component_artwork_bitmap();
@@ -167,6 +169,7 @@ public:
     // Timer management for clear panel functionality
     void update_clear_panel_timer();  // Start/stop clear panel monitoring timer based on setting
     void force_clear_artwork_bitmap();  // Force clear bitmap for "clear panel when not playing" option
+    void load_noart_image();  // Load noart image for "use noart image" option
     
     // Required uie::window interface
     const GUID& get_extension_guid() const override;
@@ -559,7 +562,13 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             
             // If we were playing but now we're not, clear the panel
             if (m_was_playing && !is_playing && cfg_clear_panel_when_not_playing) {
-                force_clear_artwork_bitmap();
+                if (cfg_use_noart_image) {
+                    // Load and display noart image instead of clearing
+                    load_noart_image();
+                } else {
+                    // Just clear the panel
+                    force_clear_artwork_bitmap();
+                }
             }
             
             // Update the previous state
@@ -904,10 +913,14 @@ void CUIArtworkPanel::on_playback_stop(play_control::t_stop_reason p_reason) {
     
     // Clear artwork if option is enabled
     if (cfg_clear_panel_when_not_playing) {
-        m_artwork_bitmap.reset();  // Properly release GDI+ bitmap
-        m_current_artwork_source = "Panel cleared - not playing";
+        if (cfg_use_noart_image) {
+            // Load and display noart image instead of clearing
+            load_noart_image();
+        } else {
+            // Just clear the panel
+            force_clear_artwork_bitmap();
+        }
         m_osd_text = "";
-        InvalidateRect(m_hWnd, NULL, TRUE);
     }
 }
 
@@ -1263,6 +1276,89 @@ void CUIArtworkPanel::force_clear_artwork_bitmap() {
     m_current_artwork_source.clear();
     
     // Invalidate window to redraw
+    if (m_hWnd) {
+        InvalidateRect(m_hWnd, NULL, TRUE);
+    }
+}
+
+// Load noart image for "use noart image" option
+void CUIArtworkPanel::load_noart_image() {
+    // Clear existing artwork
+    if (m_artwork_bitmap) {
+        m_artwork_bitmap.reset();
+    }
+    
+    if (m_scaled_gdi_bitmap) {
+        DeleteObject(m_scaled_gdi_bitmap);
+        m_scaled_gdi_bitmap = NULL;
+    }
+    
+    // Clear artwork state
+    m_artwork_loaded = false;
+    m_current_artwork_path.clear();
+    m_current_artwork_source.clear();
+    
+    // Try to load noart image from component data directory (logos subfolder)
+    pfc::string8 profile_path = core_api::get_profile_path();
+    
+    // Convert file:// URL to regular file path
+    pfc::string8 file_path = profile_path;
+    if (file_path.startsWith("file://")) {
+        file_path = file_path.subString(7); // Remove "file://" prefix
+    }
+    
+    pfc::string8 data_path = file_path;
+    data_path.add_string("\\foo_artwork_data\\logos\\");
+    
+    // Try different noart image formats
+    const char* noart_filenames[] = {
+        "noart.png",
+        "noart.jpg", 
+        "noart.jpeg",
+        "noart.gif",
+        "noart.bmp",
+        nullptr
+    };
+    
+    pfc::string8 noart_file_path;
+    
+    for (int i = 0; noart_filenames[i] != nullptr; i++) {
+        noart_file_path = data_path;
+        noart_file_path.add_string(noart_filenames[i]);
+        
+        // Check if file exists
+        DWORD file_attrs = GetFileAttributesA(noart_file_path);
+        if (file_attrs != INVALID_FILE_ATTRIBUTES && !(file_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            // File exists, try to load it using GDI+
+            try {
+                // Convert to wide string for GDI+
+                std::wstring wide_path;
+                wide_path.resize(noart_file_path.length() + 1);
+                int result = MultiByteToWideChar(CP_UTF8, 0, noart_file_path.get_ptr(), -1, &wide_path[0], (int)wide_path.size());
+                if (result > 0) {
+                    wide_path.resize(result - 1); // Remove null terminator from size
+                    
+                    // Load image using GDI+
+                    auto bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
+                    if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                        m_artwork_bitmap = std::move(bitmap);
+                        m_artwork_loaded = true;
+                        m_current_artwork_path = wide_path;
+                        m_current_artwork_source = "Noart image";
+                        
+                        // Scale the artwork to fit the panel (same as regular artwork)
+                        resize_artwork_to_fit();
+                        
+                        break;
+                    }
+                }
+            } catch (...) {
+                continue;
+            }
+        }
+    }
+    
+    // Invalidate window to redraw with noart image or clear panel
     if (m_hWnd) {
         InvalidateRect(m_hWnd, NULL, TRUE);
     }
