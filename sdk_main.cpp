@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "artwork_manager.h"
+#include "metadata_cleaner.h"
 #include <algorithm>
 #include <thread>
 #include <vector>
@@ -281,7 +282,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.11",
+    "1.5.12",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -298,7 +299,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.11",
+    "1.5.12",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -930,21 +931,31 @@ std::unique_ptr<Gdiplus::Bitmap> load_generic_noart_logo_gdiplus() {
         return nullptr;
     }
     
-    // Get the directory path (using same logic as existing functions)
-    pfc::string8 profile_url = core_api::get_profile_path();
-    pfc::string8 profile_path;
-    if (profile_url.startsWith("file://")) {
-        profile_path = profile_url.c_str() + 7; // Skip "file://"
-        for (size_t i = 0; i < profile_path.length(); i++) {
-            if (profile_path[i] == '/') {
-                profile_path.set_char(i, '\\');
-            }
+    // Get the logos directory path (using same logic as other logo functions)
+    pfc::string8 logos_dir;
+    
+    // Use custom logos folder if configured
+    if (!cfg_logos_folder.is_empty()) {
+        logos_dir = cfg_logos_folder.get_ptr();
+        if (!logos_dir.is_empty() && logos_dir[logos_dir.length() - 1] != '\\') {
+            logos_dir += "\\";
         }
     } else {
-        profile_path = profile_url;
+        // Use default path
+        pfc::string8 profile_url = core_api::get_profile_path();
+        pfc::string8 profile_path;
+        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+            profile_path = profile_url.c_str() + 7;
+            for (size_t i = 0; i < profile_path.length(); i++) {
+                if (profile_path[i] == '/') {
+                    profile_path.set_char(i, '\\');
+                }
+            }
+        } else {
+            profile_path = profile_url;
+        }
+        logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
     }
-    
-    pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
     
     try {
         // Try common image extensions for generic noart.png
@@ -3042,6 +3053,9 @@ void artwork_ui_element::search_itunes_artwork(metadb_handle_ptr track) {
             title = pfc::string8(separator + 3);
             
             // Clean up extracted values
+            // Extract only the first artist for better artwork search results
+            std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+            artist = first_artist.c_str();
             artist = clean_metadata_text(artist);
             title = clean_metadata_text(title);
         }
@@ -3088,6 +3102,9 @@ void artwork_ui_element::search_discogs_artwork(metadb_handle_ptr track) {
             title = pfc::string8(separator + 3);
             
             // Clean up extracted values
+            // Extract only the first artist for better artwork search results
+            std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+            artist = first_artist.c_str();
             artist = clean_metadata_text(artist);
             title = clean_metadata_text(title);
         }
@@ -3134,6 +3151,9 @@ void artwork_ui_element::search_lastfm_artwork(metadb_handle_ptr track) {
             title = pfc::string8(separator + 3);
             
             // Clean up extracted values
+            // Extract only the first artist for better artwork search results
+            std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+            artist = first_artist.c_str();
             artist = clean_metadata_text(artist);
             title = clean_metadata_text(title);
         }
@@ -3378,7 +3398,9 @@ void artwork_ui_element::search_deezer_background(pfc::string8 artist, pfc::stri
             search_query = title;
         } else {
             // Clean metadata for better search results
-            pfc::string8 clean_artist = clean_metadata_text(artist);
+            // Extract only the first artist for better artwork search results
+            std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+            pfc::string8 clean_artist = clean_metadata_text(first_artist.c_str());
             pfc::string8 clean_title = clean_metadata_text(title);
             
             // Try artist + track format for better matching
@@ -3590,6 +3612,9 @@ void artwork_ui_element::extract_metadata_for_search(metadb_handle_ptr track, pf
             
             // Clean local file metadata
             if (!artist.is_empty()) {
+                // Extract only the first artist for better artwork search results
+                std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+                artist = first_artist.c_str();
                 artist = clean_metadata_text(artist);
             }
             if (!title.is_empty()) {
@@ -3626,6 +3651,9 @@ void artwork_ui_element::extract_metadata_from_info(const file_info& info, pfc::
         
         // Clean metadata
         if (!artist.is_empty()) {
+            // Extract only the first artist for better artwork search results
+            std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+            artist = first_artist.c_str();
             artist = clean_metadata_text(artist);
         }
         if (!title.is_empty()) {
@@ -4924,21 +4952,31 @@ void artwork_ui_element::load_noart_image() {
         m_pending_image_data.clear();
     }
     
-    // Try to load noart image from component data directory (logos subfolder)
-    pfc::string8 profile_path = core_api::get_profile_path();
-    console::formatter() << "foo_artwork: Profile path: " << profile_path;
+    // Try to load noart image from configured logos directory
+    pfc::string8 data_path;
     
-    // Convert file:// URL to regular file path
-    pfc::string8 file_path = profile_path;
-    if (file_path.startsWith("file://")) {
-        file_path = file_path.subString(7); // Remove "file://" prefix
+    // Use custom logos folder if configured, otherwise use default
+    if (!cfg_logos_folder.is_empty()) {
+        data_path = cfg_logos_folder.get_ptr();
+        if (!data_path.is_empty() && data_path[data_path.length() - 1] != '\\') {
+            data_path += "\\";
+        }
+        console::formatter() << "foo_artwork: Using custom logos folder: " << data_path;
+    } else {
+        // Use default path
+        pfc::string8 profile_path = core_api::get_profile_path();
+        console::formatter() << "foo_artwork: Profile path: " << profile_path;
+        
+        // Convert file:// URL to regular file path
+        pfc::string8 file_path = profile_path;
+        if (file_path.startsWith("file://")) {
+            file_path = file_path.subString(7); // Remove "file://" prefix
+        }
+        
+        data_path = file_path;
+        data_path.add_string("\\foo_artwork_data\\logos\\");
+        console::formatter() << "foo_artwork: Using default logos folder: " << data_path;
     }
-    
-    pfc::string8 data_path = file_path;
-    data_path.add_string("\\foo_artwork_data\\logos\\");
-    
-    // Debug output
-    console::formatter() << "foo_artwork: Looking for noart images in: " << data_path;
     
     // Try different noart image formats
     const char* noart_filenames[] = {
