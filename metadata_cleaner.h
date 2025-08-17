@@ -14,6 +14,9 @@ public:
     // Validation function to check if metadata is suitable for artwork search
     static bool is_valid_for_search(const char* artist, const char* title);
     
+    // Extract only the first artist from multi-artist string for better artwork search results
+    static std::string extract_first_artist(const char* artist);
+    
 private:
     // Core cleaning operations - UTF-8 safe
     static std::string remove_timestamps(const std::string& str);
