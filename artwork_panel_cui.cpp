@@ -544,7 +544,9 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             if (!m_delayed_search_title.empty()) {
                 
                 // Apply unified metadata cleaning for consistency with DUI mode
-                std::string final_artist = MetadataCleaner::clean_for_search(m_delayed_search_artist.c_str(), true);
+                // Extract only the first artist for better artwork search results
+                std::string first_artist = MetadataCleaner::extract_first_artist(m_delayed_search_artist.c_str());
+                std::string final_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
                 std::string final_title = MetadataCleaner::clean_for_search(m_delayed_search_title.c_str(), true);
                 
                 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
@@ -942,8 +944,11 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     std::string original_title = title;
     std::string original_artist = artist;
     
+    // Extract only the first artist for better artwork search results
+    std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+    
     // Use the unified metadata cleaner with Cyrillic preservation
-    std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
+    std::string cleaned_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
     std::string cleaned_title = MetadataCleaner::clean_for_search(title.c_str(), true);
     
     // 2. Remove featuring patterns in parentheses/brackets (including unclosed ones)
@@ -1298,17 +1303,28 @@ void CUIArtworkPanel::load_noart_image() {
     m_current_artwork_path.clear();
     m_current_artwork_source.clear();
     
-    // Try to load noart image from component data directory (logos subfolder)
-    pfc::string8 profile_path = core_api::get_profile_path();
+    // Try to load noart image from configured logos directory
+    pfc::string8 data_path;
     
-    // Convert file:// URL to regular file path
-    pfc::string8 file_path = profile_path;
-    if (file_path.startsWith("file://")) {
-        file_path = file_path.subString(7); // Remove "file://" prefix
+    // Use custom logos folder if configured, otherwise use default
+    if (!cfg_logos_folder.is_empty()) {
+        data_path = cfg_logos_folder.get_ptr();
+        if (!data_path.is_empty() && data_path[data_path.length() - 1] != '\\') {
+            data_path += "\\";
+        }
+    } else {
+        // Use default path
+        pfc::string8 profile_path = core_api::get_profile_path();
+        
+        // Convert file:// URL to regular file path
+        pfc::string8 file_path = profile_path;
+        if (file_path.startsWith("file://")) {
+            file_path = file_path.subString(7); // Remove "file://" prefix
+        }
+        
+        data_path = file_path;
+        data_path.add_string("\\foo_artwork_data\\logos\\");
     }
-    
-    pfc::string8 data_path = file_path;
-    data_path.add_string("\\foo_artwork_data\\logos\\");
     
     // Try different noart image formats
     const char* noart_filenames[] = {
