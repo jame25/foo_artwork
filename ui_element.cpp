@@ -17,6 +17,7 @@
 // External configuration variables
 extern cfg_int cfg_stream_delay;
 extern cfg_bool cfg_enable_custom_logos;
+extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
 extern cfg_bool cfg_use_noart_image;
 extern cfg_bool cfg_show_osd;
@@ -585,8 +586,11 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         pfc::string8 artist = artist_ptr ? artist_ptr : "";
         pfc::string8 track = track_ptr ? track_ptr : "";
         
+        // Extract only the first artist for better artwork search results
+        std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+        
         // Clean metadata using the unified UTF-8 safe cleaner
-        std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
+        std::string cleaned_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
         std::string cleaned_track = MetadataCleaner::clean_for_search(track.c_str(), true);
         
 		//If inverted swap artist title
@@ -1051,17 +1055,28 @@ void artwork_ui_element::update_clear_panel_timer() {
 }
 
 void artwork_ui_element::load_noart_image() {
-    // Try to load noart image from component data directory (logos subfolder) 
-    pfc::string8 profile_path = core_api::get_profile_path();
+    // Try to load noart image from configured logos directory
+    pfc::string8 data_path;
     
-    // Convert file:// URL to regular file path
-    pfc::string8 file_path = profile_path;
-    if (file_path.startsWith("file://")) {
-        file_path = file_path.subString(7); // Remove "file://" prefix
+    // Use custom logos folder if configured, otherwise use default
+    if (!cfg_logos_folder.is_empty()) {
+        data_path = cfg_logos_folder.get_ptr();
+        if (!data_path.is_empty() && data_path[data_path.length() - 1] != '\\') {
+            data_path += "\\";
+        }
+    } else {
+        // Use default path
+        pfc::string8 profile_path = core_api::get_profile_path();
+        
+        // Convert file:// URL to regular file path
+        pfc::string8 file_path = profile_path;
+        if (file_path.startsWith("file://")) {
+            file_path = file_path.subString(7); // Remove "file://" prefix
+        }
+        
+        data_path = file_path;
+        data_path.add_string("\\foo_artwork_data\\logos\\");
     }
-    
-    pfc::string8 data_path = file_path;
-    data_path.add_string("\\foo_artwork_data\\logos\\");
     
     // Try different noart image formats
     const char* noart_filenames[] = {
