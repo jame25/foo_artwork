@@ -40,11 +40,11 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     // Remove parenthetical timestamps (MM:SS) or (M:SS)
     str = std::regex_replace(str, std::regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*"), " ");
     
-    // Remove all parenthetical content (like "(Vocal Version)", "(Remix)", etc.)
-    str = std::regex_replace(str, std::regex("\\s*\\([^)]*\\)\\s*"), " ");
+    // Remove parenthetical content (respects preserve_cyrillic parameter)
+    str = remove_parenthetical_content(str, preserve_cyrillic);
 
-    // Remove all square bracket content (like "[Vocal Version]", "[Remix]", etc.)
-    str = std::regex_replace(str, std::regex("\\s*\\[[^\\]]*\\]\\s*"), " ");
+    // Remove bracketed content (respects preserve_cyrillic parameter)
+    str = remove_bracketed_content(str, preserve_cyrillic);
 
     // Remove everything after pipe | (like "Hit 'N Run Lover || 4153 || S || 2ca82642-1c07-42f0-972b-1a663c1c39b9")
     str = std::regex_replace(str, std::regex("\\|.*"), "");
@@ -120,7 +120,10 @@ std::string MetadataCleaner::remove_timestamps(const std::string& str) {
 }
 
 std::string MetadataCleaner::remove_parenthetical_content(const std::string& str, bool preserve_cyrillic) {
-    if (!preserve_cyrillic) {
+    // Auto-detect Cyrillic if preserve_cyrillic is true
+    bool use_conservative = preserve_cyrillic && contains_cyrillic(str);
+    
+    if (!preserve_cyrillic || !use_conservative) {
         // Standard removal for Latin scripts
         std::string result = str;
         
@@ -157,7 +160,10 @@ std::string MetadataCleaner::remove_parenthetical_content(const std::string& str
 }
 
 std::string MetadataCleaner::remove_bracketed_content(const std::string& str, bool preserve_cyrillic) {
-    if (!preserve_cyrillic) {
+    // Auto-detect Cyrillic if preserve_cyrillic is true
+    bool use_conservative = preserve_cyrillic && contains_cyrillic(str);
+    
+    if (!preserve_cyrillic || !use_conservative) {
         // Standard removal for Latin scripts
         return std::regex_replace(str, std::regex("\\s*\\[[^\\]]*\\]\\s*"), " ");
     } else {
@@ -291,4 +297,40 @@ bool MetadataCleaner::is_featuring_pattern(const std::string& term) {
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
     
     return (lower == "feat." || lower == "featuring" || lower == "ft." || lower == "with");
+}
+
+std::string MetadataCleaner::extract_first_artist(const char* artist) {
+    if (!artist || strlen(artist) == 0) {
+        return "";
+    }
+    
+    std::string artist_str(artist);
+    
+    // Common multi-artist separators (in order of precedence)
+    std::vector<std::string> separators = {
+        " feat. ", " ft. ", " featuring ", 
+        " & ", " and ", 
+        " / ", " // ", " /// ",
+        " vs. ", " vs ", " versus ",
+        " with ", " w/ ",
+        " x ", " X ",
+        ", ", "; "
+    };
+    
+    // Find the earliest separator
+    size_t earliest_pos = std::string::npos;
+    for (const auto& separator : separators) {
+        size_t pos = artist_str.find(separator);
+        if (pos != std::string::npos && pos < earliest_pos) {
+            earliest_pos = pos;
+        }
+    }
+    
+    // If we found a separator, extract everything before it
+    if (earliest_pos != std::string::npos) {
+        artist_str = artist_str.substr(0, earliest_pos);
+    }
+    
+    // Clean up whitespace and return
+    return trim(artist_str);
 }
