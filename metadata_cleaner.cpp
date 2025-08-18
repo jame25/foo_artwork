@@ -59,7 +59,6 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
         str = std::regex_replace(str, std::regex("~"), " - ");
     }
     
-
     // Remove common prefixes
     std::vector<std::string> prefixes = {
         "Now Playing: ", "Now Playing:", "Live: ", "Live:", "Playing: ", "Playing:",
@@ -349,10 +348,9 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
     
     std::string artist_str(artist);
     
-    // Common multi-artist separators (in order of precedence)
-    std::vector<std::string> separators = {
+    // High-confidence multi-artist separators (clearly indicate collaborations)
+    std::vector<std::string> high_confidence_separators = {
         " feat. ", " ft. ", " featuring ", 
-        " & ", " and ", 
         " / ", " // ", " /// ",
         " vs. ", " vs ", " versus ",
         " with ", " w/ ",
@@ -360,12 +358,32 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
         ", ", "; "
     };
     
-    // Find the earliest separator
+    // Contextual separators that need additional validation
+    std::vector<std::string> contextual_separators = {
+        " & ", " and "
+    };
+    
+    // First, check high-confidence separators
     size_t earliest_pos = std::string::npos;
-    for (const auto& separator : separators) {
+    for (const auto& separator : high_confidence_separators) {
         size_t pos = artist_str.find(separator);
         if (pos != std::string::npos && pos < earliest_pos) {
             earliest_pos = pos;
+        }
+    }
+    
+    // If no high-confidence separator found, check contextual separators with validation
+    if (earliest_pos == std::string::npos) {
+        for (const auto& separator : contextual_separators) {
+            size_t pos = artist_str.find(separator);
+            if (pos != std::string::npos) {
+                // Validate if this is likely a collaboration vs. a band name
+                if (is_likely_collaboration(artist_str, separator, pos)) {
+                    if (pos < earliest_pos) {
+                        earliest_pos = pos;
+                    }
+                }
+            }
         }
     }
     
@@ -376,4 +394,50 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
     
     // Clean up whitespace and return
     return trim(artist_str);
+}
+
+bool MetadataCleaner::is_likely_collaboration(const std::string& artist_str, const std::string& separator, size_t pos) {
+    // Extract the parts before and after the separator
+    std::string before = trim(artist_str.substr(0, pos));
+    std::string after = trim(artist_str.substr(pos + separator.length()));
+    
+    if (before.empty() || after.empty()) {
+        return false;
+    }
+    
+    // Known band name patterns - these should NOT be split
+    std::vector<std::string> band_name_indicators = {
+        "sons", "daughters", "brothers", "sisters",
+        "boys", "girls", "men", "women",
+        "band", "group", "orchestra", "ensemble",
+        "collective", "crew", "gang", "mob"
+    };
+    
+    // Convert to lowercase for comparison
+    std::string after_lower = after;
+    std::transform(after_lower.begin(), after_lower.end(), after_lower.begin(), ::tolower);
+    
+    // If the part after separator is a common band name indicator, likely NOT a collaboration
+    for (const auto& indicator : band_name_indicators) {
+        if (after_lower == indicator || after_lower.find(indicator) == 0) {
+            return false; // Don't split band names like "Mumford & Sons"
+        }
+    }
+    
+    // Additional heuristics for legitimate collaborations:
+    // 1. Both parts look like complete artist names (have capital letters)
+    bool before_has_capitals = std::any_of(before.begin(), before.end(), ::isupper);
+    bool after_has_capitals = std::any_of(after.begin(), after.end(), ::isupper);
+    
+    // 2. Both parts are reasonably long (not just single words)
+    bool before_substantial = before.length() > 3 && before.find(' ') != std::string::npos;
+    bool after_substantial = after.length() > 3;
+    
+    // If both parts look like substantial artist names, likely a collaboration
+    if (before_has_capitals && after_has_capitals && before_substantial && after_substantial) {
+        return true;
+    }
+    
+    // Conservative default: don't split unless we're confident it's a collaboration
+    return false;
 }
