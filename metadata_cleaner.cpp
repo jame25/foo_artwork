@@ -140,12 +140,12 @@ std::string MetadataCleaner::remove_parenthetical_content(const std::string& str
         // Remove common remix/version patterns (case insensitive)
         // Pattern 1: (word remix) - like "(Lemongrass Remix)"
         result = std::regex_replace(result,
-            std::regex("\\s*\\([^)]*\\s+(?:remix|remaster|demo|mix|version|edit|cut)\\)\\s*",
+            std::regex("\\s*\\([^)]*\\s+(?:remix|remaster|demo|mix|version|edit|cut|rmx)\\)\\s*",
             std::regex_constants::icase), " ");
         
         // Pattern 2: (remix word) - like "(Remix by Artist)" 
         result = std::regex_replace(result, 
-            std::regex("\\s*\\((?:live|acoustic|unplugged|remix|remaster|demo|instrumental|explicit|clean|radio edit|extended|single version|album version)(?:\\s+[^)]*)?\\)\\s*", 
+            std::regex("\\s*\\((?:live|acoustic|unplugged|remix|remaster|demo|instrumental|explicit|clean|radio edit|extended|single version|album version|rmx)(?:\\s+[^)]*)?\\)\\s*", 
             std::regex_constants::icase), " ");
         
         // Remove featuring patterns
@@ -164,12 +164,12 @@ std::string MetadataCleaner::remove_parenthetical_content(const std::string& str
         // Only remove very common English patterns that are safe to remove
         // Pattern 1: (word remix) - like "(Lemongrass Remix)"
         result = std::regex_replace(result,
-            std::regex("\\s*\\([^)]*\\s+(?:remix|remaster|demo|mix|version|edit|cut)\\)\\s*",
+            std::regex("\\s*\\([^)]*\\s+(?:remix|remaster|demo|mix|version|edit|cut|rmx)\\)\\s*",
             std::regex_constants::icase), " ");
         
         // Pattern 2: (remix word) - like "(Remix by Artist)"
         result = std::regex_replace(result,
-            std::regex("\\s*\\((?:remix|remaster|demo|radio edit|extended)\\)\\s*",
+            std::regex("\\s*\\((?:remix|remaster|demo|radio edit|extended|rmx)\\)\\s*",
             std::regex_constants::icase), " ");
         
         // Remove explicit/clean markers (safe for all languages)
@@ -191,12 +191,12 @@ std::string MetadataCleaner::remove_bracketed_content(const std::string& str, bo
         
         // Pattern 1: [word remix] - like "[Lemongrass Remix]"
         result = std::regex_replace(result,
-            std::regex("\\s*\\[[^\\]]*\\s+(?:remix|remaster|demo|mix|version|edit|cut)\\]\\s*",
+            std::regex("\\s*\\[[^\\]]*\\s+(?:remix|remaster|demo|mix|version|edit|cut|rmx)\\]\\s*",
             std::regex_constants::icase), " ");
         
         // Pattern 2: [remix word] - like "[Remix by Artist]"
         result = std::regex_replace(result,
-            std::regex("\\s*\\[(?:remix|remaster|demo|radio edit|extended)[^\\]]*\\]\\s*",
+            std::regex("\\s*\\[(?:remix|remaster|demo|radio edit|extended|rmx)[^\\]]*\\]\\s*",
             std::regex_constants::icase), " ");
         
         // Remove all remaining brackets content (aggressive for Latin)
@@ -209,12 +209,12 @@ std::string MetadataCleaner::remove_bracketed_content(const std::string& str, bo
         
         // Pattern 1: [word remix] - like "[Lemongrass Remix]"
         result = std::regex_replace(result,
-            std::regex("\\s*\\[[^\\]]*\\s+(?:remix|remaster|demo|mix|version|edit|cut)\\]\\s*",
+            std::regex("\\s*\\[[^\\]]*\\s+(?:remix|remaster|demo|mix|version|edit|cut|rmx)\\]\\s*",
             std::regex_constants::icase), " ");
         
         // Pattern 2: [remix word] - like "[Remix by Artist]"
         result = std::regex_replace(result,
-            std::regex("\\s*\\[(?:remix|remaster|demo|radio edit|extended)\\]\\s*",
+            std::regex("\\s*\\[(?:remix|remaster|demo|radio edit|extended|rmx)\\]\\s*",
             std::regex_constants::icase), " ");
             
         return result;
