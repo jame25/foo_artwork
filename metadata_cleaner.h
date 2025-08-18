@@ -35,4 +35,5 @@ private:
     static std::string trim(const std::string& str);
     static bool is_common_remix_term(const std::string& term);
     static bool is_featuring_pattern(const std::string& term);
+    static bool is_likely_collaboration(const std::string& artist_str, const std::string& separator, size_t pos);
 };
