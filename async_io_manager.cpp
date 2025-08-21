@@ -131,6 +131,12 @@ void async_io_manager::post_to_main_thread(main_thread_callback callback) {
     main_thread_dispatcher::post_callback(callback);
 }
 
+void async_io_manager::submit_task(std::function<void()> task) {
+    ASSERT_MAIN_THREAD();
+    
+    thread_pool_->enqueue(task);
+}
+
 bool async_io_manager::is_main_thread() const {
     return GetCurrentThreadId() == main_thread_id_;
 }
