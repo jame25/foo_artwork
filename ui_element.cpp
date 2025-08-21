@@ -543,9 +543,14 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
             // This gives metadata time to arrive via on_dynamic_info_track()
             SetTimer(100, 3000); // Timer ID 100, 3 second timeout
         } else {
-            // For local files, use local search first (like CUI)
+            // For local files, use SDK artwork manager directly
+            artwork_manager::get_artwork_async(track, [this](const artwork_manager::artwork_result& result) {
+                // Post result to UI thread using Windows API directly
+                auto* heap_result = new artwork_manager::artwork_result(result);
+                ::PostMessage(m_hWnd, WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(heap_result));
+            });
+            // Also call the compatibility function for logging
             trigger_main_component_local_search(track);
-            // Then start the regular search which will check for existing artwork
             start_artwork_search();
         }
     }
