@@ -549,6 +549,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 std::string final_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
                 std::string final_title = MetadataCleaner::clean_for_search(m_delayed_search_title.c_str(), true);
                 
+                
                 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
                 trigger_main_component_search_with_metadata(final_artist, final_title);
                 
@@ -853,9 +854,9 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
 void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
     if (!m_hWnd) return;
     
+    
 	 // Check if it's an internet stream and custom logos enabled
-    double length = p_track->get_length();
-    if (length <= 0 && cfg_enable_custom_logos) {
+    if (is_safe_internet_stream(p_track) && cfg_enable_custom_logos) {
         pfc::string8 path = p_track->get_path();
         pfc::string8 result = path;
         for (size_t i = 0; i < result.length(); i++) {
@@ -899,7 +900,36 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
             // Force main component to search for local artwork immediately
             trigger_main_component_local_search(p_track);
         } else {
-            // For internet streams, let the main component handle the stream delay for metadata search
+            // For internet streams, check if it's an online playlist with metadata
+            
+            // Try to get metadata immediately for online playlists
+            file_info_impl info;
+            if (p_track->get_info(info)) {
+                
+                std::string artist, title;
+                if (info.meta_get("ARTIST", 0)) {
+                    artist = info.meta_get("ARTIST", 0);
+                }
+                if (info.meta_get("TITLE", 0)) {
+                    title = info.meta_get("TITLE", 0);
+                }
+                
+                // If we have valid metadata, trigger API search immediately
+                if (!artist.empty() && !title.empty()) {
+                    
+                    // Apply metadata cleaning
+                    std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+                    std::string final_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
+                    std::string final_title = MetadataCleaner::clean_for_search(title.c_str(), true);
+                    
+                    // Trigger API search
+                    trigger_main_component_search_with_metadata(final_artist, final_title);
+                } else {
+                    // For internet streams without immediate metadata, let the main component handle the stream delay for metadata search
+                }
+            } else {
+                // For internet streams, let the main component handle the stream delay for metadata search
+            }
             // API search should always be the primary priority, station logos are fallbacks only
         }
         
@@ -1169,6 +1199,7 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                     artist = title_old;
                     title = artist_old;
                 }
+                
                 
                 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
                 trigger_main_component_search_with_metadata(artist, title);
