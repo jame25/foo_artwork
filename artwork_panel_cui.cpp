@@ -755,7 +755,32 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
 void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
     if (!m_hWnd) return;
     
+    // Instead of using the provided data, use album_art_manager_v2 directly
+    static_api_ptr_t<playback_control> pc;
+    metadb_handle_ptr current_track;
     
+    if (pc->get_now_playing(current_track) && current_track.is_valid()) {
+        try {
+            // Use album_art_manager_v2 to get artwork (embedded + external per user preferences)
+            static_api_ptr_t<album_art_manager_v2> aam;
+            auto extractor = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(current_track),
+                                     pfc::list_single_ref_t<GUID>(album_art_ids::cover_front),
+                                     fb2k::noAbort);
+            
+            auto art_data = extractor->query(album_art_ids::cover_front, fb2k::noAbort);
+            if (art_data.is_valid() && art_data->get_size() > 0) {
+                load_artwork_from_data(art_data);
+                m_artwork_source = "Local artwork";
+                InvalidateRect(m_hWnd, NULL, FALSE);
+                UpdateWindow(m_hWnd);
+                return;
+            }
+        } catch (...) {
+            // SDK artwork search failed, continue with fallback
+        }
+    }
+    
+    // Fallback to original behavior if SDK fails
     try {
         if (data.is_valid() && data->get_size() > 0) {
             
