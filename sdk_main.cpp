@@ -413,9 +413,19 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
     pfc::string8 path = track->get_path();
     
     // Check if it's an internet stream
-    double length = track->get_length();
-    if (length > 0) {
-        return "";
+    // Check URL protocol first - this covers online playlists with duration
+    if (strstr(path.c_str(), "://")) {
+        // Has protocol - check if it's a local file protocol
+        if (strstr(path.c_str(), "file://") == path.c_str()) {
+            return ""; // file:// protocol = local file
+        }
+        // Any other protocol (http://, https://, etc.) = internet stream - continue processing
+    } else {
+        // No protocol - check length as fallback for other stream types
+        double length = track->get_length();
+        if (length > 0) {
+            return ""; // Has length but no protocol = local file
+        }
     }
     
     // Replace illegal characters for filename compatibility
@@ -2252,75 +2262,37 @@ void unsubscribe_from_artwork_events(IArtworkEventListener* listener) {
 // Function to trigger main component search from CUI panels with metadata
 void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title) {
     
-    // Always use bridge functions for consistent behavior that respects API preferences
-    // This ensures the CUI panel always gets the same search logic regardless of main UI element presence
+    // Use artwork manager directly instead of bridge functions
     g_artwork_loading = true;
+    
+    // Call artwork manager from main thread
+    auto callback = [](const artwork_manager::artwork_result& result) {
+        g_artwork_loading = false;
         
-        std::thread([artist, title]() {
-            try {
-                // Use search bridge functions that call the main component's API methods
-                // without needing a full UI element instance
-                
-                // Get search priority order and try each enabled API
-                std::vector<int> apis = { cfg_search_order_1, cfg_search_order_2, cfg_search_order_3, cfg_search_order_4, cfg_search_order_5 };
-                
-                for (int api_type : apis) {
-                    switch (api_type) {
-                        case 0: // iTunes
-                            if (cfg_enable_itunes) {
-                                if (bridge_search_itunes(artist, title)) return;
-                            }
-                            break;
-                        case 1: // Deezer  
-                            if (cfg_enable_deezer) {
-                                if (bridge_search_deezer(artist, title)) return;
-                            }
-                            break;
-                        case 2: // Last.fm
-                            if (cfg_enable_lastfm) {
-                                if (bridge_search_lastfm(artist, title)) return;
-                            }
-                            break;
-                        case 3: // MusicBrainz
-                            if (cfg_enable_musicbrainz) {
-                                if (bridge_search_musicbrainz(artist, title)) return;
-                            }
-                            break;
-                        case 4: // Discogs
-                            if (cfg_enable_discogs) {
-                                if (bridge_search_discogs(artist, title)) return;
-                            }
-                            break;
-                    }
-                }
-                
-                // Send failure event for CUI panel (thread-safe)
-                ArtworkEventManager::get().notify(ArtworkEvent(
-                    ArtworkEventType::ARTWORK_FAILED, 
-                    nullptr, 
-                    "Bridge search - All APIs exhausted", 
-                    artist.c_str(), 
-                    title.c_str()
-                ));
-                
-                g_artwork_loading = false;
-                
-            } catch (...) {
-                // Send failure event even on exception
-                try {
-                    ArtworkEventManager::get().notify(ArtworkEvent(
-                        ArtworkEventType::ARTWORK_FAILED, 
-                        nullptr, 
-                        "Bridge search - Exception occurred", 
-                        artist.c_str(), 
-                        title.c_str()
-                    ));
-                } catch (...) {
-                    // Ignore event notification failures to prevent crash loops
-                }
-                g_artwork_loading = false;
+        if (result.success && result.data.get_size() > 0) {
+            
+            // Store the artwork source
+            g_current_artwork_source = result.source.c_str();
+            
+            // Convert pfc::array_t<t_uint8> to std::vector<BYTE> for existing bitmap creation function
+            std::vector<BYTE> image_data;
+            image_data.resize(result.data.get_size());
+            memcpy(image_data.data(), result.data.get_ptr(), result.data.get_size());
+            
+            // Use the existing bitmap creation function that handles all UI updates
+            if (create_bitmap_from_image_data(image_data)) {
+                // Clear the path since this is online artwork
+                g_current_artwork_path.clear();
             }
-        }).detach();
+        } else {
+        }
+    };
+    
+    // Convert to pfc::string8 and call artwork manager
+    pfc::string8 pfc_artist = artist.c_str();
+    pfc::string8 pfc_title = title.c_str();
+    
+    artwork_manager::get_artwork_async_with_metadata(pfc_artist, pfc_title, callback);
 }
 
 // Legacy function (kept for compatibility)
