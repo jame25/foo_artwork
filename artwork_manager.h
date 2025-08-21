@@ -41,8 +41,8 @@ private:
     static void search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback);
     static void search_apis_async(const pfc::string8& artist, const pfc::string8& album, const pfc::string8& cache_key, artwork_callback callback);
     
-    // Async local artwork search
-    static void find_local_artwork_async(const char* file_path, artwork_callback callback);
+    // Async local artwork search (uses SDK only)
+    static void find_local_artwork_async(metadb_handle_ptr track, artwork_callback callback);
     
     // Async API artwork search  
     static void search_itunes_api_async(const char* artist, const char* track, artwork_callback callback);
@@ -55,7 +55,6 @@ private:
     static void download_image_async(const char* url, artwork_callback callback);
     
     // Helper functions for async operations
-    static void process_local_files(const std::vector<pfc::string8>& files, artwork_callback callback, size_t index = 0);
     static void validate_and_complete_result(const pfc::array_t<t_uint8>& data, artwork_callback callback);
     
     // Utility functions
