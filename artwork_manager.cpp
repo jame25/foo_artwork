@@ -161,7 +161,7 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
     }
     
     
-    find_local_artwork_async(file_path, [cache_key, track, callback](const artwork_result& result) {
+    find_local_artwork_async(track, [cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
             // Local artwork found - cache it and return
             async_io_manager::instance().cache_set_async(cache_key, result.data);
@@ -385,89 +385,57 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
     }
 }
 
-void artwork_manager::find_local_artwork_async(const char* file_path, artwork_callback callback) {
-    pfc::string8 directory = get_file_directory(file_path);
-    if (directory.is_empty()) {
+void artwork_manager::find_local_artwork_async(metadb_handle_ptr track, artwork_callback callback) {
+    // Use album_art_manager_v2 from SDK exclusively - no custom logic
+    async_io_manager::instance().submit_task([track, callback]() {
         artwork_result result;
         result.success = false;
-        result.error_message = "Invalid file path";
-        async_io_manager::instance().post_to_main_thread([callback, result]() {
-            callback(result);
-        });
-        return;
-    }
-    
-    // Scan directory for image files asynchronously
-    async_io_manager::instance().scan_directory_async(directory, "*.jpg",
-        [directory, callback](bool success, const std::vector<pfc::string8>& jpg_files, const pfc::string8& error) {
-            if (!success) {
-                artwork_result result;
-                result.success = false;
-                result.error_message = "Failed to scan directory: ";
-        result.error_message << error;
-                callback(result);
+        
+        try {
+            if (!track.is_valid()) {
+                result.error_message = "Invalid metadb handle";
+                async_io_manager::instance().post_to_main_thread([callback, result]() {
+                    callback(result);
+                });
                 return;
             }
             
-            // Also scan for PNG files
-            async_io_manager::instance().scan_directory_async(directory, "*.png",
-                [directory, jpg_files, callback](bool success, const std::vector<pfc::string8>& png_files, const pfc::string8& error) {
-                    std::vector<pfc::string8> all_files = jpg_files;
-                    if (success) {
-                        all_files.insert(all_files.end(), png_files.begin(), png_files.end());
-                    }
-                    
-                    // Also scan for JPEG files
-                    async_io_manager::instance().scan_directory_async(directory, "*.jpeg",
-                        [directory, all_files, callback](bool success, const std::vector<pfc::string8>& jpeg_files, const pfc::string8& error) {
-                            std::vector<pfc::string8> final_files = all_files;
-                            if (success) {
-                                final_files.insert(final_files.end(), jpeg_files.begin(), jpeg_files.end());
-                            }
-                            
-                            if (final_files.empty()) {
-                                artwork_result result;
-                                result.success = false;
-                                result.error_message = "No image files found";
-                                callback(result);
-                            } else {
-                                // Process files asynchronously
-                                process_local_files(final_files, callback, 0);
-                            }
-                        });
+            
+            // Use album_art_manager_v2 to find artwork (embedded + external per user preferences)
+            static_api_ptr_t<album_art_manager_v2> aam;
+            auto extractor = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(track),
+                                     pfc::list_single_ref_t<GUID>(album_art_ids::cover_front),
+                                     fb2k::noAbort);
+            
+            
+            auto art_data = extractor->query(album_art_ids::cover_front, fb2k::noAbort);
+            if (art_data.is_valid() && art_data->get_size() > 0) {
+                result.success = true;
+                result.data.set_size(art_data->get_size());
+                memcpy(result.data.get_ptr(), art_data->get_ptr(), art_data->get_size());
+                result.mime_type = detect_mime_type(result.data.get_ptr(), result.data.get_size());
+                result.source = "Local artwork";
+                
+                async_io_manager::instance().post_to_main_thread([callback, result]() {
+                    callback(result);
                 });
-        });
-}
-
-void artwork_manager::process_local_files(const std::vector<pfc::string8>& files, artwork_callback callback, size_t index) {
-    if (index >= files.size()) {
-        // No more files to process
-        artwork_result result;
-        result.success = false;
-        result.error_message = "No valid image files found";
+                return;
+            }
+        } catch (const std::exception& e) {
+            result.error_message = "SDK artwork search exception";
+        } catch (...) {
+            result.error_message = "SDK artwork search failed with unknown exception";
+        }
+        
+        // No artwork found via SDK
+        result.error_message = "No artwork found via SDK";
         async_io_manager::instance().post_to_main_thread([callback, result]() {
             callback(result);
         });
-        return;
-    }
-    
-    // Try to read the current file
-    async_io_manager::instance().read_file_async(files[index],
-        [files, callback, index](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
-            if (success && data.get_size() > 0 && is_valid_image_data(data.get_ptr(), data.get_size())) {
-                // Valid image found
-                artwork_result result;
-                result.data = data;
-                result.mime_type = detect_mime_type(data.get_ptr(), data.get_size());
-                result.success = true;
-                result.source = "Local file";  // Set source for OSD display
-                callback(result);
-            } else {
-                // Try next file
-                process_local_files(files, callback, index + 1);
-            }
-        });
+    });
 }
+
+
 
 void artwork_manager::search_itunes_api_async(const char* artist, const char* album, artwork_callback callback) {
     // iTunes Search API doesn't require an API key
