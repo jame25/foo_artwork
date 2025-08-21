@@ -492,13 +492,9 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
 }
 
 void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
-    if (track.is_valid()) {
-        pfc::string8 track_path = track->get_path();
-    }
 
     // Check if it's an internet stream and custom logos enabled
-    double length = track->get_length();
-    if (length <= 0 && cfg_enable_custom_logos) {
+    if (is_internet_stream(track) && cfg_enable_custom_logos) {
         pfc::string8 path = track->get_path();
         pfc::string8 result = path;
         for (size_t i = 0; i < result.length(); i++) {
@@ -534,6 +530,7 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
     // Don't clear artwork here - let new artwork replace it when found
     
     if (track.is_valid()) {
+        
         if (is_internet_stream(track)) {
             // Kill any existing timers
             KillTimer(100); // Metadata arrival timer
@@ -674,6 +671,8 @@ void artwork_ui_element::start_artwork_search() {
             
             // Use the main component trigger function for proper API fallback (results come via event system)
             trigger_main_component_search(m_current_track);
+        } else {
+            // Not an internet stream - no API search triggered
         }
         // For local files, do nothing - local artwork will be handled elsewhere
     } catch (const std::exception& e) {
@@ -1285,13 +1284,23 @@ bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
         pfc::string8 path = track->get_path();
         if (path.is_empty()) return false;
 
-        //If has length, assume it is a local file
+        // Check URL protocol first - this covers online playlists with duration
+        if (strstr(path.c_str(), "://")) {
+            // Has protocol - check if it's a local file protocol
+            if (strstr(path.c_str(), "file://") == path.c_str()) {
+                return false; // file:// protocol = local file
+            }
+            // Any other protocol (http://, https://, etc.) = internet stream
+            return true;
+        }
+        
+        // No protocol - check length as fallback for other stream types
         const double length = track->get_length();
         if (length > 0) {
-            return false; 
+            return false; // Has length but no protocol = local file
         }     
         
-        return true; // This appears to be an internet stream
+        return true; // No length, no protocol = likely internet stream
     } catch (...) {
         return false; // Error accessing path, assume local file
     }
