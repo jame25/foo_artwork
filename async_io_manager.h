@@ -44,6 +44,9 @@ public:
     // Main thread marshalling
     void post_to_main_thread(main_thread_callback callback);
     
+    // Generic task submission
+    void submit_task(std::function<void()> task);
+    
     // Thread safety checks
     bool is_main_thread() const;
     void assert_main_thread() const;
