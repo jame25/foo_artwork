@@ -282,7 +282,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.15",
+    "1.5.16",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -299,7 +299,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.15",
+    "1.5.16",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -4900,8 +4900,6 @@ void artwork_ui_element::force_clear_artwork_bitmap() {
 
 // Load noart image for "use noart image" option
 void artwork_ui_element::load_noart_image() {
-    // Debug output
-    console::formatter() << "foo_artwork: load_noart_image() called";
     
     // First clear any existing artwork
     if (m_artwork_bitmap) {
@@ -4932,11 +4930,9 @@ void artwork_ui_element::load_noart_image() {
         if (!data_path.is_empty() && data_path[data_path.length() - 1] != '\\') {
             data_path += "\\";
         }
-        console::formatter() << "foo_artwork: Using custom logos folder: " << data_path;
-    } else {
+            } else {
         // Use default path
         pfc::string8 profile_path = core_api::get_profile_path();
-        console::formatter() << "foo_artwork: Profile path: " << profile_path;
         
         // Convert file:// URL to regular file path
         pfc::string8 file_path = profile_path;
@@ -4946,7 +4942,6 @@ void artwork_ui_element::load_noart_image() {
         
         data_path = file_path;
         data_path.add_string("\\foo_artwork_data\\logos\\");
-        console::formatter() << "foo_artwork: Using default logos folder: " << data_path;
     }
     
     // Try different noart image formats
@@ -4970,14 +4965,11 @@ void artwork_ui_element::load_noart_image() {
         DWORD file_attrs = GetFileAttributesA(noart_file_path);
         if (file_attrs != INVALID_FILE_ATTRIBUTES && !(file_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
             // File exists, try to load it
-            console::formatter() << "foo_artwork: DUI Found noart file: " << noart_file_path;
             
             // Read file data and use create_bitmap_from_data for proper scaling
             std::vector<BYTE> file_data;
             if (read_file_data(noart_file_path, file_data)) {
-                console::formatter() << "foo_artwork: DUI Read noart file data, size: " << file_data.size();
                 if (create_bitmap_from_data(file_data)) {
-                    console::formatter() << "foo_artwork: DUI Successfully loaded and scaled noart image";
                     m_artwork_source = "Noart image";
                     g_current_artwork_source = "Noart image";
                     m_status_text = "No artwork image";
@@ -4989,17 +4981,14 @@ void artwork_ui_element::load_noart_image() {
                     
                     noart_loaded = true;
                 } else {
-                    console::formatter() << "foo_artwork: DUI Failed to create bitmap from noart data";
                 }
             } else {
-                console::formatter() << "foo_artwork: DUI Failed to read noart file data";
             }
         }
     }
     
     if (!noart_loaded) {
         // No noart image found, just clear the panel (fallback behavior)
-        console::formatter() << "foo_artwork: DUI No noart image loaded, clearing panel";
         m_status_text = "";
         g_current_artwork_source = "";
     }
@@ -5187,27 +5176,19 @@ public:
     }
     
     void on_playback_stop(play_control::t_stop_reason p_reason) override {
-        console::formatter() << "foo_artwork: DUI Playback stopped - callback triggered!";
-        console::formatter() << "foo_artwork: DUI Number of UI elements: " << g_artwork_ui_elements.get_count();
-        console::formatter() << "foo_artwork: DUI cfg_clear_panel_when_not_playing = " << (cfg_clear_panel_when_not_playing ? "true" : "false");
-        console::formatter() << "foo_artwork: DUI cfg_use_noart_image = " << (cfg_use_noart_image ? "true" : "false");
         
         // Clear artwork from all UI elements when playback stops (if option is enabled)
         for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
             if (cfg_clear_panel_when_not_playing) {
-                console::formatter() << "foo_artwork: DUI Processing UI element " << i << " - clear_panel=true, use_noart=" << (cfg_use_noart_image ? "true" : "false");
                 if (cfg_use_noart_image) {
                     // Load and display noart image instead of clearing
-                    console::formatter() << "foo_artwork: DUI Calling load_noart_image()";
                     g_artwork_ui_elements[i]->load_noart_image();
                 } else {
                     // Just clear the panel
-                    console::formatter() << "foo_artwork: Calling force_clear_artwork_bitmap()";
                     g_artwork_ui_elements[i]->force_clear_artwork_bitmap();
                 }
                 // Don't show status text - keep the panel clean
             } else {
-                console::formatter() << "foo_artwork: Skipping UI element " << i << " - clear_panel=false";
             }
             g_artwork_ui_elements[i]->m_current_track.release();
             g_artwork_ui_elements[i]->m_playback_stopped = true;  // Mark playback as stopped
