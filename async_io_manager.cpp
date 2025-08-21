@@ -32,7 +32,9 @@ async_io_manager::~async_io_manager() {
 }
 
 void async_io_manager::initialize(size_t thread_count) {
-    if (thread_pool_) return; // Already initialized
+    if (thread_pool_) {
+        return; // Already initialized
+    }
     
     thread_pool_ = std::make_unique<thread_pool>(thread_count);
     cache_ = std::make_unique<async_cache>();
@@ -128,7 +130,16 @@ void async_io_manager::cache_set_async(const pfc::string8& key, const pfc::array
 }
 
 void async_io_manager::post_to_main_thread(main_thread_callback callback) {
-    main_thread_dispatcher::post_callback(callback);
+    // Simple approach: use fb2k_async which is a common pattern in foobar2000 components
+    fb2k::inMainThread([callback]() {
+        try {
+            callback();
+        } catch (const std::exception& e) {
+            // Error handling for callback exceptions
+        } catch (...) {
+            // Error handling for unknown exceptions
+        }
+    });
 }
 
 void async_io_manager::submit_task(std::function<void()> task) {
@@ -598,7 +609,9 @@ void async_io_manager::async_cache::flush_all() {
 
 // Main Thread Dispatcher Implementation
 void async_io_manager::main_thread_dispatcher::initialize() {
-    if (message_window) return;
+    if (message_window) {
+        return;
+    }
     
     WM_ASYNC_CALLBACK = RegisterWindowMessageA("foo_artwork_async_callback");
     
@@ -630,7 +643,29 @@ void async_io_manager::main_thread_dispatcher::post_callback(main_thread_callbac
     }
     
     if (message_window) {
-        PostMessage(message_window, WM_ASYNC_CALLBACK, 0, 0);
+        // Validate window handle before posting
+        if (IsWindow(message_window)) {
+            BOOL result = PostMessage(message_window, WM_ASYNC_CALLBACK, 0, 0);
+            if (!result) {
+                // Try to recreate the window and post again
+                message_window = nullptr;
+                initialize();
+                if (message_window && IsWindow(message_window)) {
+                    PostMessage(message_window, WM_ASYNC_CALLBACK, 0, 0);
+                }
+            }
+        } else {
+            message_window = nullptr;
+            initialize();
+            if (message_window && IsWindow(message_window)) {
+                PostMessage(message_window, WM_ASYNC_CALLBACK, 0, 0);
+            }
+        }
+    } else {
+        initialize();
+        if (message_window && IsWindow(message_window)) {
+            PostMessage(message_window, WM_ASYNC_CALLBACK, 0, 0);
+        }
     }
 }
 
@@ -646,9 +681,9 @@ LRESULT CALLBACK async_io_manager::main_thread_dispatcher::window_proc(HWND hwnd
             try {
                 callbacks.front()();
             } catch (const std::exception& e) {
-                pfc::string8 error_msg = "foo_artwork: Main thread callback exception: ";
-                error_msg << e.what();
+                // Error handling for callback exceptions
             } catch (...) {
+                // Error handling for unknown exceptions
             }
             callbacks.pop();
         }
