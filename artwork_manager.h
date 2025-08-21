@@ -47,6 +47,7 @@ private:
     // Async API artwork search  
     static void search_itunes_api_async(const char* artist, const char* track, artwork_callback callback);
     static void search_deezer_api_async(const char* artist, const char* track, artwork_callback callback);
+    static void perform_deezer_fallback_search(const char* artist, const char* track, artwork_callback callback);
     static void search_discogs_api_async(const char* artist, const char* track, artwork_callback callback);
     static void search_lastfm_api_async(const char* artist, const char* track, artwork_callback callback);
     static void search_musicbrainz_api_async(const char* artist, const char* track, artwork_callback callback);
