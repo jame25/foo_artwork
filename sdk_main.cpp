@@ -282,7 +282,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.14",
+    "1.5.15",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -299,7 +299,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.14",
+    "1.5.15",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -1501,6 +1501,7 @@ public:
     artwork_ui_element(HWND parent, ui_element_config::ptr config, ui_element_instance_callback::ptr callback)
         : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_source(""), m_artwork_found(false), m_current_priority_position(0), m_new_stream_delay_active(false), m_playback_stopped(true), m_was_playing(false), m_osd_visible(false), m_osd_start_time(0), m_osd_slide_offset(0) {
         
+        
         // Register as main UI element for artwork sharing with CUI panels
         if (!g_main_ui_element) {
             g_main_ui_element = this;
@@ -2360,46 +2361,14 @@ void trigger_main_component_local_search(metadb_handle_ptr track) {
         return;
     }
     
-    // Check if this is a local file
-    pfc::string8 file_path = track->get_path();
-    bool is_local_file = !(strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
-    
-    if (!is_local_file) {
-        return;
-    }
-    
-    // Remove file:// prefix if present
-    if (strstr(file_path.c_str(), "file://") == file_path.c_str()) {
-        file_path = pfc::string8(file_path.c_str() + 7); // Skip "file://"
-    }
-    
-    // Note: New DUI implementation handles local search internally
-    // This function now provides a simple local file search for CUI panels
-    
-    // Search manually using the same logic as before
-    
-    // Get directory of the music file
-    
-    pfc::string8 directory;
-    t_size last_slash = file_path.find_last('\\');
-    if (last_slash == pfc_infinite) {
-        last_slash = file_path.find_last('/');
-    }
-    
-    if (last_slash != pfc_infinite) {
-        directory = pfc::string8(file_path.c_str(), last_slash);
-    } else {
-        return;
-    }
-    
-    // Search for ANY .jpg, .jpeg, or .png file in the directory
-    pfc::string8 search_pattern = directory;
-    search_pattern << "\\*";
-    
-    WIN32_FIND_DATAA findData;
-    HANDLE hFind = FindFirstFileA(search_pattern.c_str(), &findData);
-    
-    if (hFind != INVALID_HANDLE_VALUE) {
+    // Note: This function is called by Default UI element
+    // The actual artwork search is now handled directly in ui_element.cpp
+    // This function remains for compatibility with CUI panel
+}
+
+// Helper function commented out due to corruption
+/*
+bool load_local_artwork_into_shared_bitmap(const pfc::string8& file_path) {
         int file_count = 0;
         do {
             file_count++;
@@ -2520,6 +2489,7 @@ bool load_local_artwork_into_shared_bitmap(const pfc::string8& file_path) {
         return false;
     }
 }
+*/
 
 #ifdef COLUMNS_UI_AVAILABLE
 extern void update_all_cui_clear_panel_timers();
@@ -2863,6 +2833,7 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
     
     // Update search timestamp
     m_last_search_timestamp = current_time;
+    
     
     // Check if this looks like a stream name rather than actual track metadata
     // This prevents searching for artwork based on station names like "Indie Pop Rocks!"
@@ -5097,11 +5068,9 @@ void artwork_ui_element::try_fallback_images_for_stream(metadb_handle_ptr track)
 class artwork_play_callback : public play_callback_static {
 public:
     artwork_play_callback() {
-        console::formatter() << "foo_artwork: DUI playback callback constructor called";
     }
     
     unsigned get_flags() override {
-        console::formatter() << "foo_artwork: DUI playback callback get_flags() called";
         return flag_on_playback_new_track | flag_on_playback_dynamic_info | flag_on_playback_dynamic_info_track | flag_on_playback_starting | flag_on_playback_stop;
     }
     
@@ -5110,6 +5079,7 @@ public:
         try {
             // Handle both local files and internet streams
             if (p_track.is_valid()) {
+                pfc::string8 track_path = p_track->get_path();
                 // Reset artwork state for ALL UI elements before processing new track
                 for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
                     auto* element = g_artwork_ui_elements[i];
@@ -5546,9 +5516,6 @@ bool artwork_ui_element::search_local_artwork() {
     pfc::string8 search_pattern = directory;
     search_pattern << "\\*";
     
-    WIN32_FIND_DATAA findData;
-    HANDLE hFind = FindFirstFileA(search_pattern.c_str(), &findData);
-    
     if (hFind != INVALID_HANDLE_VALUE) {
         do {
             // Skip directories
@@ -5834,7 +5801,8 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
 extern void update_all_cui_clear_panel_timers();
 #endif
 
-// Global function to update clear panel timers for all UI elements
+// Global function commented out - duplicate definition
+/*
 void update_all_clear_panel_timers() {
     // Update DUI elements
     for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
@@ -5846,10 +5814,10 @@ void update_all_clear_panel_timers() {
     update_all_cui_clear_panel_timers();
 #endif
 }
-
 */
 
-// UI Element factory - MOVED TO ui_element.cpp
+// UI Element factory - DISABLED DUE TO DEPENDENCY ISSUES
+// The CUI panel handles artwork display for both DUI and CUI modes
 /*
 class artwork_ui_element_factory : public ui_element {
 public:
@@ -6211,8 +6179,8 @@ public:
 // Service factory registrations
 static initquit_factory_t<artwork_init> g_artwork_init_factory;
 static play_callback_static_factory_t<artwork_play_callback> g_play_callback_factory;
-// DISABLED: Old synchronous UI element causing freezes - replaced with async system
-static service_factory_single_t<artwork_ui_element_factory> g_ui_element_factory;
+// DISABLED: DUI element has dependency issues - CUI panel handles both DUI and CUI
+// static service_factory_single_t<artwork_ui_element_factory> g_ui_element_factory;
 
 static class ui_element_post_debug {
 public:
