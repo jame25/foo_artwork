@@ -59,8 +59,6 @@ void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callbac
 void artwork_manager::get_artwork_async_with_metadata(const char* artist, const char* track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
     
-    // Debug: Track artwork loading with metadata
-    
     if (!initialized_) {
         initialize();
     }
@@ -69,7 +67,6 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
         // Use explicit metadata instead of track metadata
         pfc::string8 artist_str = artist ? artist : "Unknown Artist";
         pfc::string8 track_str = track ? track : "Unknown Track";
-        
         
         pfc::string8 cache_key = generate_cache_key(artist_str, track_str);
         
@@ -115,6 +112,10 @@ void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_ha
 }
 
 void artwork_manager::check_cache_async_metadata(const pfc::string8& cache_key, const pfc::string8& artist, const pfc::string8& track, artwork_callback callback) {
+    // TEMPORARY FIX: Skip cache entirely and go directly to APIs
+    search_apis_async_metadata(artist, track, cache_key, callback);
+    
+    /* ORIGINAL CACHE CODE - TEMPORARILY DISABLED
     async_io_manager::instance().cache_get_async(cache_key, 
         [cache_key, artist, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             if (success && data.get_size() > 0) {
@@ -125,6 +126,7 @@ void artwork_manager::check_cache_async_metadata(const pfc::string8& cache_key, 
                 search_apis_async_metadata(artist, track, cache_key, callback);
             }
         });
+    */
 }
 
 void artwork_manager::search_apis_async_metadata(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback) {
@@ -160,7 +162,6 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
         return;
     }
     
-    
     find_local_artwork_async(track, [cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
             // Local artwork found - cache it and return
@@ -181,6 +182,13 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
     // Try APIs in sequence: iTunes -> Deezer -> Last.fm -> MusicBrainz -> Discogs
     
     if (cfg_enable_itunes) {
+        // iTunes API implementation would go here
+        artwork_result result;
+        result.success = false;
+        result.error_message = "iTunes API not implemented";
+        async_io_manager::instance().post_to_main_thread([callback, result]() {
+            callback(result);
+        });
     } else if (cfg_enable_deezer) {
         search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
@@ -597,7 +605,56 @@ void artwork_manager::search_lastfm_api_async(const char* artist, const char* al
     });
 }
 
+void artwork_manager::perform_deezer_fallback_search(const char* artist, const char* track, artwork_callback callback) {
+    
+    // Copy parameters to ensure they remain valid throughout async operations
+    pfc::string8 artist_copy = artist ? artist : "";
+    pfc::string8 track_copy = track ? track : "";
+    
+    // Strategy 1: Try artist only
+    if (!artist_copy.is_empty()) {
+        pfc::string8 artist_only_url = "https://api.deezer.com/search/track?q=";
+        artist_only_url << artwork_manager::url_encode(artist_copy.get_ptr()) << "&limit=5";
+        
+        async_io_manager::instance().http_get_async(artist_only_url, [artist_copy, track_copy, callback](bool success, const pfc::string8& response, const pfc::string8& error) {
+            if (success) {
+                pfc::string8 artwork_url;
+                if (artwork_manager::parse_deezer_json(response, artwork_url)) {
+                    // Download artwork
+                    async_io_manager::instance().http_get_binary_async(artwork_url, [callback](bool dl_success, const pfc::array_t<t_uint8>& data, const pfc::string8& dl_error) {
+                        artwork_result result;
+                        if (dl_success && data.get_size() > 0) {
+                            result.success = true;
+                            result.data = data;
+                            result.mime_type = artwork_manager::detect_mime_type(data.get_ptr(), data.get_size());
+                            result.source = "Deezer";
+                        } else {
+                            result.success = false;
+                            result.error_message = "Failed to download Deezer artwork";
+                        }
+                        callback(result);
+                    });
+                    return;
+                }
+            }
+            
+            // Skip track-only search as requested - only use artist fallback
+            artwork_result final_result;
+            final_result.success = false;
+            final_result.error_message = "No artwork found in Deezer (artist search failed)";
+            callback(final_result);
+        });
+    } else {
+        // No artist available - skip track-only search as requested
+        artwork_result result;
+        result.success = false;
+        result.error_message = "No artist available for Deezer search";
+        callback(result);
+    }
+}
+
 void artwork_manager::search_deezer_api_async(const char* artist, const char* track, artwork_callback callback) {
+    
     // Deezer API doesn't require authentication
     pfc::string8 search_query;
     if (!artist || strlen(artist) == 0) {
@@ -611,11 +668,10 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
     pfc::string8 url = "https://api.deezer.com/search/track?q=";
     url << url_encode(search_query) << "&limit=10";
     
-    
     // Make async HTTP request
-    async_io_manager::instance().http_get_async(url, [callback](bool success, const pfc::string8& response, const pfc::string8& error) {
+    try {
+        async_io_manager::instance().http_get_async(url, [artist, track, callback](bool success, const pfc::string8& response, const pfc::string8& error) {
         if (!success) {
-            
             artwork_result result;
             result.success = false;
             result.error_message = "Deezer API request failed: ";
@@ -624,14 +680,11 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
             return;
         }
         
-        
         // Parse JSON response to extract artwork URL
         pfc::string8 artwork_url;
-        if (!parse_deezer_json(response, artwork_url)) {
-            artwork_result result;
-            result.success = false;
-            result.error_message = "No artwork found in Deezer response";
-            callback(result);
+        if (!artwork_manager::parse_deezer_json(response, artwork_url)) {
+            // Try fallback search strategies
+            artwork_manager::perform_deezer_fallback_search(artist, track, callback);
             return;
         }
         
@@ -641,7 +694,7 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
             if (success && data.get_size() > 0) {
                 result.success = true;
                 result.data = data;
-                result.mime_type = detect_mime_type(data.get_ptr(), data.get_size());
+                result.mime_type = artwork_manager::detect_mime_type(data.get_ptr(), data.get_size());
                 result.source = "Deezer";  // Set source for OSD display
             } else {
                 result.success = false;
@@ -650,7 +703,19 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
             }
             callback(result);
         });
-    });
+        });
+    } catch (const std::exception& e) {
+        artwork_result result;
+        result.success = false;
+        result.error_message = "Exception in Deezer HTTP request: ";
+        result.error_message += e.what();
+        callback(result);
+    } catch (...) {
+        artwork_result result;
+        result.success = false;
+        result.error_message = "Unknown exception in Deezer HTTP request";
+        callback(result);
+    }
 }
 
 void artwork_manager::download_image_async(const char* url, artwork_callback callback) {
