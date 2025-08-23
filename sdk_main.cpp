@@ -63,6 +63,8 @@ static constexpr GUID guid_cfg_enable_custom_logos = { 0x12345689, 0x1234, 0x123
 static constexpr GUID guid_cfg_logos_folder = { 0x1234568a, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfa } };
 static constexpr GUID guid_cfg_clear_panel_when_not_playing = { 0x1234568b, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfb } };
 static constexpr GUID guid_cfg_use_noart_image = { 0x1234568c, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfc } };
+static constexpr GUID guid_cfg_infobar = { 0x59b0b41b, 0x2d12, 0x4965, { 0xaa, 0x4a, 0xb5, 0x80, 0x5, 0x55, 0x2e, 0xf7 } };
+
 
 // Configuration variables with default values
 cfg_bool cfg_enable_itunes(guid_cfg_enable_itunes, false);
@@ -100,6 +102,9 @@ cfg_string cfg_logos_folder(guid_cfg_logos_folder, "");  // Custom logos folder 
 // Miscellaneous settings
 cfg_bool cfg_clear_panel_when_not_playing(guid_cfg_clear_panel_when_not_playing, false);  // Clear panel when not playing (default disabled)
 cfg_bool cfg_use_noart_image(guid_cfg_use_noart_image, false);  // Use noart image when clearing panel (default disabled)
+
+cfg_bool cfg_infobar(guid_cfg_infobar, false);  // DUI infobar (default disabled)
+
 
 //=============================================================================
 // Event-Driven Artwork System
@@ -412,13 +417,14 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
     
     pfc::string8 path = track->get_path();
     
-    // Check if it's an internet stream
-    // Check URL protocol first - this covers online playlists with duration
-    if (strstr(path.c_str(), "://")) {
-        // Has protocol - check if it's a local file protocol
-        if (strstr(path.c_str(), "file://") == path.c_str()) {
-            return ""; // file:// protocol = local file
-        }
+            // Check mtag file internet streams
+        const double length = track->get_length();
+        if (strstr(path.c_str(), "://")) {
+            // Has protocol - check if it's a local file protocol and is mtag without duration
+            if ((strstr(path.c_str(), "file://") == path.c_str()) && (!strstr(path.c_str(), ".tags")) && (!length <= 0)) {
+                return "";
+            }
+        
         // Any other protocol (http://, https://, etc.) = internet stream - continue processing
     } else {
         // No protocol - check length as fallback for other stream types
@@ -741,7 +747,7 @@ HBITMAP load_station_logo(metadb_handle_ptr track) {
 
 // New function to load station logo directly as GDI+ bitmap (preserves alpha)
 Gdiplus::Bitmap* try_load_station_logo_gdiplus(const pfc::string8& identifier, const pfc::string8& logos_dir) {
-    
+ 
     if (identifier.is_empty()) return nullptr;
     
     try {
@@ -795,7 +801,7 @@ Gdiplus::Bitmap* try_load_station_logo_gdiplus(const pfc::string8& identifier, c
 
 // Function to load station logo directly as GDI+ bitmap (preserves alpha)
 Gdiplus::Bitmap* load_station_logo_gdiplus(metadb_handle_ptr track) {
-    
+
     // Check if custom station logos are enabled
     if (!cfg_enable_custom_logos) {
         return nullptr;
@@ -822,12 +828,13 @@ Gdiplus::Bitmap* load_station_logo_gdiplus(metadb_handle_ptr track) {
     try {
         // Get stream URL or path
         const char* url = track->get_path();
+      
         if (!url || strlen(url) == 0) return nullptr;
         
         // Extract domain and full path using existing functions
         pfc::string8 full_path = extract_full_path_from_stream_url(track);
         pfc::string8 domain = extract_domain_from_stream_url(track);
-        
+
         // Try full path first
         if (!full_path.is_empty()) {
             Gdiplus::Bitmap* result = try_load_station_logo_gdiplus(full_path, logos_dir);
@@ -2262,6 +2269,12 @@ void unsubscribe_from_artwork_events(IArtworkEventListener* listener) {
 // Function to trigger main component search from CUI panels with metadata
 void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title) {
     
+	
+	    std::string artist_title = "ARTIST: " +  artist + "  TITLE: " + title;
+    char search_debug[256];
+    sprintf_s(search_debug, "Search DEBUG: trigger_main_component_search_with_metadata : %s", artist_title.c_str());
+    console::info(search_debug);
+	
     // Use artwork manager directly instead of bridge functions
     g_artwork_loading = true;
     
@@ -2315,7 +2328,7 @@ void trigger_main_component_search(metadb_handle_ptr track) {
                 if (info.meta_get("TITLE", 0)) {
                     title = info.meta_get("TITLE", 0);
                 }
-                
+
                 // Use priority search with extracted metadata
                 trigger_main_component_search_with_metadata(artist, title);
                 
@@ -7987,6 +8000,15 @@ bool is_safe_internet_stream(metadb_handle_ptr track) {
             return false;  // No protocol found
         }
         
+        // Check mtag file internet streams
+        const double length = track->get_length();
+        if (strstr(path.c_str(), "://")) {
+            // Has protocol - check if it's a local file protocol and is mtag without duration
+            if ((strstr(path.c_str(), "file://") == path.c_str()) && (strstr(path.c_str(), ".tags")) && (length <= 0)) {
+                return true; // mtag internet stream
+            }
+        }
+
         // Exclude file:// protocol
         const char* file_pos = strstr(path_cstr, "file://");
         if (file_pos == path_cstr) {

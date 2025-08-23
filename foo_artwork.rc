@@ -70,4 +70,5 @@ BEGIN
     CONTROL         "Clear panel when playback stopped",IDC_CLEAR_PANEL_WHEN_NOT_PLAYING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,214,128,12
     LTEXT           "[",IDC_STATIC,151,216,8,12
     CONTROL         "Use noart image ]",IDC_USE_NOART_IMAGE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,156,214,92,12
+	CONTROL         "Show Infobar (DUI only)",IDC_INFOBAR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,225,128,12
 END

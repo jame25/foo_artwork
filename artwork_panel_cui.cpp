@@ -2307,6 +2307,15 @@ bool CUIArtworkPanel::is_safe_internet_stream(metadb_handle_ptr track) {
         return false; // No protocol found
     }
     
+    // Check mtag file internet streams
+    const double length = track->get_length();
+    if (strstr(path.c_str(), "://")) {
+        // Has protocol - check if it's a local file protocol and is mtag without duration
+        if ((strstr(path.c_str(), "file://") == path.c_str()) && (strstr(path.c_str(), ".tags")) && (length <= 0)) {
+            return true; // mtag internet stream
+        }
+    }
+
     // Exclude file:// protocol
     const char* file_pos = strstr(path_cstr, "file://");
     if (file_pos == path_cstr) {
