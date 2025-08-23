@@ -12,6 +12,9 @@
 // Include CUI color system for proper foobar2000 theme colors
 #include "columns_ui/columns_ui-sdk/colours.h"
 
+// infobar
+#include <codecvt>
+  
 #pragma comment(lib, "gdiplus.lib")
 
 // External configuration variables
@@ -21,6 +24,7 @@ extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
 extern cfg_bool cfg_use_noart_image;
 extern cfg_bool cfg_show_osd;
+extern cfg_bool cfg_infobar;
 
 // External custom logo loading functions
 extern HBITMAP load_station_logo(metadb_handle_ptr track);
@@ -198,6 +202,19 @@ private:
     std::string m_delayed_title;
     bool m_has_delayed_metadata;
     
+    //Metadata infobar
+
+    void clear_infobar();
+
+    std::wstring stringToWstring(const std::string& str) {
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> myconv;
+        return myconv.from_bytes(str);
+    }
+
+    std::wstring m_infobar_artist;
+    std::wstring m_infobar_title;
+    std::wstring m_infobar_album;
+    std::wstring m_infobar_station;													  
     // UI state
     RECT m_client_rect;
     
@@ -238,6 +255,7 @@ private:
             if (m_parent && cfg_clear_panel_when_not_playing) {
                 m_parent->clear_artwork();
             }
+            m_parent->clear_infobar();
         }
         
         // Required by play_callback base class
@@ -518,6 +536,34 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
         console::info(cstr);
     }
 
+
+    const file_info& info = track->get_info_ref()->info();
+    std::string artist, title , album , station;
+
+    if (info.meta_get("ARTIST", 0)) {
+        artist = info.meta_get("ARTIST", 0);
+    }
+    if (info.meta_get("TITLE", 0)) {
+        title = info.meta_get("TITLE", 0);
+    }
+
+    if (info.meta_get("ALBUM", 0)) {
+        album = info.meta_get("ALBUM", 0);
+    }
+
+    if (info.meta_get("STREAM_NAME", 0)) {
+        station = info.meta_get("STREAM_NAME", 0);
+    }
+
+    //store metadata for infobar
+
+    m_infobar_artist = stringToWstring(artist);
+    m_infobar_title = stringToWstring(title);
+    m_infobar_album = stringToWstring(album);
+    m_infobar_station = stringToWstring(station);
+ 
+
+
     m_current_track = track;
     m_artwork_loading = true;
     
@@ -584,9 +630,13 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         // Get artist and track from the updated info safely
         const char* artist_ptr = p_info.meta_get("ARTIST", 0);
         const char* track_ptr = p_info.meta_get("TITLE", 0);
+        const char* album_ptr = p_info.meta_get("ALBUM", 0);
+        const char* station_ptr = p_info.meta_get("STREAM_NAME", 0);															
         
         pfc::string8 artist = artist_ptr ? artist_ptr : "";
         pfc::string8 track = track_ptr ? track_ptr : "";
+        pfc::string8 album = album_ptr ? album_ptr : "";
+        pfc::string8 station = station_ptr ? station_ptr : "";														
         
         // Extract only the first artist for better artwork search results
         std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
@@ -607,6 +657,15 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
         
+
+      //store metadata for infobar
+
+      m_infobar_artist = stringToWstring(cleaned_artist);
+      m_infobar_title = stringToWstring(cleaned_track);
+      m_infobar_album = stringToWstring(album.c_str());
+      m_infobar_station = stringToWstring(station.c_str());
+
+				   
         if (is_valid_metadata) {
             // Cancel metadata arrival timer since we got valid metadata (like CUI)
             KillTimer(100);
@@ -780,6 +839,14 @@ void artwork_ui_element::clear_artwork() {
     cleanup_gdiplus_image();
     m_artwork_loading = false;
     Invalidate();
+    
+}
+
+void artwork_ui_element::clear_infobar() {
+    m_infobar_artist.clear();
+    m_infobar_title.clear();
+    m_infobar_album.clear();
+    m_infobar_station.clear();
 }
 
 void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
@@ -878,8 +945,24 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
             UINT img_width = m_artwork_image->GetWidth();
             UINT img_height = m_artwork_image->GetHeight();
             
-            int client_width = m_client_rect.right - m_client_rect.left;
-            int client_height = m_client_rect.bottom - m_client_rect.top;
+            int client_width;
+            int client_height;
+            int infobar_height;
+            int infobar_text_height;
+            
+
+            if (cfg_infobar) {
+                 client_width = m_client_rect.right - m_client_rect.left;
+                 client_height = ((m_client_rect.bottom - m_client_rect.top) / 5 ) * 4;
+                 infobar_height = (m_client_rect.bottom - m_client_rect.top) / 5;
+                 infobar_text_height = infobar_height / 6;
+            }
+            else {
+                 client_width = m_client_rect.right - m_client_rect.left;
+                 client_height = m_client_rect.bottom - m_client_rect.top;
+
+            }
+            
             
             if (img_width > 0 && img_height > 0 && client_width > 0 && client_height > 0) {
                 double img_aspect = (double)img_width / img_height;
@@ -903,6 +986,53 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                 
                 Gdiplus::Rect dest_rect(draw_x, draw_y, draw_width, draw_height);
                 graphics.DrawImage(m_artwork_image, dest_rect);
+			         
+                
+                
+                if (cfg_infobar) {
+                    
+                    SolidBrush solidBrush(Color(20,80,80,80)); 
+                    Gdiplus::Rect dest_rect3(0, client_height, client_width, infobar_height);
+                    graphics.FillRectangle(&solidBrush, dest_rect3);
+
+                    if (load_station_logo_gdiplus(m_current_track)) {
+                        Gdiplus::Rect dest_rect2(10, client_height + 10, infobar_height - 20, infobar_height - 20);
+                        graphics.DrawImage(load_station_logo_gdiplus(m_current_track), dest_rect2);
+                    }
+
+                    
+                    // Get contrasting text color using DUI callback
+                    COLORREF text_color = GetSysColor(COLOR_WINDOWTEXT); // Default fallback
+
+                    if (m_callback.is_valid()) {
+                        t_ui_color callback_text_color;
+                        if (m_callback->query_color(ui_color_text, callback_text_color)) {
+                            text_color = callback_text_color;
+                        }
+                        else {
+                            text_color = m_callback->query_std_color(ui_color_text);
+                        }
+                    }
+
+                  
+
+                    FontFamily fontFamily(L"Segoe UI");
+                    Font font(&fontFamily, 16, FontStyleRegular, UnitPixel);
+                    Font font2(&fontFamily, 14, FontStyleItalic, UnitPixel);
+                    SolidBrush brush(Color(255, GetRValue(text_color), GetGValue(text_color), GetBValue(text_color)));
+
+                    std::wstring wstr_source = L"Artwork Source: ";
+                    wstr_source += stringToWstring(m_artwork_source);
+
+                    graphics.DrawString(m_infobar_artist.c_str(), -1, &font, PointF(infobar_height, client_height + infobar_text_height/2), &brush);
+                    graphics.DrawString(m_infobar_title.c_str(), -1, &font, PointF(infobar_height, client_height + infobar_text_height * 2 - infobar_text_height / 2), &brush);
+                    graphics.DrawString(m_infobar_album.c_str(), -1, &font, PointF(infobar_height, client_height + infobar_text_height *3 - infobar_text_height/2), &brush);
+                    graphics.DrawString(m_infobar_station.c_str(), -1, &font, PointF(infobar_height, client_height + infobar_text_height *4), &brush);
+                    graphics.DrawString(wstr_source.c_str(), -1, &font2, PointF(infobar_height, client_height + infobar_text_height *5), &brush);
+                }
+
+                
+              																							 
             }
         }
     } else if (m_artwork_loading) {

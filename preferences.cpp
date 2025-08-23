@@ -14,6 +14,7 @@ extern cfg_bool cfg_show_osd;
 extern cfg_bool cfg_enable_custom_logos;
 extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
+extern cfg_bool cfg_infobar;
 extern cfg_bool cfg_use_noart_image;
 
 // Reference to current artwork source for logging
@@ -24,10 +25,10 @@ extern HINSTANCE g_hIns;
 extern void update_all_clear_panel_timers();
 
 // GUID for our preferences pages
-static const GUID guid_preferences_page_artwork = 
+static const GUID guid_preferences_page_artwork =
 { 0x12345680, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf7 } };
 
-static const GUID guid_preferences_page_advanced = 
+static const GUID guid_preferences_page_advanced =
 { 0x12345690, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
 
 //=============================================================================
@@ -40,19 +41,19 @@ private:
     preferences_page_callback::ptr m_callback;
     bool m_has_changes;
     fb2k::CCoreDarkModeHooks m_darkMode;
-    
+
 public:
     artwork_preferences(preferences_page_callback::ptr callback);
-    
+
     // preferences_page_instance implementation
     HWND get_wnd() override;
     t_uint32 get_state() override;
     void apply() override;
     void reset() override;
-    
+
     // Dialog procedure
     static INT_PTR CALLBACK ConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
-    
+
 private:
     void on_changed();
     bool has_changed();
@@ -63,7 +64,7 @@ private:
 };
 
 
-artwork_preferences::artwork_preferences(preferences_page_callback::ptr callback) 
+artwork_preferences::artwork_preferences(preferences_page_callback::ptr callback)
     : m_hwnd(nullptr), m_callback(callback), m_has_changes(false) {
 }
 
@@ -94,24 +95,24 @@ void artwork_preferences::reset() {
 // Helper functions for API comboboxes
 static const char* get_api_name(int api_index) {
     switch (api_index) {
-        case 0: return "iTunes";
-        case 1: return "Deezer";
-        case 2: return "Last.fm";
-        case 3: return "MusicBrainz";
-        case 4: return "Discogs";
-        default: return "Unknown";
+    case 0: return "iTunes";
+    case 1: return "Deezer";
+    case 2: return "Last.fm";
+    case 3: return "MusicBrainz";
+    case 4: return "Discogs";
+    default: return "Unknown";
     }
 }
 
 // Helper to get search order position name
 static const char* get_position_name(int position) {
     switch (position) {
-        case 0: return "1st";
-        case 1: return "2nd"; 
-        case 2: return "3rd";
-        case 3: return "4th";
-        case 4: return "5th";
-        default: return "Unknown";
+    case 0: return "1st";
+    case 1: return "2nd";
+    case 2: return "3rd";
+    case 3: return "4th";
+    case 4: return "5th";
+    default: return "Unknown";
     }
 }
 
@@ -138,35 +139,35 @@ static void populate_api_combobox(HWND combo) {
 
 INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     artwork_preferences* p_this = nullptr;
-    
+
     if (msg == WM_INITDIALOG) {
         p_this = reinterpret_cast<artwork_preferences*>(lp);
         SetWindowLongPtr(hwnd, GWLP_USERDATA, lp);
         p_this->m_hwnd = hwnd;
-        
+
         // Initialize dark mode hooks
         p_this->m_darkMode.AddDialogWithControls(hwnd);
-        
+
         // Initialize checkbox states
         CheckDlgButton(hwnd, IDC_ENABLE_ITUNES, cfg_enable_itunes ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_ENABLE_DISCOGS, cfg_enable_discogs ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_ENABLE_LASTFM, cfg_enable_lastfm ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_ENABLE_DEEZER, cfg_enable_deezer ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_ENABLE_MUSICBRAINZ, cfg_enable_musicbrainz ? BST_CHECKED : BST_UNCHECKED);
-        
+
         // Initialize text fields
         SetDlgItemTextA(hwnd, IDC_DISCOGS_KEY, cfg_discogs_key);
         SetDlgItemTextA(hwnd, IDC_DISCOGS_CONSUMER_KEY, cfg_discogs_consumer_key);
         SetDlgItemTextA(hwnd, IDC_DISCOGS_CONSUMER_SECRET, cfg_discogs_consumer_secret);
         SetDlgItemTextA(hwnd, IDC_LASTFM_KEY, cfg_lastfm_key);
-        
+
         // Initialize priority comboboxes
         populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_1));
         populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_2));
         populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_3));
         populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_4));
         populate_api_combobox(GetDlgItem(hwnd, IDC_PRIORITY_5));
-        
+
         // Set current search order selections (NEW SIMPLE SYSTEM)
         // Each dropdown shows which API is at that position
         SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_1), CB_SETCURSEL, cfg_search_order_1, 0);  // 1st choice
@@ -174,54 +175,58 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_3), CB_SETCURSEL, cfg_search_order_3, 0);  // 3rd choice
         SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_4), CB_SETCURSEL, cfg_search_order_4, 0);  // 4th choice
         SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_5), CB_SETCURSEL, cfg_search_order_5, 0);  // 5th choice
-        
+
         // Set stream delay value
         SetDlgItemInt(hwnd, IDC_STREAM_DELAY, cfg_stream_delay, FALSE);
-        
+
         // Initialize spin control for stream delay
         HWND spin_hwnd = GetDlgItem(hwnd, IDC_STREAM_DELAY_SPIN);
         SendMessage(spin_hwnd, UDM_SETRANGE, 0, MAKELPARAM(10, 0));  // Range: 0-10 seconds
         SendMessage(spin_hwnd, UDM_SETPOS, 0, cfg_stream_delay);
-        
+
         p_this->update_controls();
         p_this->m_has_changes = false;
-    } else {
+    }
+    else {
         p_this = reinterpret_cast<artwork_preferences*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
     }
-    
+
     if (p_this == nullptr) return FALSE;
-    
+
     switch (msg) {
     case WM_COMMAND:
-        if (HIWORD(wp) == BN_CLICKED && (LOWORD(wp) == IDC_ENABLE_ITUNES || 
-                                         LOWORD(wp) == IDC_ENABLE_DISCOGS || 
-                                         LOWORD(wp) == IDC_ENABLE_LASTFM ||
-                                         LOWORD(wp) == IDC_ENABLE_DEEZER ||
-                                         LOWORD(wp) == IDC_ENABLE_MUSICBRAINZ)) {
+        if (HIWORD(wp) == BN_CLICKED && (LOWORD(wp) == IDC_ENABLE_ITUNES ||
+            LOWORD(wp) == IDC_ENABLE_DISCOGS ||
+            LOWORD(wp) == IDC_ENABLE_LASTFM ||
+            LOWORD(wp) == IDC_ENABLE_DEEZER ||
+            LOWORD(wp) == IDC_ENABLE_MUSICBRAINZ)) {
             p_this->update_controls();
             p_this->on_changed();
-        } else if (HIWORD(wp) == EN_CHANGE && (LOWORD(wp) == IDC_DISCOGS_KEY ||
-                                              LOWORD(wp) == IDC_DISCOGS_CONSUMER_KEY ||
-                                              LOWORD(wp) == IDC_DISCOGS_CONSUMER_SECRET ||
-                                              LOWORD(wp) == IDC_LASTFM_KEY ||
-                                              LOWORD(wp) == IDC_STREAM_DELAY)) {
+        }
+        else if (HIWORD(wp) == EN_CHANGE && (LOWORD(wp) == IDC_DISCOGS_KEY ||
+            LOWORD(wp) == IDC_DISCOGS_CONSUMER_KEY ||
+            LOWORD(wp) == IDC_DISCOGS_CONSUMER_SECRET ||
+            LOWORD(wp) == IDC_LASTFM_KEY ||
+            LOWORD(wp) == IDC_STREAM_DELAY)) {
             p_this->on_changed();
-        } else if (HIWORD(wp) == CBN_SELCHANGE && (LOWORD(wp) == IDC_PRIORITY_1 ||
-                                                  LOWORD(wp) == IDC_PRIORITY_2 ||
-                                                  LOWORD(wp) == IDC_PRIORITY_3 ||
-                                                  LOWORD(wp) == IDC_PRIORITY_4 ||
-                                                  LOWORD(wp) == IDC_PRIORITY_5)) {
+        }
+        else if (HIWORD(wp) == CBN_SELCHANGE && (LOWORD(wp) == IDC_PRIORITY_1 ||
+            LOWORD(wp) == IDC_PRIORITY_2 ||
+            LOWORD(wp) == IDC_PRIORITY_3 ||
+            LOWORD(wp) == IDC_PRIORITY_4 ||
+            LOWORD(wp) == IDC_PRIORITY_5)) {
             p_this->on_changed();
-        } else if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_SHOW_SOURCE) {
+        }
+        else if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_SHOW_SOURCE) {
             p_this->toggle_osd();
         }
         break;
-        
+
     case WM_DESTROY:
         p_this->m_hwnd = nullptr;
         break;
     }
-    
+
     return FALSE;
 }
 
@@ -232,65 +237,65 @@ void artwork_preferences::on_changed() {
 
 void artwork_preferences::update_controls() {
     if (!m_hwnd) return;
-    
+
     // Enable/disable API key fields based on checkbox state
     bool discogs_enabled = IsDlgButtonChecked(m_hwnd, IDC_ENABLE_DISCOGS) == BST_CHECKED;
     EnableWindow(GetDlgItem(m_hwnd, IDC_DISCOGS_KEY), discogs_enabled);
     EnableWindow(GetDlgItem(m_hwnd, IDC_DISCOGS_CONSUMER_KEY), discogs_enabled);
     EnableWindow(GetDlgItem(m_hwnd, IDC_DISCOGS_CONSUMER_SECRET), discogs_enabled);
     EnableWindow(GetDlgItem(m_hwnd, IDC_LASTFM_KEY), IsDlgButtonChecked(m_hwnd, IDC_ENABLE_LASTFM) == BST_CHECKED);
-    
+
     // Update Show Source button text based on OSD state
     SetDlgItemTextA(m_hwnd, IDC_SHOW_SOURCE, cfg_show_osd ? "Hide Artwork Source" : "Show Artwork Source");
 }
 
 bool artwork_preferences::has_changed() {
     if (!m_hwnd) return false;
-    
+
     bool itunes_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_ITUNES) == BST_CHECKED) != cfg_enable_itunes;
     bool discogs_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_DISCOGS) == BST_CHECKED) != cfg_enable_discogs;
     bool lastfm_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_LASTFM) == BST_CHECKED) != cfg_enable_lastfm;
     bool deezer_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_DEEZER) == BST_CHECKED) != cfg_enable_deezer;
     bool musicbrainz_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_MUSICBRAINZ) == BST_CHECKED) != cfg_enable_musicbrainz;
-    
+
     // Check text fields
     char buffer[256];
-    
+
     GetDlgItemTextA(m_hwnd, IDC_DISCOGS_KEY, buffer, sizeof(buffer));
     bool discogs_key_changed = strcmp(buffer, cfg_discogs_key) != 0;
-    
+
     GetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_KEY, buffer, sizeof(buffer));
     bool discogs_consumer_key_changed = strcmp(buffer, cfg_discogs_consumer_key) != 0;
-    
+
     GetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_SECRET, buffer, sizeof(buffer));
     bool discogs_consumer_secret_changed = strcmp(buffer, cfg_discogs_consumer_secret) != 0;
-    
+
     GetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, buffer, sizeof(buffer));
     bool lastfm_key_changed = strcmp(buffer, cfg_lastfm_key) != 0;
-    
+
     // Check search order comboboxes (NEW SIMPLE SYSTEM)
     int current_order_1 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0);
     int current_order_2 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_GETCURSEL, 0, 0);
     int current_order_3 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0);
     int current_order_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);
     int current_order_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);
-    
+
     bool order1_changed = current_order_1 != cfg_search_order_1;
     bool order2_changed = current_order_2 != cfg_search_order_2;
     bool order3_changed = current_order_3 != cfg_search_order_3;
     bool order4_changed = current_order_4 != cfg_search_order_4;
     bool order5_changed = current_order_5 != cfg_search_order_5;
-    
+
     // Check stream delay
     BOOL success;
     int stream_delay_value = GetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, &success, FALSE);
     bool stream_delay_changed = success && (stream_delay_value != cfg_stream_delay);
-    
+
     return itunes_changed || discogs_changed || lastfm_changed || deezer_changed || musicbrainz_changed ||
-           discogs_key_changed || discogs_consumer_key_changed || 
-           discogs_consumer_secret_changed || lastfm_key_changed ||
-           order1_changed || order2_changed || order3_changed || order4_changed || order5_changed ||
-           stream_delay_changed;
+        discogs_key_changed || discogs_consumer_key_changed ||
+        discogs_consumer_secret_changed || lastfm_key_changed ||
+        order1_changed || order2_changed || order3_changed || order4_changed || order5_changed ||
+        stream_delay_changed;
 }
 
 void artwork_preferences::apply_settings() {
@@ -300,21 +305,21 @@ void artwork_preferences::apply_settings() {
         cfg_enable_lastfm = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_LASTFM) == BST_CHECKED);
         cfg_enable_deezer = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_DEEZER) == BST_CHECKED);
         cfg_enable_musicbrainz = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_MUSICBRAINZ) == BST_CHECKED);
-        
+
         char buffer[256];
-        
+
         GetDlgItemTextA(m_hwnd, IDC_DISCOGS_KEY, buffer, sizeof(buffer));
         cfg_discogs_key = buffer;
-        
+
         GetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_KEY, buffer, sizeof(buffer));
         cfg_discogs_consumer_key = buffer;
-        
+
         GetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_SECRET, buffer, sizeof(buffer));
         cfg_discogs_consumer_secret = buffer;
-        
+
         GetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, buffer, sizeof(buffer));
         cfg_lastfm_key = buffer;
-        
+
         // Save search order selections (NEW SIMPLE SYSTEM)
         // Each dropdown directly represents the search position
         cfg_search_order_1 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_GETCURSEL, 0, 0);  // 1st choice
@@ -322,7 +327,7 @@ void artwork_preferences::apply_settings() {
         cfg_search_order_3 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_GETCURSEL, 0, 0);  // 3rd choice
         cfg_search_order_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);  // 4th choice
         cfg_search_order_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);  // 5th choice
-        
+
         // Save stream delay
         BOOL success;
         int stream_delay_value = GetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, &success, FALSE);
@@ -340,56 +345,56 @@ void artwork_preferences::reset_settings() {
         CheckDlgButton(m_hwnd, IDC_ENABLE_LASTFM, BST_UNCHECKED);
         CheckDlgButton(m_hwnd, IDC_ENABLE_DEEZER, BST_CHECKED);
         CheckDlgButton(m_hwnd, IDC_ENABLE_MUSICBRAINZ, BST_UNCHECKED);
-        
+
         // Actually apply the reset values to the configuration variables
         cfg_enable_itunes = false;
         cfg_enable_discogs = false;
         cfg_enable_lastfm = false;
         cfg_enable_deezer = true;
         cfg_enable_musicbrainz = false;
-        
+
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_KEY, "");
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_KEY, "");
         SetDlgItemTextA(m_hwnd, IDC_DISCOGS_CONSUMER_SECRET, "");
         SetDlgItemTextA(m_hwnd, IDC_LASTFM_KEY, "");
-        
+
         // Actually apply the reset values to configuration variables
         cfg_discogs_key = "";
         cfg_discogs_consumer_key = "";
         cfg_discogs_consumer_secret = "";
         cfg_lastfm_key = "";
-        
+
         // Reset search order to default order (NEW SIMPLE SYSTEM)
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_1), CB_SETCURSEL, 1, 0);  // 1st: Deezer
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_2), CB_SETCURSEL, 0, 0);  // 2nd: iTunes
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_3), CB_SETCURSEL, 2, 0);  // 3rd: Last.fm
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_SETCURSEL, 3, 0);  // 4th: MusicBrainz
         SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_SETCURSEL, 4, 0);  // 5th: Discogs
-        
+
         // Actually apply the reset search order values
         cfg_search_order_1 = 1;  // 1st choice: Deezer
         cfg_search_order_2 = 0;  // 2nd choice: iTunes
         cfg_search_order_3 = 2;  // 3rd choice: Last.fm
         cfg_search_order_4 = 3;  // 4th choice: MusicBrainz
         cfg_search_order_5 = 4;  // 5th choice: Discogs
-        
+
         // Reset stream delay to default (0 seconds - no delay)
         SetDlgItemInt(m_hwnd, IDC_STREAM_DELAY, 0, FALSE);
         SendMessage(GetDlgItem(m_hwnd, IDC_STREAM_DELAY_SPIN), UDM_SETPOS, 0, 0);
-        
+
         // Actually apply the reset stream delay value
         cfg_stream_delay = 0;
-        
+
         update_controls();
     }
 }
 
 void artwork_preferences::toggle_osd() {
     if (!m_hwnd) return;
-    
+
     // Toggle the OSD setting
     cfg_show_osd = !cfg_show_osd;
-    
+
     // Update button text immediately
     update_controls();
 }
@@ -420,19 +425,19 @@ GUID artwork_preferences_page::get_parent_guid() {
 
 preferences_page_instance::ptr artwork_preferences_page::instantiate(HWND parent, preferences_page_callback::ptr callback) {
     auto instance = fb2k::service_new<artwork_preferences>(callback);
-    
+
     HWND hwnd = CreateDialogParam(
-        g_hIns, 
-        MAKEINTRESOURCE(IDD_PREFERENCES), 
-        parent, 
-        artwork_preferences::ConfigProc, 
+        g_hIns,
+        MAKEINTRESOURCE(IDD_PREFERENCES),
+        parent,
+        artwork_preferences::ConfigProc,
         reinterpret_cast<LPARAM>(instance.get_ptr())
     );
-    
+
     if (hwnd == nullptr) {
         throw exception_win32(GetLastError());
     }
-    
+
     return instance;
 }
 
@@ -446,19 +451,19 @@ private:
     preferences_page_callback::ptr m_callback;
     bool m_has_changes;
     fb2k::CCoreDarkModeHooks m_darkMode;
-    
+
 public:
     artwork_advanced_preferences(preferences_page_callback::ptr callback);
-    
+
     // preferences_page_instance implementation
     HWND get_wnd() override;
     t_uint32 get_state() override;
     void apply() override;
     void reset() override;
-    
+
     // Dialog procedure
     static INT_PTR CALLBACK AdvancedConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
-    
+
 private:
     void on_changed();
     bool has_changed();
@@ -469,7 +474,7 @@ private:
     void browse_for_folder();
 };
 
-artwork_advanced_preferences::artwork_advanced_preferences(preferences_page_callback::ptr callback) 
+artwork_advanced_preferences::artwork_advanced_preferences(preferences_page_callback::ptr callback)
     : m_hwnd(nullptr), m_callback(callback), m_has_changes(false) {
 }
 
@@ -504,75 +509,86 @@ void artwork_advanced_preferences::on_changed() {
 
 bool artwork_advanced_preferences::has_changed() {
     if (!m_hwnd) return false;
-    
+
     // Check if Enable Custom Station Logos checkbox changed
     bool enable_logos_changed = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED) != cfg_enable_custom_logos;
-    
+
     // Check if custom folder path changed
     char current_folder[MAX_PATH];
     GetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, current_folder, MAX_PATH);
     bool folder_changed = strcmp(current_folder, cfg_logos_folder.get_ptr()) != 0;
-    
+
     // Check if Clear panel when not playing checkbox changed
     bool clear_panel_changed = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED) != cfg_clear_panel_when_not_playing;
-    
+
+    // Check if Clear panel when not playing checkbox changed
+    bool infobar_changed = (IsDlgButtonChecked(m_hwnd, IDC_INFOBAR) == BST_CHECKED) != cfg_infobar;
+
+
     // Check if Use noart image checkbox changed
     bool use_noart_changed = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED) != cfg_use_noart_image;
-    
+
     return enable_logos_changed || folder_changed || clear_panel_changed || use_noart_changed;
 }
 
 void artwork_advanced_preferences::apply_settings() {
     if (!m_hwnd) return;
-    
+
     // Apply Enable Custom Station Logos setting
     cfg_enable_custom_logos = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
-    
+
     // Apply custom folder path
     char folder_path[MAX_PATH];
     GetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, folder_path, MAX_PATH);
     cfg_logos_folder = folder_path;
-    
+
     // Apply Clear panel when not playing setting
     cfg_clear_panel_when_not_playing = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED);
-    
+
+    // Apply Clear panel when not playing setting
+    cfg_infobar = (IsDlgButtonChecked(m_hwnd, IDC_INFOBAR) == BST_CHECKED);
+
     // Apply Use noart image setting
     cfg_use_noart_image = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED);
-    
+
     // Update timers for all UI elements when setting changes
     update_all_clear_panel_timers();
 }
 
 void artwork_advanced_preferences::reset_settings() {
     if (!m_hwnd) return;
-    
+
     // Reset to default values
     cfg_enable_custom_logos = false;  // Default disabled
     cfg_logos_folder = "";  // Default empty (use default path)
     cfg_clear_panel_when_not_playing = false;  // Default disabled
+    cfg_infobar = false;  // Default disabled
     cfg_use_noart_image = false;  // Default disabled
-    
+
     update_controls();
 }
 
 void artwork_advanced_preferences::update_controls() {
     if (!m_hwnd) return;
-    
+
     // Update Enable Custom Station Logos checkbox
     CheckDlgButton(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS, cfg_enable_custom_logos ? BST_CHECKED : BST_UNCHECKED);
-    
+
     // Update custom folder path
     SetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, cfg_logos_folder.get_ptr());
-    
+
     // Update Clear panel when not playing checkbox
     CheckDlgButton(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING, cfg_clear_panel_when_not_playing ? BST_CHECKED : BST_UNCHECKED);
-    
+
+    // Update Clear panel when not playing checkbox
+    CheckDlgButton(m_hwnd, IDC_INFOBAR, cfg_infobar ? BST_CHECKED : BST_UNCHECKED);
+
     // Update Use noart image checkbox
     CheckDlgButton(m_hwnd, IDC_USE_NOART_IMAGE, cfg_use_noart_image ? BST_CHECKED : BST_UNCHECKED);
-    
+
     // Enable/disable noart image checkbox based on clear panel checkbox state
     EnableWindow(GetDlgItem(m_hwnd, IDC_USE_NOART_IMAGE), cfg_clear_panel_when_not_playing ? TRUE : FALSE);
-    
+
     // Enable/disable folder controls based on checkbox state
     BOOL enable_folder_controls = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
     EnableWindow(GetDlgItem(m_hwnd, IDC_LOGOS_FOLDER_PATH), enable_folder_controls);
@@ -581,11 +597,11 @@ void artwork_advanced_preferences::update_controls() {
 
 void artwork_advanced_preferences::update_control_states() {
     if (!m_hwnd) return;
-    
+
     // Enable/disable noart image checkbox based on clear panel checkbox state
     BOOL clear_panel_enabled = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED);
     EnableWindow(GetDlgItem(m_hwnd, IDC_USE_NOART_IMAGE), clear_panel_enabled);
-    
+
     // Enable/disable folder controls based on current checkbox state (don't change checkbox)
     BOOL enable_folder_controls = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
     EnableWindow(GetDlgItem(m_hwnd, IDC_LOGOS_FOLDER_PATH), enable_folder_controls);
@@ -602,7 +618,7 @@ void artwork_advanced_preferences::browse_for_folder() {
 
 INT_PTR CALLBACK artwork_advanced_preferences::AdvancedConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     artwork_advanced_preferences* pThis = nullptr;
-    
+
     if (msg == WM_INITDIALOG) {
         pThis = reinterpret_cast<artwork_advanced_preferences*>(lp);
         SetWindowLongPtr(hwnd, DWLP_USER, lp);
@@ -610,50 +626,58 @@ INT_PTR CALLBACK artwork_advanced_preferences::AdvancedConfigProc(HWND hwnd, UIN
         pThis->m_darkMode.AddDialogWithControls(hwnd);
         pThis->update_controls();
         return TRUE;
-    } else {
+    }
+    else {
         pThis = reinterpret_cast<artwork_advanced_preferences*>(GetWindowLongPtr(hwnd, DWLP_USER));
     }
-    
+
     if (pThis) {
         switch (msg) {
-            case WM_COMMAND:
-                switch (LOWORD(wp)) {
-                    case IDC_ENABLE_CUSTOM_LOGOS:
-                        if (HIWORD(wp) == BN_CLICKED) {
-                            pThis->on_changed();
-                            pThis->update_control_states();
-                        }
-                        break;
-                        
-                    case IDC_CLEAR_PANEL_WHEN_NOT_PLAYING:
-                        if (HIWORD(wp) == BN_CLICKED) {
-                            pThis->on_changed();
-                            pThis->update_control_states();  // Update control states when clear panel checkbox changes
-                        }
-                        break;
-                        
-                    case IDC_USE_NOART_IMAGE:
-                        if (HIWORD(wp) == BN_CLICKED) {
-                            pThis->on_changed();
-                        }
-                        break;
-                        
-                    case IDC_LOGOS_FOLDER_PATH:
-                        if (HIWORD(wp) == EN_CHANGE) {
-                            pThis->on_changed();
-                        }
-                        break;
-                        
-                    case IDC_BROWSE_LOGOS_FOLDER:
-                        if (HIWORD(wp) == BN_CLICKED) {
-                            pThis->browse_for_folder();
-                        }
-                        break;
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+            case IDC_ENABLE_CUSTOM_LOGOS:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->on_changed();
+                    pThis->update_control_states();
                 }
                 break;
+
+            case IDC_CLEAR_PANEL_WHEN_NOT_PLAYING:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->on_changed();
+                    pThis->update_control_states();  // Update control states when clear panel checkbox changes
+                }
+                break;
+
+            case IDC_INFOBAR:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->on_changed();
+                    pThis->update_control_states();  // Update control states when clear panel checkbox changes
+                }
+                break;
+
+            case IDC_USE_NOART_IMAGE:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->on_changed();
+                }
+                break;
+
+            case IDC_LOGOS_FOLDER_PATH:
+                if (HIWORD(wp) == EN_CHANGE) {
+                    pThis->on_changed();
+                }
+                break;
+
+            case IDC_BROWSE_LOGOS_FOLDER:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->browse_for_folder();
+                }
+                break;
+            }
+            break;
         }
     }
-    
+
     return FALSE;
 }
 
@@ -683,19 +707,19 @@ GUID artwork_advanced_preferences_page::get_parent_guid() {
 
 preferences_page_instance::ptr artwork_advanced_preferences_page::instantiate(HWND parent, preferences_page_callback::ptr callback) {
     auto instance = fb2k::service_new<artwork_advanced_preferences>(callback);
-    
+
     HWND hwnd = CreateDialogParam(
-        g_hIns, 
-        MAKEINTRESOURCE(IDD_PREFERENCES_ADVANCED), 
-        parent, 
-        artwork_advanced_preferences::AdvancedConfigProc, 
+        g_hIns,
+        MAKEINTRESOURCE(IDD_PREFERENCES_ADVANCED),
+        parent,
+        artwork_advanced_preferences::AdvancedConfigProc,
         reinterpret_cast<LPARAM>(instance.get_ptr())
     );
-    
+
     if (hwnd == nullptr) {
         throw exception_win32(GetLastError());
     }
-    
+
     return instance;
 }
 
