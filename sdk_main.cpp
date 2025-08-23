@@ -103,7 +103,7 @@ cfg_string cfg_logos_folder(guid_cfg_logos_folder, "");  // Custom logos folder 
 cfg_bool cfg_clear_panel_when_not_playing(guid_cfg_clear_panel_when_not_playing, false);  // Clear panel when not playing (default disabled)
 cfg_bool cfg_use_noart_image(guid_cfg_use_noart_image, false);  // Use noart image when clearing panel (default disabled)
 
-cfg_bool cfg_infobar(guid_cfg_infobar, false);  // Clear panel when not playing (default disabled)
+cfg_bool cfg_infobar(guid_cfg_infobar, false);  // DUI infobar (default disabled)
 
 
 //=============================================================================
