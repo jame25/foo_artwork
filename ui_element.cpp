@@ -1284,6 +1284,15 @@ bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
         pfc::string8 path = track->get_path();
         if (path.is_empty()) return false;
 
+        // Check mtag file internet streams
+        const double length = track->get_length();
+        if (strstr(path.c_str(), "://")) {
+            // Has protocol - check if it's a local file protocol and is mtag without duration
+            if ((strstr(path.c_str(), "file://") == path.c_str()) && (strstr(path.c_str(), ".tags")) && (length <= 0)) {
+                return true; // mtag internet stream
+            }
+        }
+
         // Check URL protocol first - this covers online playlists with duration
         if (strstr(path.c_str(), "://")) {
             // Has protocol - check if it's a local file protocol
@@ -1295,7 +1304,6 @@ bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
         }
         
         // No protocol - check length as fallback for other stream types
-        const double length = track->get_length();
         if (length > 0) {
             return false; // Has length but no protocol = local file
         }     
