@@ -2268,12 +2268,7 @@ void unsubscribe_from_artwork_events(IArtworkEventListener* listener) {
 
 // Function to trigger main component search from CUI panels with metadata
 void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title) {
-    
-	
-	    std::string artist_title = "ARTIST: " +  artist + "  TITLE: " + title;
-    char search_debug[256];
-    sprintf_s(search_debug, "Search DEBUG: trigger_main_component_search_with_metadata : %s", artist_title.c_str());
-    console::info(search_debug);
+
 	
     // Use artwork manager directly instead of bridge functions
     g_artwork_loading = true;
