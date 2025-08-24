@@ -468,9 +468,21 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
         bHandled = TRUE;
         return 0;
     } else if (wParam == 100) {
-        // Metadata arrival timer - no metadata received within grace period, start fallback search (like CUI)
+        // Metadata arrival timer - no metadata received within grace period, skip API search and go directly to station logo fallback
         KillTimer(100);
-        start_artwork_search();
+        
+        // Skip API search for streams with no metadata - go directly to station logo fallback
+        if (m_current_track.is_valid() && is_internet_stream(m_current_track)) {
+            // Simulate ARTWORK_FAILED to trigger station logo fallback without API search
+            ArtworkEventManager::get().notify(ArtworkEvent(
+                ArtworkEventType::ARTWORK_FAILED, 
+                nullptr, 
+                "No metadata - skipped API search", 
+                "", 
+                ""
+            ));
+        }
+        
         bHandled = TRUE;
         return 0;
     } else if (wParam == 101) {
