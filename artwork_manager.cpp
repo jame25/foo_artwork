@@ -7,7 +7,6 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
-#include <regex>
 
 
 #pragma comment(lib, "winhttp.lib")
