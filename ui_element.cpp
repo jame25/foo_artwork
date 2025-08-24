@@ -788,7 +788,42 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
         
         // Only try fallback images for internet streams
         if (m_current_track.is_valid() && is_internet_stream(m_current_track) && cfg_enable_custom_logos) {
-            // Priority 1: Station-specific fallback with full path (e.g., ice1.somafm.com_indiepop-128-aac-noart.png)
+            // Priority 1: Station logo (e.g., ice1.somafm.com_indiepop-128-aac.png, somafm.com.png)
+            if (!fallback_loaded) {
+                cleanup_gdiplus_image();
+                
+                // Try loading directly as GDI+ bitmap to preserve alpha
+                m_artwork_image = load_station_logo_gdiplus(m_current_track);
+                if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                    m_artwork_loading = false;
+                    m_artwork_source = "Station logo";
+                    fallback_loaded = true;
+                    Invalidate();
+                } else {
+                    cleanup_gdiplus_image();
+                    
+                    // Fallback to HBITMAP method
+                    HBITMAP logo_bitmap = load_station_logo(m_current_track);
+                    if (logo_bitmap) {
+                        try {
+                            m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
+                            if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
+                                m_artwork_loading = false;
+                                m_artwork_source = "Station logo";
+                                fallback_loaded = true;
+                                Invalidate();
+                            } else {
+                                cleanup_gdiplus_image();
+                            }
+                        } catch (...) {
+                            cleanup_gdiplus_image();
+                        }
+                        DeleteObject(logo_bitmap);
+                    }
+                }
+            }
+            
+            // Priority 2: Station-specific fallback with full path (e.g., ice1.somafm.com_indiepop-128-aac-noart.png)
             if (!fallback_loaded) {
                 auto noart_bitmap = load_noart_logo_gdiplus(m_current_track);
                 if (noart_bitmap) {
@@ -805,7 +840,7 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
                 }
             }
             
-            // Priority 2: Generic fallback with URL support (e.g., somafm.com-noart.png or noart.png)
+            // Priority 3: Generic fallback with URL support (e.g., somafm.com-noart.png or noart.png)
             if (!fallback_loaded) {
                 auto generic_bitmap = load_generic_noart_logo_gdiplus();
                 if (generic_bitmap) {
