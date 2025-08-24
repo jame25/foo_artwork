@@ -287,7 +287,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.16",
+    "1.5.17",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -304,7 +304,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.16",
+    "1.5.17",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -486,11 +486,6 @@ pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track) {
 
 // CRASH FIX: Helper function to safely create GDI+ bitmap from file
 HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
-    char debug_path[512];
-    WideCharToMultiByte(CP_UTF8, 0, wide_path.c_str(), -1, debug_path, sizeof(debug_path), NULL, NULL);
-    char debug_msg[512];
-    sprintf_s(debug_msg, "LOGO DEBUG: safe_load_gdiplus_bitmap called for: %s", debug_path);
-    console::info(debug_msg);
     
     Gdiplus::Bitmap* bitmap = nullptr;
     try {
@@ -514,10 +509,6 @@ HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
                             if (width > 0 && height > 0 && width <= 4096 && height <= 4096) {
                                 // Debug: Check GDI+ bitmap pixel format before conversion
                                 Gdiplus::PixelFormat format = bitmap->GetPixelFormat();
-                                char format_debug[256];
-                                sprintf_s(format_debug, "LOGO DEBUG: GDI+ bitmap format: 0x%08X, Has Alpha: %s", 
-                                         format, (format & PixelFormatAlpha) ? "YES" : "NO");
-                                console::info(format_debug);
                                 
                                 HBITMAP gdi_bitmap = nullptr;
                                 
@@ -573,10 +564,6 @@ HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
                                     // Debug: Check resulting HBITMAP
                                     BITMAP bm;
                                     GetObject(gdi_bitmap, sizeof(BITMAP), &bm);
-                                    char hbitmap_debug[256];
-                                    sprintf_s(hbitmap_debug, "LOGO DEBUG: Created HBITMAP %dx%d, %d bits", 
-                                             bm.bmWidth, bm.bmHeight, bm.bmBitsPixel);
-                                    console::info(hbitmap_debug);
                                     delete bitmap;
                                     return gdi_bitmap;
                                 }
@@ -605,9 +592,6 @@ HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
 
 // Helper function to try loading a logo with a specific identifier
 HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8& logos_dir) {
-    char debug_msg[512];
-    sprintf_s(debug_msg, "LOGO DEBUG: try_load_station_logo called with identifier: %s", identifier.c_str());
-    console::info(debug_msg);
     
     if (identifier.is_empty()) return NULL;
     
@@ -651,9 +635,6 @@ HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8
                 // CRASH FIX: Use safe helper function for GDI+ bitmap loading
                 HBITMAP gdi_bitmap = safe_load_gdiplus_bitmap(wide_path);
                 if (gdi_bitmap) {
-                    char logo_debug[256];
-                    sprintf_s(logo_debug, "LOGO DEBUG: Successfully loaded logo: %s", ext);
-                    console::info(logo_debug);
                     return gdi_bitmap;
                 }
             }
@@ -2293,6 +2274,15 @@ void trigger_main_component_search_with_metadata(const std::string& artist, cons
                 g_current_artwork_path.clear();
             }
         } else {
+            // Notify event system that artwork search failed (for DUI/CUI panels)
+            std::string error_source = result.source.is_empty() ? "API search failed" : result.source.c_str();
+            ArtworkEventManager::get().notify(ArtworkEvent(
+                ArtworkEventType::ARTWORK_FAILED, 
+                nullptr, 
+                error_source, 
+                "", 
+                ""
+            ));
         }
     };
     
