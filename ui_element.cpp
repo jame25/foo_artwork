@@ -214,7 +214,8 @@ private:
     std::wstring m_infobar_artist;
     std::wstring m_infobar_title;
     std::wstring m_infobar_album;
-    std::wstring m_infobar_station;													  
+    std::wstring m_infobar_station;		
+
     // UI state
     RECT m_client_rect;
     
@@ -536,32 +537,36 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
         console::info(cstr);
     }
 
+    //try to get infobar values
+    try {
+        const file_info& info = track->get_info_ref()->info();
+        std::string artist, title, album, station;
 
-    const file_info& info = track->get_info_ref()->info();
-    std::string artist, title , album , station;
+        if (info.meta_get("ARTIST", 0)) {
+            artist = info.meta_get("ARTIST", 0);
+        }
+        if (info.meta_get("TITLE", 0)) {
+            title = info.meta_get("TITLE", 0);
+        }
 
-    if (info.meta_get("ARTIST", 0)) {
-        artist = info.meta_get("ARTIST", 0);
+        if (info.meta_get("ALBUM", 0)) {
+            album = info.meta_get("ALBUM", 0);
+        }
+
+        if (info.meta_get("STREAM_NAME", 0)) {
+            station = info.meta_get("STREAM_NAME", 0);
+        }
+
+        //store metadata for infobar
+
+        m_infobar_artist = stringToWstring(artist);
+        m_infobar_title = stringToWstring(title);
+        m_infobar_album = stringToWstring(album);
+        m_infobar_station = stringToWstring(station);
     }
-    if (info.meta_get("TITLE", 0)) {
-        title = info.meta_get("TITLE", 0);
+    catch (...) {
+        // Handle any errors silently
     }
-
-    if (info.meta_get("ALBUM", 0)) {
-        album = info.meta_get("ALBUM", 0);
-    }
-
-    if (info.meta_get("STREAM_NAME", 0)) {
-        station = info.meta_get("STREAM_NAME", 0);
-    }
-
-    //store metadata for infobar
-
-    m_infobar_artist = stringToWstring(artist);
-    m_infobar_title = stringToWstring(title);
-    m_infobar_album = stringToWstring(album);
-    m_infobar_station = stringToWstring(station);
- 
 
 
     m_current_track = track;
@@ -1527,7 +1532,7 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
         case ArtworkEventType::ARTWORK_FAILED:
             {
                 m_artwork_loading = false;
-                
+            
                 // Try fallback images when API search fails (same logic as on_artwork_loaded)
                 bool fallback_loaded = false;
                 
