@@ -7,6 +7,8 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <regex>
+
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shlwapi.lib")
@@ -548,7 +550,7 @@ void artwork_manager::search_discogs_api_async(const char* artist, const char* a
     });
 }
 
-void artwork_manager::search_lastfm_api_async(const char* artist, const char* album, artwork_callback callback) {
+void artwork_manager::search_lastfm_api_async(const char* artist, const char* title, artwork_callback callback) {
     if (cfg_lastfm_key.is_empty()) {
         async_io_manager::instance().post_to_main_thread([callback]() {
             artwork_result result;
@@ -560,10 +562,10 @@ void artwork_manager::search_lastfm_api_async(const char* artist, const char* al
     }
     
     // Build Last.fm API URL
-    pfc::string8 url = "http://ws.audioscrobbler.com/2.0/?method=album.getinfo&api_key=";
+    pfc::string8 url = "http://ws.audioscrobbler.com/2.0/?method=track.getinfo&api_key=";
     url << url_encode(cfg_lastfm_key.get_ptr());
     url << "&artist=" << url_encode(artist);
-    url << "&album=" << url_encode(album);
+    url << "&track=" << url_encode(title);
     url << "&format=json";
     
     // Make async HTTP request
@@ -576,7 +578,6 @@ void artwork_manager::search_lastfm_api_async(const char* artist, const char* al
             callback(result);
             return;
         }
-        
         // Parse JSON response to extract artwork URL
         pfc::string8 artwork_url;
         if (!parse_lastfm_json(response, artwork_url)) {
@@ -1032,17 +1033,20 @@ bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& 
 }
 
 bool artwork_manager::parse_lastfm_json(const pfc::string8& json, pfc::string8& artwork_url) {
+  
     // Simple JSON parsing for Last.fm response
     // Look for image array with size "extralarge" or "large"
     const char* json_str = json.get_ptr();
     
     // Look for image array
     const char* image_pos = strstr(json_str, "\"image\":");
+    
     if (!image_pos) return false;
     
     // Try to find extralarge image first
     const char* search_pos = image_pos;
     while ((search_pos = strstr(search_pos, "\"size\":\"extralarge\"")) != nullptr) {
+        
         // Look backwards for the URL in this image object
         const char* url_search = search_pos;
         while (url_search > image_pos && *url_search != '{') url_search--;
@@ -1050,18 +1054,19 @@ bool artwork_manager::parse_lastfm_json(const pfc::string8& json, pfc::string8& 
         const char* url_pos = strstr(url_search, "\"#text\":");
         if (url_pos && url_pos < search_pos) {
             const char* url_start = strchr(url_pos, '"');
-            if (url_start) {
-                url_start++; // Skip opening quote
-                const char* url_end = strchr(url_start, '"');
+            if (url_start) {            
+                const char* url_end = strchr(url_start, '",');
                 if (url_end && url_end > url_start) {
-                    artwork_url = pfc::string8(url_start, url_end - url_start);
-                    if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr()) {
+                    artwork_url = pfc::string8(url_start,  url_end - url_start - 1);
+                    if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http")) {
+                        artwork_url = strstr(artwork_url.get_ptr(), "http");
                         return true;
                     }
                 }
             }
         }
         search_pos++;
+        
     }
     
     // Fallback to large image
@@ -1074,11 +1079,11 @@ bool artwork_manager::parse_lastfm_json(const pfc::string8& json, pfc::string8& 
         if (url_pos && url_pos < search_pos) {
             const char* url_start = strchr(url_pos, '"');
             if (url_start) {
-                url_start++; // Skip opening quote
-                const char* url_end = strchr(url_start, '"');
+                const char* url_end = strchr(url_start, '",');
                 if (url_end && url_end > url_start) {
-                    artwork_url = pfc::string8(url_start, url_end - url_start);
-                    if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr()) {
+                    artwork_url = pfc::string8(url_start, url_end - url_start - 1);
+                    if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http")) {
+                        artwork_url = strstr(artwork_url.get_ptr(), "http");
                         return true;
                     }
                 }
