@@ -29,6 +29,9 @@ public:
     static void initialize();
     static void shutdown();
     
+    // Utility functions
+    static pfc::string8 detect_mime_type(const t_uint8* data, size_t size);
+    
 private:
     // Internal async pipeline methods
     static void check_cache_async_metadata(const pfc::string8& cache_key, const pfc::string8& artist, const pfc::string8& track, artwork_callback callback);
@@ -60,7 +63,6 @@ private:
     
     // Utility functions
     static bool is_valid_image_data(const t_uint8* data, size_t size);
-    static pfc::string8 detect_mime_type(const t_uint8* data, size_t size);
     static pfc::string8 get_file_directory(const char* file_path);
     static pfc::string8 url_encode(const char* str);
     static pfc::string8 generate_cache_key(const char* artist, const char* track);
