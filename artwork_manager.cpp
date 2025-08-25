@@ -1069,6 +1069,8 @@ bool artwork_manager::parse_lastfm_json(const pfc::string8& json, pfc::string8& 
                     artwork_url = pfc::string8(url_start,  url_end - url_start - 1);
                     if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http")) {
                         artwork_url = strstr(artwork_url.get_ptr(), "http");
+			// Upgrade resolution to none for original quality
+                        artwork_url = artwork_url.replace("u/300x300", "u/");
                         return true;
                     }
                 }
@@ -1093,6 +1095,8 @@ bool artwork_manager::parse_lastfm_json(const pfc::string8& json, pfc::string8& 
                     artwork_url = pfc::string8(url_start, url_end - url_start - 1);
                     if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http")) {
                         artwork_url = strstr(artwork_url.get_ptr(), "http");
+			// Upgrade resolution to none for original quality
+                        artwork_url = artwork_url.replace("u/174s", "u/");
                         return true;
                     }
                 }
