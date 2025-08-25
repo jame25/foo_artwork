@@ -178,6 +178,8 @@ private:
     
     // Stream delay functions
     bool is_internet_stream(metadb_handle_ptr track);
+    bool is_stream_with_possible_artwork(metadb_handle_ptr track);
+    bool is_youtube_stream(metadb_handle_ptr track);
     void start_delayed_search();
     
     // Metadata validation and cleaning
@@ -468,8 +470,14 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
         bHandled = TRUE;
         return 0;
     } else if (wParam == 100) {
-        // Metadata arrival timer - no metadata received within grace period, skip API search and go directly to station logo fallback
+        // Metadata arrival timer - no metadata received within grace period
         KillTimer(100);
+        
+        // CHECK: Only trigger fallback if we don't already have tagged artwork
+        if (m_artwork_image && !m_artwork_source.empty() && m_artwork_source == "Local artwork") {
+            bHandled = TRUE;
+            return 0;
+        }
         
         // Skip API search for streams with no metadata - go directly to station logo fallback
         if (m_current_track.is_valid() && is_internet_stream(m_current_track)) {
@@ -594,24 +602,49 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
     
     if (track.is_valid()) {
         
+        // Check if this is an internet stream
+        bool is_stream = is_internet_stream(track);
+        
+        // Check if this stream can have embedded artwork (like YouTube videos)
+        bool can_have_embedded_artwork = !is_stream || is_stream_with_possible_artwork(track);
+        
+        if (can_have_embedded_artwork) {
+            // For local files and streams that can have embedded artwork (YouTube videos),
+            // try to load tagged artwork first
+            // Clear any existing artwork first to avoid conflicts
+            cleanup_gdiplus_image();
+            m_artwork_loading = true;
+            
+            artwork_manager::get_artwork_async(track, [this, track](const artwork_manager::artwork_result& result) {
+                auto* heap_result = new artwork_manager::artwork_result(result);
+                ::PostMessage(m_hWnd, WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(heap_result));
+            });
+        } else {
+            // For internet radio streams that cannot have embedded artwork,
+            // skip tagged artwork search to avoid cached results from previous searches
+            
+            // Clear any existing artwork to avoid showing old artwork
+            cleanup_gdiplus_image();
+            m_artwork_loading = false;
+        }
+        
+        // Also call the compatibility function for logging
+        trigger_main_component_local_search(track);
+        
+        // For internet streams, ALSO set up metadata timers for fallback
         if (is_internet_stream(track)) {
             // Kill any existing timers
             KillTimer(100); // Metadata arrival timer
             KillTimer(101); // Stream delay timer
             
-            // Set initial metadata arrival timer (like CUI) - 3 second grace period
-            // This gives metadata time to arrive via on_dynamic_info_track()
-            SetTimer(100, 3000); // Timer ID 100, 3 second timeout
-        } else {
-            // For local files, use SDK artwork manager directly
-            artwork_manager::get_artwork_async(track, [this](const artwork_manager::artwork_result& result) {
-                // Post result to UI thread using Windows API directly
-                auto* heap_result = new artwork_manager::artwork_result(result);
-                ::PostMessage(m_hWnd, WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(heap_result));
-            });
-            // Also call the compatibility function for logging
-            trigger_main_component_local_search(track);
-            start_artwork_search();
+            // Respect stream delay configuration for internet streams
+            if (cfg_stream_delay > 0) {
+                // Use configured stream delay - this allows streams time to provide metadata
+                SetTimer(101, cfg_stream_delay * 1000); // Timer ID 101, stream delay timeout
+            } else {
+                // No stream delay configured - use short metadata arrival timer
+                SetTimer(100, 3000); // Timer ID 100, 3 second timeout
+            }
         }
     }
 }
@@ -690,25 +723,30 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             // Keep previous artwork visible until replaced (like CUI)
             // Don't clear artwork here - let new artwork replace it when found
             
-            // PRIORITY CHECK: For local files, prefer local artwork files over API search
-            // This mirrors the same priority protection logic used in Columns UI
-            if (should_prefer_local_artwork()) {
-                if (load_local_artwork_from_main_component()) {
-                    return; // Exit early - local artwork found and loaded, don't do API search
-                }
-            }
+            // PRIORITY CHECK: Disabled for local files to allow tagged artwork display
+            // Local artwork will be loaded via the artwork_manager in on_playback_new_track()
+            // if (should_prefer_local_artwork()) {
+            //     if (load_local_artwork_from_main_component()) {
+            //         return; // Exit early - local artwork found and loaded, don't do API search
+            //     }
+            // }
             
             // FIXED: Removed premature station logo check - station logos should be fallbacks only
             // API searches have priority according to README.md fallback chain
             
-            // IMMEDIATE SEARCH: Use v1.3.1 approach - start search immediately for better responsiveness
-            // This provides much faster artwork loading as metadata arrives
+            // STREAM DELAY HANDLING: Check if stream delay timer is active
             if (m_current_track.is_valid() && is_internet_stream(m_current_track)) {
-                // Kill any existing delay timer - we're searching immediately
-                KillTimer(101);
-                
-                // Use the main component trigger function for proper API fallback (results come via event system)
-                trigger_main_component_search_with_metadata(cleaned_artist, cleaned_track);
+                // Check if stream delay is configured and timer is running
+                if (cfg_stream_delay > 0) {
+                    // Store metadata for delayed search - don't start search immediately
+                    m_has_delayed_metadata = true;
+                    m_delayed_artist = cleaned_artist;
+                    m_delayed_title = cleaned_track;
+                    // Don't kill Timer 101 - let it fire when delay expires
+                } else {
+                    // No stream delay - start search immediately
+                    trigger_main_component_search_with_metadata(cleaned_artist, cleaned_track);
+                }
             }
             // For local files, do nothing - local artwork will be handled elsewhere
         }
@@ -723,13 +761,13 @@ void artwork_ui_element::start_artwork_search() {
     }
     
     try {
-        // PRIORITY CHECK: For local files, prefer local artwork files over API search
-        // This mirrors the same priority protection logic used in Columns UI
-        if (should_prefer_local_artwork()) {
-            if (load_local_artwork_from_main_component()) {
-                return; // Exit early - local artwork found and loaded, don't do API search
-            }
-        }
+        // PRIORITY CHECK: Disabled for local files to allow tagged artwork display  
+        // Local artwork will be loaded via the artwork_manager in on_playback_new_track()
+        // if (should_prefer_local_artwork()) {
+        //     if (load_local_artwork_from_main_component()) {
+        //         return; // Exit early - local artwork found and loaded, don't do API search
+        //     }
+        // }
         
         // FIXED: Removed second premature station logo check
         // Station logos should only be used as fallback after API search fails
@@ -760,16 +798,67 @@ void artwork_ui_element::start_artwork_search() {
 void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result& result) {
     m_artwork_loading = false;
     
-    
     if (result.success && result.data.get_size() > 0) {
+        // Check if this is a YouTube stream with WebP artwork
+        if (m_current_track.is_valid() && is_youtube_stream(m_current_track)) {
+            // Detect the image format
+            pfc::string8 mime_type = artwork_manager::detect_mime_type(result.data.get_ptr(), result.data.get_size());
+            if (mime_type == "image/webp") {
+                // This is WebP format - trigger API search instead of loading
+                // Check if we have metadata for API search
+                metadb_info_container::ptr info_container = m_current_track->get_info_ref();
+                if (info_container.is_valid()) {
+                    const file_info& info = info_container->info();
+                    
+                    const char* artist_ptr = info.meta_get("ARTIST", 0);
+                    const char* title_ptr = info.meta_get("TITLE", 0);
+                    
+                    if (artist_ptr && title_ptr && strlen(artist_ptr) > 0 && strlen(title_ptr) > 0) {
+                        // We have valid metadata - trigger API search instead of using WebP
+                        pfc::string8 artist = artist_ptr;
+                        pfc::string8 title = title_ptr;
+                        
+                        // Clean metadata for search
+                        std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
+                        std::string cleaned_title = MetadataCleaner::clean_for_search(title.c_str(), true);
+                        
+                        // Validate metadata
+                        if (MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_title.c_str())) {
+                            // Clear any existing artwork before API search
+                            cleanup_gdiplus_image();
+                            m_artwork_source = "Loading from API...";
+                            m_artwork_loading = true;
+                            
+                            // Kill any fallback timers that might interfere with API search
+                            KillTimer(100); // Metadata arrival timer
+                            KillTimer(101); // Stream delay timer
+                            
+                            // Trigger API search instead of using WebP artwork
+                            trigger_main_component_search_with_metadata(cleaned_artist, cleaned_title);
+                            
+                            // Completely exit - don't try to load WebP data
+                            return;
+                        }
+                    }
+                }
+                // If we can't do API search, fall through to WebP loading attempt (will likely fail)
+            }
+        }
+        
         if (load_image_from_memory(result.data.get_ptr(), result.data.get_size())) {
             // Store artwork source and show OSD for Default UI
             std::string source = result.source.is_empty() ? "Unknown" : result.source.c_str();
             m_artwork_source = source;
             
+            // IMPORTANT: Kill all fallback timers since we found tagged artwork
+            KillTimer(100); // Metadata arrival timer
+            KillTimer(101); // Stream delay timer
+            
             // Show OSD animation for Default UI (only for online sources, not local files)
             if (source != "Local file" && !source.empty() && source != "Cache") {
                 show_osd("Artwork from " + source);
+            } else if (source == "Local artwork") {
+                show_osd("Tagged artwork");
             }
             
             // Also notify event system for CUI panels
@@ -793,7 +882,7 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             ));
         }
     } else {
-        // API search failed - try fallback images (like Columns UI)
+        // Tagged artwork search failed - try fallback images (like Columns UI)
         // This implements the same fallback hierarchy as Columns UI
         
         bool fallback_loaded = false;
@@ -1149,10 +1238,6 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
         Gdiplus::Bitmap* bitmap = dynamic_cast<Gdiplus::Bitmap*>(m_artwork_image);
         if (bitmap) {
             Gdiplus::PixelFormat format = bitmap->GetPixelFormat();
-            char debug_msg[256];
-            sprintf_s(debug_msg, "ARTWORK DEBUG: Loaded image pixel format: 0x%08X, Has Alpha: %s", 
-                     format, (format & PixelFormatAlpha) ? "YES" : "NO");
-            console::info(debug_msg);
             
             // Also check if it's specifically 32-bit ARGB
             if (format == PixelFormat32bppARGB) {
@@ -1167,6 +1252,7 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
     
     return true;
 }
+
 
 void artwork_ui_element::cleanup_gdiplus_image() {
     if (m_artwork_image) {
@@ -1466,8 +1552,9 @@ bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
         pfc::string8 path = track->get_path();
         if (path.is_empty()) return false;
 
-        // Check mtag file internet streams
         const double length = track->get_length();
+
+        // Check mtag file internet streams
         if (strstr(path.c_str(), "://")) {
             // Has protocol - check if it's a local file protocol and is mtag without duration
             if ((strstr(path.c_str(), "file://") == path.c_str()) && (strstr(path.c_str(), ".tags")) && (length <= 0)) {
@@ -1493,6 +1580,77 @@ bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
         return true; // No length, no protocol = likely internet stream
     } catch (...) {
         return false; // Error accessing path, assume local file
+    }
+}
+
+bool artwork_ui_element::is_stream_with_possible_artwork(metadb_handle_ptr track) {
+    if (!track.is_valid()) return false;
+    
+    try {
+        pfc::string8 path = track->get_path();
+        if (path.is_empty()) return false;
+        
+        // Check if this is a stream that can have embedded artwork
+        // YouTube videos and similar services can have embedded thumbnails
+        const char* path_str = path.c_str();
+        
+        // YouTube videos (can have embedded thumbnails)
+        if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") || 
+            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com")) {
+            return true;
+        }
+        
+        // Other video platforms that might have embedded artwork
+        if (strstr(path_str, "vimeo.com") || strstr(path_str, "dailymotion.com") || 
+            strstr(path_str, "twitch.tv") || strstr(path_str, "facebook.com")) {
+            return true;
+        }
+        
+        // Streaming services that provide artwork in their streams
+        if (strstr(path_str, "spotify.com") || strstr(path_str, "deezer.com") || 
+            strstr(path_str, "soundcloud.com") || strstr(path_str, "bandcamp.com")) {
+            return true;
+        }
+        
+        // Check for file extensions that suggest video/audio files with possible artwork
+        if (strstr(path_str, ".mp4") || strstr(path_str, ".m4v") || strstr(path_str, ".mkv") ||
+            strstr(path_str, ".webm") || strstr(path_str, ".mov") || strstr(path_str, ".avi")) {
+            return true;
+        }
+        
+        // Audio formats that commonly have embedded artwork
+        if (strstr(path_str, ".m4a") || strstr(path_str, ".aac") || strstr(path_str, ".mp3")) {
+            return true;
+        }
+        
+        // For all other streams (like pure internet radio), assume no embedded artwork
+        return false;
+        
+    } catch (...) {
+        // On error, assume no embedded artwork to be safe
+        return false;
+    }
+}
+
+bool artwork_ui_element::is_youtube_stream(metadb_handle_ptr track) {
+    if (!track.is_valid()) return false;
+    
+    try {
+        pfc::string8 path = track->get_path();
+        if (path.is_empty()) return false;
+        
+        const char* path_str = path.c_str();
+        
+        // YouTube videos
+        if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") || 
+            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com")) {
+            return true;
+        }
+        
+        return false;
+        
+    } catch (...) {
+        return false;
     }
 }
 
@@ -1532,14 +1690,14 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
     
     switch (event.type) {
         case ArtworkEventType::ARTWORK_LOADED:
+            {
             if (event.bitmap) {
-                // PRIORITY CHECK: Don't let API results override local artwork 
-                // (unless the source is explicitly "Local file")
-                if (event.source != "Local file" && event.source != "Cache" && should_prefer_local_artwork()) {
-                    // Local artwork has priority - don't replace it with API results
-                    return;
-                }
-                
+                // PRIORITY CHECK: Disabled to allow all artwork to display
+                // Local tagged artwork will be loaded directly via artwork_manager
+                // if (event.source != "Local file" && event.source != "Cache" && should_prefer_local_artwork()) {
+                //     // Local artwork has priority - don't replace it with API results
+                //     return;
+                // }
                 m_artwork_loading = false;
                 
                 // Convert HBITMAP directly to GDI+ Image (like the existing custom logo loading)
@@ -1570,6 +1728,7 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                     cleanup_gdiplus_image();
                 }
             }
+            }
             break;
             
         case ArtworkEventType::ARTWORK_LOADING:
@@ -1579,6 +1738,11 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
         case ArtworkEventType::ARTWORK_FAILED:
             {
                 m_artwork_loading = false;
+                
+                // CHECK: Don't override existing tagged artwork with fallback images
+                if (m_artwork_image && !m_artwork_source.empty() && m_artwork_source == "Local artwork") {
+                    break;
+                }
             
                 // Try fallback images when API search fails (same logic as on_artwork_loaded)
                 bool fallback_loaded = false;
