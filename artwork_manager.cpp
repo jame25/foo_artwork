@@ -20,6 +20,8 @@ extern cfg_bool cfg_enable_deezer;
 extern cfg_bool cfg_enable_musicbrainz;
 extern cfg_string cfg_itunes_key;
 extern cfg_string cfg_discogs_key;
+extern cfg_string cfg_discogs_consumer_key;
+extern cfg_string cfg_discogs_consumer_secret;
 extern cfg_string cfg_lastfm_key;
 
 // Static member initialization
@@ -40,7 +42,19 @@ void artwork_manager::shutdown() {
 void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
     
-    // Debug: Track artwork loading
+    // DEBUG: Track artwork loading request
+    {
+        metadb_info_container::ptr info_container = track->get_info_ref();
+        const file_info* info = &info_container->info();
+        
+        pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "Unknown Artist";
+        pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
+        pfc::string8 file_path = track->get_path();
+        
+        pfc::string8 debug_msg;
+        debug_msg << "Artwork Manager: NEW REQUEST for '" << artist << "' - '" << track_name << "' (path: " << file_path << ")";
+        console::info(debug_msg);
+    }
     
     if (!initialized_) {
         initialize();
@@ -94,6 +108,13 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     
     pfc::string8 cache_key = generate_cache_key(artist, track_name);
     
+    // DEBUG: Log artwork pipeline start
+    {
+        pfc::string8 debug_msg;
+        debug_msg << "Artwork Pipeline: Starting search for path='" << file_path << "', cache_key='" << cache_key << "'";
+        console::info(debug_msg);
+    }
+    
     // CACHE SKIP FOR INTERNET STREAMS: For internet streams, metadata is often wrong initially
     // (belongs to previous track), causing wrong cached artwork to be returned.
     // Skip cache and go directly to local (tagged) artwork search.
@@ -101,9 +122,13 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
                               !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
     
     if (is_internet_stream) {
-        // Skip cache for internet streams - go directly to local artwork search
-        search_local_async(file_path, cache_key, track, callback);
+        console::info("Artwork Pipeline: Detected internet stream, skipping cache and going directly to APIs");
+        // For internet streams, skip cache entirely and go directly to API search
+        // This prevents stale artwork from being returned when track metadata changes
+        // Use empty cache_key to signal "don't cache results"
+        search_apis_async(artist, track_name, pfc::string8(""), callback);
     } else {
+        console::info("Artwork Pipeline: Local file detected, using cache");
         // For local files, use normal cache -> local -> APIs pipeline
         check_cache_async(cache_key, track, callback);
     }
@@ -170,33 +195,86 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback) {
     // Try APIs in sequence: iTunes -> Deezer -> Last.fm -> MusicBrainz -> Discogs
     
+    // DEBUG: Log which APIs are enabled
+    pfc::string8 debug_msg;
+    debug_msg << "Artwork Search: Starting API search for artist='" << artist << "', track='" << track << "'";
+    console::info(debug_msg);
+    
+    debug_msg.reset();
+    debug_msg << "Artwork Search: iTunes enabled=" << (cfg_enable_itunes ? "YES" : "NO");
+    console::info(debug_msg);
+    
+    debug_msg.reset();
+    debug_msg << "Artwork Search: Deezer enabled=" << (cfg_enable_deezer ? "YES" : "NO");
+    console::info(debug_msg);
+    
+    debug_msg.reset();
+    debug_msg << "Artwork Search: LastFM enabled=" << (cfg_enable_lastfm ? "YES" : "NO") << ", key configured=" << (!cfg_lastfm_key.is_empty() ? "YES" : "NO");
+    console::info(debug_msg);
+    
+    debug_msg.reset();
+    debug_msg << "Artwork Search: MusicBrainz enabled=" << (cfg_enable_musicbrainz ? "YES" : "NO");
+    console::info(debug_msg);
+    
+    debug_msg.reset();
+    bool discogs_auth_configured = !cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty());
+    debug_msg << "Artwork Search: Discogs enabled=" << (cfg_enable_discogs ? "YES" : "NO") << ", auth configured=" << (discogs_auth_configured ? "YES" : "NO");
+    console::info(debug_msg);
+    
     if (cfg_enable_itunes) {
-        // iTunes API implementation would go here
-        artwork_result result;
-        result.success = false;
-        result.error_message = "iTunes API not implemented";
-        async_io_manager::instance().post_to_main_thread([callback, result]() {
-            callback(result);
-        });
-    } else if (cfg_enable_deezer) {
-        search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+        console::info("Artwork Search: Starting with iTunes API");
+        search_itunes_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
                 callback(result);
-            } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
-                search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+            } else if (cfg_enable_deezer) {
+                search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                     if (result.success) {
-                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                         callback(result);
-                    } else if (cfg_enable_musicbrainz) {
-                        search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                    } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
+                        search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                             if (result.success) {
-                                async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                                 callback(result);
-                            } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+                            } else if (cfg_enable_musicbrainz) {
+                                search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                                    if (result.success) {
+                                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                                        callback(result);
+                                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                                            if (result.success) {
+                                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                                            }
+                                            callback(result);
+                                        });
+                                    } else {
+                                        artwork_result final_result;
+                                        final_result.success = false;
+                                        final_result.error_message = "No artwork found";
+                                        callback(final_result);
+                                    }
+                                });
+                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
                                 search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                                     if (result.success) {
-                                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                                     }
                                     callback(result);
                                 });
@@ -207,10 +285,100 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                                 callback(final_result);
                             }
                         });
-                    } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+                    } else if (cfg_enable_musicbrainz) {
+                        search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                            if (result.success) {
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                                callback(result);
+                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                                    if (result.success) {
+                                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                                    }
+                                    callback(result);
+                                });
+                            } else {
+                                artwork_result final_result;
+                                final_result.success = false;
+                                final_result.error_message = "No artwork found";
+                                callback(final_result);
+                            }
+                        });
+                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
                         search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                             if (result.success) {
-                                async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                            }
+                            callback(result);
+                        });
+                    } else {
+                        artwork_result final_result;
+                        final_result.success = false;
+                        final_result.error_message = "No artwork found";
+                        callback(final_result);
+                    }
+                });
+            } else {
+                artwork_result final_result;
+                final_result.success = false;
+                final_result.error_message = "No artwork found";
+                callback(final_result);
+            }
+        });
+    } else if (cfg_enable_deezer) {
+        search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+            if (result.success) {
+                async_io_manager::instance().cache_set_async(cache_key, result.data);
+                callback(result);
+            } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
+                search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                    if (result.success) {
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                        callback(result);
+                    } else if (cfg_enable_musicbrainz) {
+                        search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                            if (result.success) {
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                                callback(result);
+                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                                    if (result.success) {
+                                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                                    }
+                                    callback(result);
+                                });
+                            } else {
+                                artwork_result final_result;
+                                final_result.success = false;
+                                final_result.error_message = "No artwork found";
+                                callback(final_result);
+                            }
+                        });
+                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                            if (result.success) {
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                             }
                             callback(result);
                         });
@@ -224,12 +392,18 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
             } else if (cfg_enable_musicbrainz) {
                 search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                     if (result.success) {
-                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                         callback(result);
-                    } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
                         search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                             if (result.success) {
-                                async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                             }
                             callback(result);
                         });
@@ -240,10 +414,13 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                         callback(final_result);
                     }
                 });
-            } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
                 search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                     if (result.success) {
-                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                     }
                     callback(result);
                 });
@@ -267,25 +444,37 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                 // iTunes failed - try Deezer
                 search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                     if (result.success) {
-                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                         callback(result);
                     } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
                         // Deezer failed - try Last.fm
                         search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                             if (result.success) {
-                                async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                                 callback(result);
                             } else if (cfg_enable_musicbrainz) {
                                 // Last.fm failed - try MusicBrainz
                                 search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                                     if (result.success) {
-                                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                                         callback(result);
-                                    } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+                                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
                                         // MusicBrainz failed - try Discogs
                                         search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                                             if (result.success) {
-                                                async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                                             }
                                             callback(result); // Final result regardless of success
                                         });
@@ -297,11 +486,14 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                                         callback(final_result);
                                     }
                                 });
-                            } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
                                 // Last.fm failed, MusicBrainz disabled - try Discogs
                                 search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                                     if (result.success) {
-                                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                                     }
                                     callback(result); // Final result regardless of success
                                 });
@@ -313,11 +505,14 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                                 callback(final_result);
                             }
                         });
-                    } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
                         // Deezer failed, Last.fm disabled - try Discogs
                         search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                             if (result.success) {
-                                async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                             }
                             callback(result);
                         });
@@ -329,11 +524,14 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                         callback(final_result);
                     }
                 });
-            } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
                 // iTunes failed, Last.fm disabled - try Discogs
                 search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                     if (result.success) {
-                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                     }
                     callback(result);
                 });
@@ -345,16 +543,95 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                 callback(final_result);
             }
         });
-    } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
-        // iTunes disabled - start with Last.fm
-        search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+    } else if (cfg_enable_deezer) {
+        // iTunes disabled - start with Deezer
+        console::info("Artwork Search: Starting with Deezer API");
+        search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
                 callback(result);
-            } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+            } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
+                search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                    if (result.success) {
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                        callback(result);
+                    } else if (cfg_enable_musicbrainz) {
+                        search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                            if (result.success) {
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                                callback(result);
+                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                                    if (result.success) {
+                                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                                    }
+                                    callback(result);
+                                });
+                            } else {
+                                artwork_result final_result;
+                                final_result.success = false;
+                                final_result.error_message = "No artwork found";
+                                callback(final_result);
+                            }
+                        });
+                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                            if (result.success) {
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                            }
+                            callback(result);
+                        });
+                    } else {
+                        artwork_result final_result;
+                        final_result.success = false;
+                        final_result.error_message = "No artwork found";
+                        callback(final_result);
+                    }
+                });
+            } else if (cfg_enable_musicbrainz) {
+                search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                    if (result.success) {
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                        callback(result);
+                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                            if (result.success) {
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                            }
+                            callback(result);
+                        });
+                    } else {
+                        artwork_result final_result;
+                        final_result.success = false;
+                        final_result.error_message = "No artwork found";
+                        callback(final_result);
+                    }
+                });
+            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
                 search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
                     if (result.success) {
-                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
                     }
                     callback(result);
                 });
@@ -365,7 +642,83 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
                 callback(final_result);
             }
         });
-    } else if (cfg_enable_discogs && !cfg_discogs_key.is_empty()) {
+    } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
+        // iTunes and Deezer disabled - start with Last.fm
+        console::info("Artwork Search: Starting with LastFM API");
+        search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+            if (result.success) {
+                async_io_manager::instance().cache_set_async(cache_key, result.data);
+                callback(result);
+            } else if (cfg_enable_musicbrainz) {
+                search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                    if (result.success) {
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                        callback(result);
+                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                            if (result.success) {
+                                // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                            }
+                            callback(result);
+                        });
+                    } else {
+                        artwork_result final_result;
+                        final_result.success = false;
+                        final_result.error_message = "No artwork found";
+                        callback(final_result);
+                    }
+                });
+            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                    if (result.success) {
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                    }
+                    callback(result);
+                });
+            } else {
+                artwork_result final_result;
+                final_result.success = false;
+                final_result.error_message = "No artwork found";
+                callback(final_result);
+            }
+        });
+    } else if (cfg_enable_musicbrainz) {
+        // iTunes, Deezer, and LastFM disabled - start with MusicBrainz
+        console::info("Artwork Search: Starting with MusicBrainz API");
+        search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+            if (result.success) {
+                // Only cache if cache_key is not empty (empty means internet stream)
+                if (!cache_key.is_empty()) {
+                    async_io_manager::instance().cache_set_async(cache_key, result.data);
+                }
+                callback(result);
+            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
+                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
+                    if (result.success) {
+                        // Only cache if cache_key is not empty (empty means internet stream)
+                        if (!cache_key.is_empty()) {
+                            async_io_manager::instance().cache_set_async(cache_key, result.data);
+                        }
+                    }
+                    callback(result);
+                });
+            } else {
+                artwork_result final_result;
+                final_result.success = false;
+                final_result.error_message = "No artwork found";
+                callback(final_result);
+            }
+        });
+    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
         // Only Discogs available
         search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
@@ -458,15 +811,37 @@ void artwork_manager::find_local_artwork_async(metadb_handle_ptr track, artwork_
 
 
 
-void artwork_manager::search_itunes_api_async(const char* artist, const char* album, artwork_callback callback) {
+void artwork_manager::search_itunes_api_async(const char* artist, const char* track, artwork_callback callback) {
     // iTunes Search API doesn't require an API key
+    // First try searching for the track as a song
     pfc::string8 url = "https://itunes.apple.com/search?term=";
-    url << url_encode(artist) << "+" << url_encode(album);
-    url << "&entity=album&limit=1";
+    url << url_encode(artist) << "+" << url_encode(track);
+    url << "&entity=song&limit=5";  // Increased limit for better matches
+    
+    // DEBUG: Log iTunes API request
+    {
+        pfc::string8 debug_msg;
+        debug_msg << "iTunes API: Searching for artist='" << artist << "', track='" << track << "' as SONG";
+        console::info(debug_msg);
+        
+        debug_msg.reset();
+        debug_msg << "iTunes API: Request URL=" << url;
+        console::info(debug_msg);
+    }
+    
+    // Copy parameters to avoid lambda capture corruption
+    pfc::string8 artist_str = artist;
+    pfc::string8 track_str = track;
     
     // Make async HTTP request
-    async_io_manager::instance().http_get_async(url, [callback](bool success, const pfc::string8& response, const pfc::string8& error) {
+    async_io_manager::instance().http_get_async(url, [callback, artist_str, track_str](bool success, const pfc::string8& response, const pfc::string8& error) {
         if (!success) {
+            // DEBUG: Log iTunes API failure
+            {
+                pfc::string8 debug_msg;
+                debug_msg << "iTunes API: HTTP request failed - " << error;
+                console::info(debug_msg);
+            }
             artwork_result result;
             result.success = false;
             result.error_message = "iTunes API request failed: ";
@@ -475,25 +850,129 @@ void artwork_manager::search_itunes_api_async(const char* artist, const char* al
             return;
         }
         
+        // DEBUG: Log iTunes API response
+        {
+            pfc::string8 debug_msg;
+            debug_msg << "iTunes API: HTTP request succeeded, response length=" << response.get_length();
+            console::info(debug_msg);
+            
+            debug_msg.reset();
+            debug_msg << "iTunes API: Response=" << response;
+            console::info(debug_msg);
+        }
+        
         // Parse JSON response to extract artwork URL
         pfc::string8 artwork_url;
         if (!parse_itunes_json(response, artwork_url)) {
-            artwork_result result;
-            result.success = false;
-            result.error_message = "No artwork found in iTunes response";
-            callback(result);
+            // DEBUG: Log parsing failure for song search
+            console::info("iTunes API: No results from SONG search, trying ALBUM search...");
+            
+            // Fallback: try searching as an album instead
+            pfc::string8 album_url = "https://itunes.apple.com/search?term=";
+            album_url << artwork_manager::url_encode(artist_str) << "+" << artwork_manager::url_encode(track_str);
+            album_url << "&entity=album&limit=5";
+            
+            {
+                pfc::string8 debug_msg;
+                debug_msg << "iTunes API: Album search URL=" << album_url;
+                console::info(debug_msg);
+            }
+            
+            async_io_manager::instance().http_get_async(album_url, [callback](bool album_success, const pfc::string8& album_response, const pfc::string8& album_error) {
+                if (!album_success) {
+                    {
+                        pfc::string8 debug_msg;
+                        debug_msg << "iTunes API: Album search HTTP request failed - " << album_error;
+                        console::info(debug_msg);
+                    }
+                    artwork_result result;
+                    result.success = false;
+                    result.error_message = "iTunes API album search failed: ";
+                    result.error_message << album_error;
+                    callback(result);
+                    return;
+                }
+                
+                {
+                    pfc::string8 debug_msg;
+                    debug_msg << "iTunes API: Album search succeeded, response length=" << album_response.get_length();
+                    console::info(debug_msg);
+                }
+                
+                pfc::string8 album_artwork_url;
+                if (!artwork_manager::parse_itunes_json(album_response, album_artwork_url)) {
+                    console::info("iTunes API: No artwork found in either SONG or ALBUM search");
+                    artwork_result result;
+                    result.success = false;
+                    result.error_message = "No artwork found in iTunes response";
+                    callback(result);
+                    return;
+                }
+                
+                // Found artwork URL in album search
+                {
+                    pfc::string8 debug_msg;
+                    debug_msg << "iTunes API: Found artwork URL from ALBUM search=" << album_artwork_url;
+                    console::info(debug_msg);
+                }
+                
+                // Download the artwork image
+                async_io_manager::instance().http_get_binary_async(album_artwork_url, [callback, album_artwork_url](bool download_success, const pfc::array_t<t_uint8>& data, const pfc::string8& download_error) {
+                    artwork_result result;
+                    if (download_success && data.get_size() > 0) {
+                        {
+                            pfc::string8 debug_msg;
+                            debug_msg << "iTunes API: Successfully downloaded artwork from ALBUM search, size=" << data.get_size() << " bytes";
+                            console::info(debug_msg);
+                        }
+                        result.success = true;
+                        result.data = data;
+                        result.mime_type = artwork_manager::detect_mime_type(data.get_ptr(), data.get_size());
+                        result.source = "iTunes";
+                    } else {
+                        {
+                            pfc::string8 debug_msg;
+                            debug_msg << "iTunes API: Failed to download artwork from ALBUM search " << album_artwork_url << " - " << download_error;
+                            console::info(debug_msg);
+                        }
+                        result.success = false;
+                        result.error_message = "Failed to download iTunes artwork: ";
+                        result.error_message << download_error;
+                    }
+                    callback(result);
+                });
+            });
             return;
         }
         
+        // DEBUG: Log artwork URL found
+        {
+            pfc::string8 debug_msg;
+            debug_msg << "iTunes API: Found artwork URL=" << artwork_url;
+            console::info(debug_msg);
+        }
+        
         // Download the artwork image
-        async_io_manager::instance().http_get_binary_async(artwork_url, [callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+        async_io_manager::instance().http_get_binary_async(artwork_url, [callback, artwork_url](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             artwork_result result;
             if (success && data.get_size() > 0) {
+                // DEBUG: Log successful download
+                {
+                    pfc::string8 debug_msg;
+                    debug_msg << "iTunes API: Successfully downloaded artwork, size=" << data.get_size() << " bytes";
+                    console::info(debug_msg);
+                }
                 result.success = true;
                 result.data = data;
                 result.mime_type = detect_mime_type(data.get_ptr(), data.get_size());
                 result.source = "iTunes";  // Set source for OSD display
             } else {
+                // DEBUG: Log download failure
+                {
+                    pfc::string8 debug_msg;
+                    debug_msg << "iTunes API: Failed to download artwork from " << artwork_url << " - " << error;
+                    console::info(debug_msg);
+                }
                 result.success = false;
                 result.error_message = "Failed to download iTunes artwork: ";
                 result.error_message << error;
@@ -503,28 +982,74 @@ void artwork_manager::search_itunes_api_async(const char* artist, const char* al
     });
 }
 
-void artwork_manager::search_discogs_api_async(const char* artist, const char* album, artwork_callback callback) {
-    if (cfg_discogs_key.is_empty()) {
+void artwork_manager::search_discogs_api_async(const char* artist, const char* track, artwork_callback callback) {
+    // DEBUG: Log Discogs API request
+    {
+        pfc::string8 debug_msg;
+        debug_msg << "Discogs API: Searching for artist='" << artist << "', track='" << track << "'";
+        console::info(debug_msg);
+    }
+    
+    // Check if we have either a personal token OR consumer key+secret
+    bool has_token = !cfg_discogs_key.is_empty();
+    bool has_consumer_creds = !cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty();
+    
+    if (!has_token && !has_consumer_creds) {
+        console::info("Discogs API: No authentication configured (need either token OR consumer key+secret), failing");
         async_io_manager::instance().post_to_main_thread([callback]() {
             artwork_result result;
             result.success = false;
-            result.error_message = "Discogs API key not configured";
+            result.error_message = "Discogs API authentication not configured";
             callback(result);
         });
         return;
     }
     
-    // Build Discogs API URL
+    // Build Discogs API URL - search for artist + track (not album)
     pfc::string8 search_query = artist;
-    search_query << " " << album;
+    search_query << " " << track;
     
     pfc::string8 url = "https://api.discogs.com/database/search?q=";
     url << url_encode(search_query);
-    url << "&type=release&token=" << url_encode(cfg_discogs_key.get_ptr());
+    url << "&type=release";
+    
+    // Add authentication - prefer personal token over consumer credentials
+    if (has_token) {
+        console::info("Discogs API: Using personal access token for authentication");
+        url << "&token=" << url_encode(cfg_discogs_key.get_ptr());
+    } else {
+        console::info("Discogs API: Using consumer key+secret for authentication");
+        url << "&key=" << url_encode(cfg_discogs_consumer_key.get_ptr());
+        url << "&secret=" << url_encode(cfg_discogs_consumer_secret.get_ptr());
+    }
+    
+    // DEBUG: Log request URL (without showing credentials for security)
+    {
+        pfc::string8 debug_url = "https://api.discogs.com/database/search?q=";
+        debug_url << url_encode(search_query) << "&type=release";
+        if (has_token) {
+            debug_url << "&token=[HIDDEN]";
+        } else {
+            debug_url << "&key=[HIDDEN]&secret=[HIDDEN]";
+        }
+        pfc::string8 debug_msg;
+        debug_msg << "Discogs API: Request URL=" << debug_url;
+        console::info(debug_msg);
+    }
+    
+    // Copy parameters to avoid lambda capture issues
+    pfc::string8 artist_str = artist;
+    pfc::string8 track_str = track;
     
     // Make async HTTP request
-    async_io_manager::instance().http_get_async(url, [callback](bool success, const pfc::string8& response, const pfc::string8& error) {
+    async_io_manager::instance().http_get_async(url, [callback, artist_str, track_str](bool success, const pfc::string8& response, const pfc::string8& error) {
         if (!success) {
+            // DEBUG: Log Discogs API failure
+            {
+                pfc::string8 debug_msg;
+                debug_msg << "Discogs API: HTTP request failed - " << error;
+                console::info(debug_msg);
+            }
             artwork_result result;
             result.success = false;
             result.error_message = "Discogs API request failed: ";
@@ -533,9 +1058,22 @@ void artwork_manager::search_discogs_api_async(const char* artist, const char* a
             return;
         }
         
+        // DEBUG: Log Discogs API response
+        {
+            pfc::string8 debug_msg;
+            debug_msg << "Discogs API: HTTP request succeeded, response length=" << response.get_length();
+            console::info(debug_msg);
+            
+            debug_msg.reset();
+            debug_msg << "Discogs API: Response=" << response;
+            console::info(debug_msg);
+        }
+        
         // Parse JSON response to extract artwork URL
         pfc::string8 artwork_url;
         if (!parse_discogs_json(response, artwork_url)) {
+            // DEBUG: Log parsing failure
+            console::info("Discogs API: Failed to parse artwork URL from JSON response");
             artwork_result result;
             result.success = false;
             result.error_message = "No artwork found in Discogs response";
@@ -543,15 +1081,34 @@ void artwork_manager::search_discogs_api_async(const char* artist, const char* a
             return;
         }
         
+        // DEBUG: Log artwork URL found
+        {
+            pfc::string8 debug_msg;
+            debug_msg << "Discogs API: Found artwork URL=" << artwork_url;
+            console::info(debug_msg);
+        }
+        
         // Download the artwork image
-        async_io_manager::instance().http_get_binary_async(artwork_url, [callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+        async_io_manager::instance().http_get_binary_async(artwork_url, [callback, artwork_url](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             artwork_result result;
             if (success && data.get_size() > 0) {
+                // DEBUG: Log successful download
+                {
+                    pfc::string8 debug_msg;
+                    debug_msg << "Discogs API: Successfully downloaded artwork, size=" << data.get_size() << " bytes";
+                    console::info(debug_msg);
+                }
                 result.success = true;
                 result.data = data;
                 result.mime_type = detect_mime_type(data.get_ptr(), data.get_size());
                 result.source = "Discogs";  // Set source for OSD display
             } else {
+                // DEBUG: Log download failure
+                {
+                    pfc::string8 debug_msg;
+                    debug_msg << "Discogs API: Failed to download artwork from " << artwork_url << " - " << error;
+                    console::info(debug_msg);
+                }
                 result.success = false;
                 result.error_message = "Failed to download Discogs artwork: ";
                 result.error_message << error;
@@ -879,6 +1436,9 @@ bool artwork_manager::parse_itunes_json(const pfc::string8& json, pfc::string8& 
     // Look for artwork URLs and upgrade to highest available resolution
     const char* json_str = json.get_ptr();
     
+    // DEBUG: Log parsing attempt
+    console::info("iTunes JSON Parser: Starting to parse response");
+    
     // Try multiple artwork URL fields in order of preference
     const char* artwork_fields[] = {
         "\"artworkUrl600\":",    // 600x600 (if available)
@@ -889,14 +1449,32 @@ bool artwork_manager::parse_itunes_json(const pfc::string8& json, pfc::string8& 
     };
     
     for (int i = 0; i < 5; i++) {
+        {
+            pfc::string8 debug_msg;
+            debug_msg << "iTunes JSON Parser: Looking for " << artwork_fields[i];
+            console::info(debug_msg);
+        }
         const char* url_pos = strstr(json_str, artwork_fields[i]);
         if (url_pos) {
-            const char* url_start = strchr(url_pos, '"');
-            if (url_start) {
-                url_start++; // Skip opening quote
-                const char* url_end = strchr(url_start, '"');
-                if (url_end && url_end > url_start) {
+            console::info("iTunes JSON Parser: Found artwork field!");
+            
+            // Find the colon after the field name
+            const char* colon_pos = strchr(url_pos, ':');
+            if (colon_pos) {
+                // Skip past colon and any whitespace, then find opening quote of URL value
+                const char* url_start = colon_pos + 1;
+                while (*url_start == ' ' || *url_start == '\t') url_start++; // Skip whitespace
+                if (*url_start == '"') {
+                    url_start++; // Skip opening quote
+                    const char* url_end = strchr(url_start, '"');
+                    if (url_end && url_end > url_start) {
                     artwork_url = pfc::string8(url_start, url_end - url_start);
+                    
+                    {
+                        pfc::string8 debug_msg;
+                        debug_msg << "iTunes JSON Parser: Extracted URL=" << artwork_url;
+                        console::info(debug_msg);
+                    }
                     
                     // Upgrade any resolution to 1200x1200 using iTunes URL manipulation with quality settings
                     if (artwork_url.find_first("100x100") != pfc_infinite) {
@@ -932,12 +1510,20 @@ bool artwork_manager::parse_itunes_json(const pfc::string8& json, pfc::string8& 
                         }
                     }
                     
-                    return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
+                    bool is_valid = !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
+                    {
+                        pfc::string8 debug_msg;
+                        debug_msg << "iTunes JSON Parser: Final URL validation - empty=" << (artwork_url.is_empty() ? "YES" : "NO") << ", starts_with_http=" << (strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr() ? "YES" : "NO") << ", is_valid=" << (is_valid ? "YES" : "NO");
+                        console::info(debug_msg);
+                    }
+                    return is_valid;
+                    }
                 }
             }
         }
     }
     
+    console::info("iTunes JSON Parser: No artwork fields found in JSON");
     return false;
 }
 
@@ -1113,21 +1699,44 @@ bool artwork_manager::parse_discogs_json(const pfc::string8& json, pfc::string8&
     // Look for "thumb" or "cover_image" field in results
     const char* json_str = json.get_ptr();
     
+    // DEBUG: Log parsing attempt
+    console::info("Discogs JSON Parser: Starting to parse response");
+    
     // Look for results array
     const char* results_pos = strstr(json_str, "\"results\":");
-    if (!results_pos) return false;
+    if (!results_pos) {
+        console::info("Discogs JSON Parser: No 'results' array found in JSON");
+        return false;
+    }
+    
+    console::info("Discogs JSON Parser: Found results array");
     
     // Try cover_image first (higher quality)
     const char* cover_pos = strstr(results_pos, "\"cover_image\":");
     if (cover_pos) {
-        const char* url_start = strchr(cover_pos, '"');
-        if (url_start) {
-            url_start++; // Skip opening quote
-            const char* url_end = strchr(url_start, '"');
-            if (url_end && url_end > url_start) {
-                artwork_url = pfc::string8(url_start, url_end - url_start);
-                if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr()) {
-                    return true;
+        console::info("Discogs JSON Parser: Found 'cover_image' field");
+        
+        // Find the colon after the field name
+        const char* colon_pos = strchr(cover_pos, ':');
+        if (colon_pos) {
+            // Skip past colon and any whitespace, then find opening quote of URL value
+            const char* url_start = colon_pos + 1;
+            while (*url_start == ' ' || *url_start == '\t') url_start++; // Skip whitespace
+            if (*url_start == '"') {
+                url_start++; // Skip opening quote
+                const char* url_end = strchr(url_start, '"');
+                if (url_end && url_end > url_start) {
+                    artwork_url = pfc::string8(url_start, url_end - url_start);
+                    
+                    {
+                        pfc::string8 debug_msg;
+                        debug_msg << "Discogs JSON Parser: Extracted cover_image URL=" << artwork_url;
+                        console::info(debug_msg);
+                    }
+                    
+                    if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr()) {
+                        return true;
+                    }
                 }
             }
         }
@@ -1136,35 +1745,76 @@ bool artwork_manager::parse_discogs_json(const pfc::string8& json, pfc::string8&
     // Fallback to thumb
     const char* thumb_pos = strstr(results_pos, "\"thumb\":");
     if (thumb_pos) {
-        const char* url_start = strchr(thumb_pos, '"');
-        if (url_start) {
-            url_start++; // Skip opening quote
-            const char* url_end = strchr(url_start, '"');
-            if (url_end && url_end > url_start) {
-                artwork_url = pfc::string8(url_start, url_end - url_start);
-                return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
+        console::info("Discogs JSON Parser: Trying 'thumb' field as fallback");
+        
+        // Find the colon after the field name
+        const char* colon_pos = strchr(thumb_pos, ':');
+        if (colon_pos) {
+            // Skip past colon and any whitespace, then find opening quote of URL value
+            const char* url_start = colon_pos + 1;
+            while (*url_start == ' ' || *url_start == '\t') url_start++; // Skip whitespace
+            if (*url_start == '"') {
+                url_start++; // Skip opening quote
+                const char* url_end = strchr(url_start, '"');
+                if (url_end && url_end > url_start) {
+                    artwork_url = pfc::string8(url_start, url_end - url_start);
+                    
+                    {
+                        pfc::string8 debug_msg;
+                        debug_msg << "Discogs JSON Parser: Extracted thumb URL=" << artwork_url;
+                        console::info(debug_msg);
+                    }
+                    
+                    return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
+                }
             }
         }
     }
     
+    console::info("Discogs JSON Parser: No artwork URLs found in JSON");
     return false;
 }
 
-void artwork_manager::search_musicbrainz_api_async(const char* artist, const char* album, artwork_callback callback) {
+void artwork_manager::search_musicbrainz_api_async(const char* artist, const char* track, artwork_callback callback) {
     // MusicBrainz does not require authentication but uses a two-step process:
     // 1. Search for release ID
     // 2. Get cover art from Cover Art Archive
     
-    pfc::string8 search_query = "artist:\"";
-    search_query << artist << "\" AND release:\"" << album << "\"";
+    // DEBUG: Log MusicBrainz API request
+    {
+        pfc::string8 debug_msg;
+        debug_msg << "MusicBrainz API: Searching for artist='" << artist << "', track='" << track << "'";
+        console::info(debug_msg);
+    }
     
-    pfc::string8 url = "http://musicbrainz.org/ws/2/release/?query=";
+    // Try searching for recordings (tracks) first, which is more appropriate for individual tracks
+    pfc::string8 search_query = "artist:\"";
+    search_query << artist << "\" AND recording:\"" << track << "\"";
+    
+    pfc::string8 url = "http://musicbrainz.org/ws/2/recording/?query=";
     url << url_encode(search_query);
-    url << "&fmt=json&limit=1";
+    url << "&fmt=json&limit=5&inc=releases";  // Include releases to get release IDs
+    
+    // DEBUG: Log request URL
+    {
+        pfc::string8 debug_msg;
+        debug_msg << "MusicBrainz API: Request URL=" << url;
+        console::info(debug_msg);
+    }
+    
+    // Copy parameters to avoid lambda capture issues
+    pfc::string8 artist_str = artist;
+    pfc::string8 track_str = track;
     
     // Make async HTTP request to get release ID
-    async_io_manager::instance().http_get_async(url, [callback](bool success, const pfc::string8& response, const pfc::string8& error) {
+    async_io_manager::instance().http_get_async(url, [callback, artist_str, track_str](bool success, const pfc::string8& response, const pfc::string8& error) {
         if (!success) {
+            // DEBUG: Log MusicBrainz API failure
+            {
+                pfc::string8 debug_msg;
+                debug_msg << "MusicBrainz API: HTTP request failed - " << error;
+                console::info(debug_msg);
+            }
             artwork_result result;
             result.success = false;
             result.error_message = "MusicBrainz API request failed: ";
@@ -1173,9 +1823,22 @@ void artwork_manager::search_musicbrainz_api_async(const char* artist, const cha
             return;
         }
         
+        // DEBUG: Log MusicBrainz API response
+        {
+            pfc::string8 debug_msg;
+            debug_msg << "MusicBrainz API: HTTP request succeeded, response length=" << response.get_length();
+            console::info(debug_msg);
+            
+            debug_msg.reset();
+            debug_msg << "MusicBrainz API: Response=" << response;
+            console::info(debug_msg);
+        }
+        
         // Parse JSON response to extract release ID
         pfc::string8 release_id;
         if (!parse_musicbrainz_json(response, release_id)) {
+            // DEBUG: Log parsing failure
+            console::info("MusicBrainz API: Failed to parse release ID from JSON response");
             artwork_result result;
             result.success = false;
             result.error_message = "No release found in MusicBrainz response";
@@ -1183,19 +1846,63 @@ void artwork_manager::search_musicbrainz_api_async(const char* artist, const cha
             return;
         }
         
+        // DEBUG: Log release ID found
+        {
+            pfc::string8 debug_msg;
+            debug_msg << "MusicBrainz API: Found release ID=" << release_id;
+            console::info(debug_msg);
+        }
+        
         // Now get artwork from Cover Art Archive
         pfc::string8 coverart_url = "http://coverartarchive.org/release/";
         coverart_url << release_id << "/front";
         
+        // DEBUG: Log Cover Art Archive request
+        {
+            pfc::string8 debug_msg;
+            debug_msg << "MusicBrainz API: Downloading artwork from Cover Art Archive URL=" << coverart_url;
+            console::info(debug_msg);
+        }
+        
         // Download the artwork image (Cover Art Archive redirects to actual image)
-        async_io_manager::instance().http_get_binary_async(coverart_url, [callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+        async_io_manager::instance().http_get_binary_async(coverart_url, [callback, coverart_url](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             artwork_result result;
             if (success && data.get_size() > 0) {
-                result.success = true;
-                result.data = data;
-                result.mime_type = detect_mime_type(data.get_ptr(), data.get_size());
-                result.source = "MusicBrainz";  // Set source for OSD display
+                // Check if this is a valid image or just a small error response
+                bool is_valid_image = is_valid_image_data(data.get_ptr(), data.get_size());
+                pfc::string8 mime_type = detect_mime_type(data.get_ptr(), data.get_size());
+                
+                // DEBUG: Log successful download with validation info
+                {
+                    pfc::string8 debug_msg;
+                    debug_msg << "MusicBrainz API: Downloaded data, size=" << data.get_size() << " bytes, mime_type=" << mime_type << ", is_valid_image=" << (is_valid_image ? "YES" : "NO");
+                    console::info(debug_msg);
+                    
+                    // Log first few bytes to help identify the content
+                    if (data.get_size() >= 4) {
+                        debug_msg.reset();
+                        debug_msg << "MusicBrainz API: First 4 bytes: 0x" << pfc::format_hex(data.get_ptr()[0], 2) << " 0x" << pfc::format_hex(data.get_ptr()[1], 2) << " 0x" << pfc::format_hex(data.get_ptr()[2], 2) << " 0x" << pfc::format_hex(data.get_ptr()[3], 2);
+                        console::info(debug_msg);
+                    }
+                }
+                
+                if (is_valid_image && data.get_size() > 512) {  // Reject very small files that might be error pages
+                    result.success = true;
+                    result.data = data;
+                    result.mime_type = mime_type;
+                    result.source = "MusicBrainz";  // Set source for OSD display
+                } else {
+                    console::info("MusicBrainz API: Downloaded data is too small or not a valid image, treating as failure");
+                    result.success = false;
+                    result.error_message = "Downloaded data is not a valid image or too small";
+                }
             } else {
+                // DEBUG: Log download failure
+                {
+                    pfc::string8 debug_msg;
+                    debug_msg << "MusicBrainz API: Failed to download artwork from " << coverart_url << " - " << error;
+                    console::info(debug_msg);
+                }
                 result.success = false;
                 result.error_message = "Failed to download MusicBrainz artwork: ";
                 result.error_message << error;
@@ -1207,26 +1914,88 @@ void artwork_manager::search_musicbrainz_api_async(const char* artist, const cha
 
 bool artwork_manager::parse_musicbrainz_json(const pfc::string8& json, pfc::string8& release_id) {
     // Simple JSON parsing for MusicBrainz response
-    // Look for first release ID in releases array
+    // Handle both recordings API and releases API response formats
     const char* json_str = json.get_ptr();
     
-    // Look for releases array
-    const char* releases_pos = strstr(json_str, "\"releases\":");
-    if (!releases_pos) return false;
+    // DEBUG: Log parsing attempt
+    console::info("MusicBrainz JSON Parser: Starting to parse response");
     
-    // Look for first id field after releases
-    const char* id_pos = strstr(releases_pos, "\"id\":");
-    if (id_pos) {
-        const char* id_start = strchr(id_pos, '"');
-        if (id_start) {
-            id_start++; // Skip opening quote
-            const char* id_end = strchr(id_start, '"');
-            if (id_end && id_end > id_start) {
-                release_id = pfc::string8(id_start, id_end - id_start);
-                return !release_id.is_empty();
+    // First try recordings format (recordings array with nested releases)
+    const char* recordings_pos = strstr(json_str, "\"recordings\":");
+    if (recordings_pos) {
+        console::info("MusicBrainz JSON Parser: Found recordings array, looking for nested releases");
+        
+        // Look for releases within the first recording
+        const char* releases_pos = strstr(recordings_pos, "\"releases\":");
+        if (releases_pos) {
+            console::info("MusicBrainz JSON Parser: Found nested releases array");
+            
+            // Look for first id field after releases
+            const char* id_pos = strstr(releases_pos, "\"id\":");
+            if (id_pos) {
+                console::info("MusicBrainz JSON Parser: Found 'id' field in releases");
+                
+                // Find the colon after the field name
+                const char* colon_pos = strchr(id_pos, ':');
+                if (colon_pos) {
+                    // Skip past colon and any whitespace, then find opening quote of ID value
+                    const char* id_start = colon_pos + 1;
+                    while (*id_start == ' ' || *id_start == '\t') id_start++; // Skip whitespace
+                    if (*id_start == '"') {
+                        id_start++; // Skip opening quote
+                        const char* id_end = strchr(id_start, '"');
+                        if (id_end && id_end > id_start) {
+                            release_id = pfc::string8(id_start, id_end - id_start);
+                            
+                            {
+                                pfc::string8 debug_msg;
+                                debug_msg << "MusicBrainz JSON Parser: Extracted release ID from recordings=" << release_id;
+                                console::info(debug_msg);
+                            }
+                            
+                            return !release_id.is_empty();
+                        }
+                    }
+                }
             }
         }
     }
     
+    // Fallback to releases format (direct releases array)
+    const char* releases_pos = strstr(json_str, "\"releases\":");
+    if (releases_pos) {
+        console::info("MusicBrainz JSON Parser: Found direct releases array");
+        
+        // Look for first id field after releases
+        const char* id_pos = strstr(releases_pos, "\"id\":");
+        if (id_pos) {
+            console::info("MusicBrainz JSON Parser: Found 'id' field in direct releases");
+            
+            // Find the colon after the field name
+            const char* colon_pos = strchr(id_pos, ':');
+            if (colon_pos) {
+                // Skip past colon and any whitespace, then find opening quote of ID value
+                const char* id_start = colon_pos + 1;
+                while (*id_start == ' ' || *id_start == '\t') id_start++; // Skip whitespace
+                if (*id_start == '"') {
+                    id_start++; // Skip opening quote
+                    const char* id_end = strchr(id_start, '"');
+                    if (id_end && id_end > id_start) {
+                        release_id = pfc::string8(id_start, id_end - id_start);
+                        
+                        {
+                            pfc::string8 debug_msg;
+                            debug_msg << "MusicBrainz JSON Parser: Extracted release ID from direct releases=" << release_id;
+                            console::info(debug_msg);
+                        }
+                        
+                        return !release_id.is_empty();
+                    }
+                }
+            }
+        }
+    }
+    
+    console::info("MusicBrainz JSON Parser: No release ID found in JSON");
     return false;
 }
