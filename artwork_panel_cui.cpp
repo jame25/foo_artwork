@@ -46,6 +46,7 @@
 // Include the unified artwork viewer popup and metadata cleaner
 #include "artwork_viewer_popup.h"
 #include "metadata_cleaner.h"
+#include "artwork_manager.h"
 
 // Include necessary foobar2000 SDK headers for artwork and playback callbacks
 #include "columns_ui/foobar2000/SDK/album_art.h"
@@ -65,7 +66,7 @@ using namespace Gdiplus;
 //=============================================================================
 
 // Forward declare classes from main component
-class artwork_manager;
+// artwork_manager is now included via artwork_manager.h
 
 // External instances from main component
 extern std::unique_ptr<artwork_manager> g_artwork_manager;
@@ -76,6 +77,7 @@ extern std::wstring g_current_artwork_path;
 
 // Global preference settings
 extern cfg_bool cfg_show_osd;
+extern cfg_int cfg_stream_delay;
 extern cfg_bool cfg_enable_custom_logos;
 extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
@@ -280,6 +282,8 @@ private:
     // Safe track information access
     bool get_safe_track_path(metadb_handle_ptr track, pfc::string8& path);
     bool is_safe_internet_stream(metadb_handle_ptr track);
+    bool is_stream_with_possible_artwork(metadb_handle_ptr track);
+    bool is_youtube_stream(metadb_handle_ptr track);
     void cleanup_gdiplus();
     bool copy_bitmap_from_main_component(HBITMAP source_bitmap);
     bool load_custom_logo_with_wic(HBITMAP logo_bitmap);  // WIC-based safe loading for CUI
@@ -525,6 +529,11 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             // Fallback timer - no Default UI panel detected, handle station logos ourselves
             KillTimer(m_hWnd, 100);
             
+            // CHECK: Only trigger fallback if we don't already have tagged artwork
+            if (m_artwork_loaded && !m_artwork_source.empty() && m_artwork_source == "Local artwork") {
+                break;
+            }
+            
             // Try to load station logo for internet stream
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
@@ -539,6 +548,11 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         } else if (wParam == 101) {
             // Stream delay timer fired - now do the delayed search
             KillTimer(m_hWnd, 101);
+            
+            // CHECK: Only trigger API search if we don't already have tagged artwork  
+            if (m_artwork_loaded && !m_artwork_source.empty() && m_artwork_source == "Local artwork") {
+                break;
+            }
             
             // Use stored metadata for delayed search
             if (!m_delayed_search_title.empty()) {
@@ -597,14 +611,28 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 delete source_ptr;
             }
             
+            // PRIORITY CHECK: Don't let API results override tagged artwork
+            if (m_artwork_loaded && !m_artwork_source.empty() && 
+                m_artwork_source == "Local artwork" && artwork_source != "Local artwork") {
+                break;
+            }
+            
             // Now it's safe to call UI functions since we're on the main thread
             if (bitmap && copy_bitmap_from_main_component(bitmap)) {
                 // Update the member variable with the correct source
                 m_artwork_source = artwork_source;
                 
+                // IMPORTANT: Kill all fallback timers since we found artwork
+                if (artwork_source == "Local artwork") {
+                    KillTimer(m_hWnd, 100); // Metadata arrival timer
+                    KillTimer(m_hWnd, 101); // Stream delay timer
+                }
+                
                 // Only show OSD for online sources, not local files
                 if (artwork_source != "Local file" && !artwork_source.empty()) {
                     show_osd("Artwork from " + artwork_source);
+                } else if (artwork_source == "Local artwork") {
+                    show_osd("Tagged artwork");
                 }
                 
                 InvalidateRect(m_hWnd, NULL, FALSE);
@@ -617,6 +645,10 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         
     case WM_USER + 11: // Handle -noart fallback on main thread
         {
+            // CHECK: Don't override existing tagged artwork with fallback images
+            if (m_artwork_loaded && !m_artwork_source.empty() && m_artwork_source == "Local artwork") {
+                break;
+            }
             
             // Now it's safe to access foobar2000 APIs and UI functions
             try {
@@ -885,52 +917,115 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
     
     if (p_track.is_valid()) {
         
-        // PRIORITY FIX: For local files, immediately trigger main component local artwork search
-        // This ensures local files are found before embedded artwork loads
-        
-        // SAFE PATH HANDLING: Use safer helper function
+        // SAFE PATH HANDLING: Use safer helper function for stream detection  
         pfc::string8 file_path;
-        bool is_local_file = false;
+        bool is_internet_stream = false;
         if (get_safe_track_path(p_track, file_path)) {
-            is_local_file = (strstr(file_path.c_str(), "file://") == file_path.c_str()) || 
-                           !(strstr(file_path.c_str(), "://"));
+            is_internet_stream = (strstr(file_path.c_str(), "://") && 
+                                !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
         }
         
-        if (is_local_file) {
-            // Force main component to search for local artwork immediately
-            trigger_main_component_local_search(p_track);
+        // Check if this stream can have embedded artwork (like YouTube videos)
+        bool can_have_embedded_artwork = !is_internet_stream || is_stream_with_possible_artwork(p_track);
+        
+        if (can_have_embedded_artwork) {
+            // For local files and streams that can have embedded artwork (YouTube videos),
+            // try to load tagged artwork first
+            // Clear any existing artwork loading state to avoid conflicts
+            m_artwork_loaded = false;
+            
+            // Use the artwork manager directly to try tagged artwork first
+            artwork_manager::get_artwork_async(p_track, [this, p_track](const artwork_manager::artwork_result& result) {
+                // Check if tagged artwork succeeded for YouTube streams
+                if (result.success && result.data.get_size() > 0 && is_youtube_stream(p_track)) {
+                    // Detect the image format
+                    pfc::string8 mime_type = artwork_manager::detect_mime_type(result.data.get_ptr(), result.data.get_size());
+                    if (mime_type == "image/webp") {
+                        // This is WebP format - trigger API search instead of loading
+                        // Check if we have metadata for API search
+                        metadb_info_container::ptr info_container = p_track->get_info_ref();
+                        if (info_container.is_valid()) {
+                            const file_info& info = info_container->info();
+                            
+                            const char* artist_ptr = info.meta_get("ARTIST", 0);
+                            const char* title_ptr = info.meta_get("TITLE", 0);
+                            
+                            if (artist_ptr && title_ptr && strlen(artist_ptr) > 0 && strlen(title_ptr) > 0) {
+                                // We have valid metadata - trigger API search instead of using WebP
+                                pfc::string8 artist = artist_ptr;
+                                pfc::string8 title = title_ptr;
+                                
+                                // Clean metadata for search
+                                std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
+                                std::string cleaned_title = MetadataCleaner::clean_for_search(title.c_str(), true);
+                                
+                                // Validate metadata
+                                if (MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_title.c_str())) {
+                                    // Trigger API search instead of using WebP artwork
+                                    trigger_main_component_search_with_metadata(cleaned_artist, cleaned_title);
+                                    return; // Exit early - API results will come via event system
+                                }
+                            }
+                        }
+                        // If we can't do API search, fall through to WebP loading attempt (will likely fail)
+                    }
+                }
+                
+                // Either not a YouTube stream, not WebP format, no metadata, or other result
+                // This will be handled by the event system via on_artwork_event
+            });
         } else {
-            // For internet streams, check if it's an online playlist with metadata
+            // For internet radio streams that cannot have embedded artwork,
+            // skip tagged artwork search to avoid cached results from previous searches
+            // Clear any existing artwork loading state
+            m_artwork_loaded = false;
+        }
+        
+        // Also call the compatibility function for logging
+        trigger_main_component_local_search(p_track);
+        
+        // For internet streams, ALSO set up metadata timers for fallback
+        if (is_internet_stream) {
+            // Kill any existing timers
+            KillTimer(m_hWnd, 100); // Metadata arrival timer
+            KillTimer(m_hWnd, 101); // Stream delay timer
             
             // Try to get metadata immediately for online playlists
             file_info_impl info;
+            bool has_immediate_metadata = false;
+            std::string artist, title;
+            
             if (p_track->get_info(info)) {
-                
-                std::string artist, title;
                 if (info.meta_get("ARTIST", 0)) {
                     artist = info.meta_get("ARTIST", 0);
                 }
                 if (info.meta_get("TITLE", 0)) {
                     title = info.meta_get("TITLE", 0);
                 }
-                
-                // If we have valid metadata, trigger API search immediately
-                if (!artist.empty() && !title.empty()) {
-                    
-                    // Apply metadata cleaning
-                    std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
-                    std::string final_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
-                    std::string final_title = MetadataCleaner::clean_for_search(title.c_str(), true);
-                    
-                    // Trigger API search
-                    trigger_main_component_search_with_metadata(final_artist, final_title);
-                } else {
-                    // For internet streams without immediate metadata, let the main component handle the stream delay for metadata search
-                }
-            } else {
-                // For internet streams, let the main component handle the stream delay for metadata search
+                has_immediate_metadata = !artist.empty() && !title.empty();
             }
-            // API search should always be the primary priority, station logos are fallbacks only
+                
+            // If we have valid metadata AND no stream delay configured, search immediately
+            if (has_immediate_metadata && cfg_stream_delay == 0) {
+                // Apply metadata cleaning
+                std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
+                std::string final_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
+                std::string final_title = MetadataCleaner::clean_for_search(title.c_str(), true);
+                
+                // Trigger API search immediately
+                trigger_main_component_search_with_metadata(final_artist, final_title);
+            } else {
+                // Either no immediate metadata OR stream delay is configured
+                if (cfg_stream_delay > 0) {
+                    // Use configured stream delay - store metadata for later use
+                    m_delayed_search_artist = artist;
+                    m_delayed_search_title = title;
+                    SetTimer(m_hWnd, 101, cfg_stream_delay * 1000, NULL); // Timer ID 101, stream delay timeout
+                } else {
+                    // No stream delay but no immediate metadata - use short fallback timer
+                    SetTimer(m_hWnd, 100, 3000, NULL); // Timer ID 100, 3 second timeout
+                }
+            }
         }
         
         // Check if main component's artwork manager has artwork for this track
@@ -2324,6 +2419,82 @@ bool CUIArtworkPanel::is_safe_internet_stream(metadb_handle_ptr track) {
     
     return true; // This appears to be an internet stream
 }
+
+bool CUIArtworkPanel::is_stream_with_possible_artwork(metadb_handle_ptr track) {
+    if (!track.is_valid()) return false;
+    
+    try {
+        pfc::string8 path;
+        if (!get_safe_track_path(track, path) || path.is_empty()) {
+            return false;
+        }
+        
+        // Check if this is a stream that can have embedded artwork
+        // YouTube videos and similar services can have embedded thumbnails
+        const char* path_str = path.c_str();
+        
+        // YouTube videos (can have embedded thumbnails)
+        if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") || 
+            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com")) {
+            return true;
+        }
+        
+        // Other video platforms that might have embedded artwork
+        if (strstr(path_str, "vimeo.com") || strstr(path_str, "dailymotion.com") || 
+            strstr(path_str, "twitch.tv") || strstr(path_str, "facebook.com")) {
+            return true;
+        }
+        
+        // Streaming services that provide artwork in their streams
+        if (strstr(path_str, "spotify.com") || strstr(path_str, "deezer.com") || 
+            strstr(path_str, "soundcloud.com") || strstr(path_str, "bandcamp.com")) {
+            return true;
+        }
+        
+        // Check for file extensions that suggest video/audio files with possible artwork
+        if (strstr(path_str, ".mp4") || strstr(path_str, ".m4v") || strstr(path_str, ".mkv") ||
+            strstr(path_str, ".webm") || strstr(path_str, ".mov") || strstr(path_str, ".avi")) {
+            return true;
+        }
+        
+        // Audio formats that commonly have embedded artwork
+        if (strstr(path_str, ".m4a") || strstr(path_str, ".aac") || strstr(path_str, ".mp3")) {
+            return true;
+        }
+        
+        // For all other streams (like pure internet radio), assume no embedded artwork
+        return false;
+        
+    } catch (...) {
+        // On error, assume no embedded artwork to be safe
+        return false;
+    }
+}
+
+bool CUIArtworkPanel::is_youtube_stream(metadb_handle_ptr track) {
+    if (!track.is_valid()) return false;
+    
+    try {
+        pfc::string8 path;
+        if (!get_safe_track_path(track, path) || path.is_empty()) {
+            return false;
+        }
+        
+        const char* path_str = path.c_str();
+        
+        // YouTube videos
+        if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") || 
+            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com")) {
+            return true;
+        }
+        
+        return false;
+        
+    } catch (...) {
+        return false;
+    }
+}
+
 // HELPER Inverted internet stream detection
 bool CUIArtworkPanel::is_inverted_internet_stream(metadb_handle_ptr track, const file_info& p_info) {
     if (!track.is_valid()) {
