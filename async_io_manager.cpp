@@ -170,17 +170,29 @@ void async_io_manager::assert_background_thread() const {
 
 // Thread Pool Implementation
 async_io_manager::thread_pool::thread_pool(size_t threads) : stop(false) {
+    // Create auto-reset event for thread signaling
+    condition_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    
     for (size_t i = 0; i < threads; ++i) {
         workers.emplace_back([this] {
             for (;;) {
                 std::function<void()> task;
-                {
-                    std::unique_lock<std::mutex> lock(queue_mutex);
-                    condition.wait(lock, [this] { return stop || !tasks.empty(); });
-                    if (stop && tasks.empty()) return;
-                    task = std::move(tasks.front());
-                    tasks.pop();
+                
+                // Wait for work or shutdown signal
+                while (true) {
+                    {
+                        std::unique_lock<std::mutex> lock(queue_mutex);
+                        if (stop && tasks.empty()) return;
+                        if (!tasks.empty()) {
+                            task = std::move(tasks.front());
+                            tasks.pop();
+                            break;
+                        }
+                    }
+                    // Wait for signal
+                    WaitForSingleObject(condition_event, INFINITE);
                 }
+                
                 try {
                     task();
                 } catch (const std::exception& e) {
@@ -202,13 +214,24 @@ void async_io_manager::thread_pool::shutdown() {
         std::unique_lock<std::mutex> lock(queue_mutex);
         stop = true;
     }
-    condition.notify_all();
+    
+    // Signal all waiting threads multiple times to ensure they wake up
+    for (size_t i = 0; i < workers.size(); ++i) {
+        SetEvent(condition_event);
+    }
+    
     for (std::thread& worker : workers) {
         if (worker.joinable()) {
             worker.join();
         }
     }
     workers.clear();
+    
+    // Clean up the event handle
+    if (condition_event != NULL) {
+        CloseHandle(condition_event);
+        condition_event = NULL;
+    }
 }
 
 // Overlapped I/O Implementation
@@ -472,10 +495,18 @@ void async_io_manager::perform_directory_scan(const pfc::string8& directory, con
 
 // Async Cache Implementation
 async_io_manager::async_cache::async_cache() : shutdown_requested(false) {
+    // Create auto-reset event for write thread signaling
+    write_condition_event = CreateEvent(NULL, FALSE, FALSE, NULL);
 }
 
 async_io_manager::async_cache::~async_cache() {
     shutdown();
+    
+    // Clean up the event handle
+    if (write_condition_event != NULL) {
+        CloseHandle(write_condition_event);
+        write_condition_event = NULL;
+    }
 }
 
 void async_io_manager::async_cache::initialize(const pfc::string8& cache_dir) {
@@ -492,7 +523,7 @@ void async_io_manager::async_cache::initialize(const pfc::string8& cache_dir) {
 
 void async_io_manager::async_cache::shutdown() {
     shutdown_requested = true;
-    write_condition.notify_all();
+    SetEvent(write_condition_event);  // Signal write thread to wake up
     
     if (write_thread.joinable()) {
         write_thread.join();
@@ -552,7 +583,7 @@ void async_io_manager::async_cache::set_async(const pfc::string8& key, const pfc
         std::lock_guard<std::mutex> lock(write_queue_mutex);
         write_queue.emplace(key, data);
     }
-    write_condition.notify_one();
+    SetEvent(write_condition_event);  // Signal write thread
     
     if (callback) {
         instance().post_to_main_thread([callback]() {
@@ -563,14 +594,22 @@ void async_io_manager::async_cache::set_async(const pfc::string8& key, const pfc
 
 void async_io_manager::async_cache::write_worker() {
     while (!shutdown_requested) {
-        std::unique_lock<std::mutex> lock(write_queue_mutex);
-        write_condition.wait(lock, [this]() {
-            return !write_queue.empty() || shutdown_requested;
-        });
-        
-        if (shutdown_requested && write_queue.empty()) {
-            break;
+        // Wait for work or shutdown signal
+        while (true) {
+            {
+                std::unique_lock<std::mutex> lock(write_queue_mutex);
+                if (shutdown_requested && write_queue.empty()) {
+                    return;
+                }
+                if (!write_queue.empty()) {
+                    break;
+                }
+            }
+            // Wait for signal
+            WaitForSingleObject(write_condition_event, INFINITE);
         }
+        
+        std::unique_lock<std::mutex> lock(write_queue_mutex);
         
         if (!write_queue.empty()) {
             auto item = std::move(write_queue.front());
