@@ -195,34 +195,8 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback) {
     // Try APIs in sequence: iTunes -> Deezer -> Last.fm -> MusicBrainz -> Discogs
     
-    // DEBUG: Log which APIs are enabled
-    pfc::string8 debug_msg;
-    debug_msg << "Artwork Search: Starting API search for artist='" << artist << "', track='" << track << "'";
-    console::info(debug_msg);
-    
-    debug_msg.reset();
-    debug_msg << "Artwork Search: iTunes enabled=" << (cfg_enable_itunes ? "YES" : "NO");
-    console::info(debug_msg);
-    
-    debug_msg.reset();
-    debug_msg << "Artwork Search: Deezer enabled=" << (cfg_enable_deezer ? "YES" : "NO");
-    console::info(debug_msg);
-    
-    debug_msg.reset();
-    debug_msg << "Artwork Search: LastFM enabled=" << (cfg_enable_lastfm ? "YES" : "NO") << ", key configured=" << (!cfg_lastfm_key.is_empty() ? "YES" : "NO");
-    console::info(debug_msg);
-    
-    debug_msg.reset();
-    debug_msg << "Artwork Search: MusicBrainz enabled=" << (cfg_enable_musicbrainz ? "YES" : "NO");
-    console::info(debug_msg);
-    
-    debug_msg.reset();
-    bool discogs_auth_configured = !cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty());
-    debug_msg << "Artwork Search: Discogs enabled=" << (cfg_enable_discogs ? "YES" : "NO") << ", auth configured=" << (discogs_auth_configured ? "YES" : "NO");
-    console::info(debug_msg);
     
     if (cfg_enable_itunes) {
-        console::info("Artwork Search: Starting with iTunes API");
         search_itunes_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
@@ -545,7 +519,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
         });
     } else if (cfg_enable_deezer) {
         // iTunes disabled - start with Deezer
-        console::info("Artwork Search: Starting with Deezer API");
         search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
@@ -644,7 +617,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
         });
     } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
         // iTunes and Deezer disabled - start with Last.fm
-        console::info("Artwork Search: Starting with LastFM API");
         search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
@@ -693,7 +665,6 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
         });
     } else if (cfg_enable_musicbrainz) {
         // iTunes, Deezer, and LastFM disabled - start with MusicBrainz
-        console::info("Artwork Search: Starting with MusicBrainz API");
         search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
             if (result.success) {
                 // Only cache if cache_key is not empty (empty means internet stream)
