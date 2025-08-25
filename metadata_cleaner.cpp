@@ -30,6 +30,13 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
         pos += 1;
     }
     
+    //Remove UTF-8 BOM
+    pos = 0;
+    while ((pos = str.find("\xEF\xBB\xBF", pos)) != std::string::npos) { // utf-8 bom
+        str.replace(pos, 3, "");
+        pos += 1;
+    }
+
     // Remove timestamp patterns at the end (from v1.5.8)
     // Pattern 1: " - MM:SS" or " - M:SS" (like " - 0:00")
     str = std::regex_replace(str, std::regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$"), "");
