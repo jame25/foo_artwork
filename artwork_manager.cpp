@@ -84,7 +84,7 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
 void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
     
-    // Extract metadata on main thread (this is fast)
+    // Extract metadata and path on main thread (this is fast)
     metadb_info_container::ptr info_container = track->get_info_ref();
     const file_info* info = &info_container->info();
     
@@ -94,8 +94,19 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     
     pfc::string8 cache_key = generate_cache_key(artist, track_name);
     
-    // Start async pipeline: Cache -> Local -> APIs
-    check_cache_async(cache_key, track, callback);
+    // CACHE SKIP FOR INTERNET STREAMS: For internet streams, metadata is often wrong initially
+    // (belongs to previous track), causing wrong cached artwork to be returned.
+    // Skip cache and go directly to local (tagged) artwork search.
+    bool is_internet_stream = (strstr(file_path.c_str(), "://") && 
+                              !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
+    
+    if (is_internet_stream) {
+        // Skip cache for internet streams - go directly to local artwork search
+        search_local_async(file_path, cache_key, track, callback);
+    } else {
+        // For local files, use normal cache -> local -> APIs pipeline
+        check_cache_async(cache_key, track, callback);
+    }
 }
 
 void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
@@ -137,31 +148,8 @@ void artwork_manager::search_apis_async_metadata(const pfc::string8& artist, con
 
 void artwork_manager::search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
     
-    // Check if this is actually a local file (including file:// URLs)
-    bool is_local_file = true;
-    if (file_path.is_empty()) {
-        is_local_file = false;
-    } else {
-        // Check for internet protocols, but exclude file:// which is local
-        t_size protocol_pos = pfc::string_find_first(file_path, "://", 1);
-        if (protocol_pos != pfc_infinite) {
-            // Has a protocol - check if it's file://
-            if (pfc::string_find_first(file_path, "file://", 0) != 0) {
-                // Not file:// protocol, so it's an internet stream
-                is_local_file = false;
-            }
-        }
-    }
-    
-    if (!is_local_file) {
-        // Not a local file - skip to API search
-        metadb_info_container::ptr info_container = track->get_info_ref();
-        const file_info* info = &info_container->info();
-        pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "Unknown Artist";
-        pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
-        search_apis_async(artist, track_name, cache_key, callback);
-        return;
-    }
+    // ALWAYS try to find tagged artwork first, regardless of local/internet file type
+    // Internet streams (like YouTube videos) can have embedded artwork too
     
     find_local_artwork_async(track, [cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
@@ -396,6 +384,7 @@ void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::s
 
 void artwork_manager::find_local_artwork_async(metadb_handle_ptr track, artwork_callback callback) {
     // Use album_art_manager_v2 from SDK exclusively - no custom logic
+    
     async_io_manager::instance().submit_task([track, callback]() {
         artwork_result result;
         result.success = false;
@@ -409,26 +398,49 @@ void artwork_manager::find_local_artwork_async(metadb_handle_ptr track, artwork_
                 return;
             }
             
+            // Try multiple artwork IDs in priority order to find any available tagged artwork
+            const GUID artwork_ids[] = {
+                album_art_ids::cover_front,  // Front cover (most common)
+                album_art_ids::disc,         // Disc/media artwork
+                album_art_ids::artist,       // Artist image
+                album_art_ids::icon,         // Icon artwork
+                album_art_ids::cover_back    // Back cover (least preferred)
+            };
             
-            // Use album_art_manager_v2 to find artwork (embedded + external per user preferences)
+            const char* artwork_names[] = {
+                "Front Cover",
+                "Disc/Media",
+                "Artist Image", 
+                "Icon",
+                "Back Cover"
+            };
+            
             static_api_ptr_t<album_art_manager_v2> aam;
-            auto extractor = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(track),
-                                     pfc::list_single_ref_t<GUID>(album_art_ids::cover_front),
-                                     fb2k::noAbort);
             
-            
-            auto art_data = extractor->query(album_art_ids::cover_front, fb2k::noAbort);
-            if (art_data.is_valid() && art_data->get_size() > 0) {
-                result.success = true;
-                result.data.set_size(art_data->get_size());
-                memcpy(result.data.get_ptr(), art_data->get_ptr(), art_data->get_size());
-                result.mime_type = detect_mime_type(result.data.get_ptr(), result.data.get_size());
-                result.source = "Local artwork";
-                
-                async_io_manager::instance().post_to_main_thread([callback, result]() {
-                    callback(result);
-                });
-                return;
+            // Try each artwork ID until we find one
+            for (int i = 0; i < 5; i++) {
+                try {
+                    auto extractor = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(track),
+                                             pfc::list_single_ref_t<GUID>(artwork_ids[i]),
+                                             fb2k::noAbort);
+                    
+                    auto art_data = extractor->query(artwork_ids[i], fb2k::noAbort);
+                    if (art_data.is_valid() && art_data->get_size() > 0) {
+                        result.success = true;
+                        result.data.set_size(art_data->get_size());
+                        memcpy(result.data.get_ptr(), art_data->get_ptr(), art_data->get_size());
+                        result.mime_type = detect_mime_type(result.data.get_ptr(), result.data.get_size());
+                        result.source = "Local artwork";
+                        
+                        async_io_manager::instance().post_to_main_thread([callback, result]() {
+                            callback(result);
+                        });
+                        return;
+                    }
+                } catch (...) {
+                    // Continue to next artwork ID if this one fails
+                    continue;
+                }
             }
         } catch (const std::exception& e) {
             result.error_message = "SDK artwork search exception";
@@ -790,6 +802,11 @@ pfc::string8 artwork_manager::detect_mime_type(const t_uint8* data, size_t size)
     // PNG
     if (data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') return "image/png";
     
+    // WebP (RIFF....WEBP) - detect but don't support loading
+    if (size >= 12 && 
+        data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' &&
+        data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P') return "image/webp";
+    
     // GIF
     if (size >= 6 && (memcmp(data, "GIF87a", 6) == 0 || memcmp(data, "GIF89a", 6) == 0)) return "image/gif";
     
@@ -955,9 +972,6 @@ bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& 
                 if (url_end && url_end > url_start) {
                     artwork_url = pfc::string8(url_start, url_end - url_start);
                     
-                    pfc::string8 raw_msg = "foo_artwork: Raw extracted URL: ";
-                    raw_msg << artwork_url;
-                    
                     // Unescape JSON slashes (replace \/ with /)
                     pfc::string8 unescaped_url;
                     const char* src = artwork_url.get_ptr();
@@ -983,8 +997,6 @@ bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& 
                         artwork_url = upgraded_url;
                     }
                     
-                    pfc::string8 found_msg = "foo_artwork: Found cover_xl URL (upgraded to 1200x1200): ";
-                    found_msg << artwork_url;
                     return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
                 }
             }
@@ -1020,8 +1032,6 @@ bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& 
                     }
                     artwork_url = unescaped_url;
                     
-                    pfc::string8 cover_big_msg = "foo_artwork: Found cover_big URL (unescaped): ";
-                    cover_big_msg << artwork_url;
                     return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
                 }
             }
