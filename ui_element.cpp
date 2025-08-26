@@ -13,7 +13,6 @@
 #include "columns_ui/columns_ui-sdk/colours.h"
 
 // infobar
-#include <codecvt>
   
 #pragma comment(lib, "gdiplus.lib")
 
@@ -209,8 +208,18 @@ private:
     void clear_infobar();
 
     std::wstring stringToWstring(const std::string& str) {
-        std::wstring_convert<std::codecvt_utf8<wchar_t>> myconv;
-        return myconv.from_bytes(str);
+        if (str.empty()) {
+            return std::wstring();
+        }
+        
+        int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
+        if (size_needed == 0) {
+            return std::wstring();
+        }
+        
+        std::wstring wstrTo(size_needed, 0);
+        MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstrTo[0], size_needed);
+        return wstrTo;
     }
 
     std::wstring m_infobar_artist;
