@@ -190,8 +190,6 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 }
 
 void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback) {
-    console::printf("foo_artwork: STARTING API search for '%s - %s'", artist.c_str(), track.c_str());
-    
     // Get the API search order from user preferences
     auto api_order = get_api_search_order();
     
@@ -251,9 +249,6 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         }
         
         if (result.success) {
-            console::printf("foo_artwork: API SUCCESS - %s found artwork for '%s - %s' (source: %s)", 
-                           api_name.c_str(), artist.c_str(), track.c_str(), result.source.c_str());
-            
             // Cache the result if cache_key is not empty (empty means internet stream)
             if (!cache_key.is_empty()) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
