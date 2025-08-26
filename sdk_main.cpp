@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "artwork_manager.h"
 #include "metadata_cleaner.h"
+#include "preferences.h"
 #include <algorithm>
 #include <thread>
 #include <vector>
@@ -287,7 +288,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.18",
+    "1.5.19",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -304,7 +305,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.18",
+    "1.5.19",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -1319,16 +1320,7 @@ public:
 };
 
 // Helper function to get API search order based on priority configuration
-enum class ApiType {
-    iTunes = 0,
-    Deezer = 1,
-    LastFm = 2,
-    MusicBrainz = 3,
-    Discogs = 4
-};
-
-
-static std::vector<ApiType> get_api_search_order() {
+std::vector<ApiType> get_api_search_order() {
     // NEW SIMPLE SYSTEM: Direct mapping from search position to API
     // cfg_search_order_X contains the API index for each position
     // 0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs
