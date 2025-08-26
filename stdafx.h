@@ -1,7 +1,6 @@
 #pragma once
 
-// foobar2000 v1.5 compatibility - fix for older Visual C runtime libraries
-#define _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR
+// foobar2000 v1.6 compatibility - define moved to project settings
 
 // Threading compatibility fixes for Visual Studio 2022
 #define _ALLOW_RTCc_IN_STL
