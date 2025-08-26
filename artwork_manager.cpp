@@ -51,9 +51,6 @@ void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callbac
         pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
         pfc::string8 file_path = track->get_path();
         
-        pfc::string8 debug_msg;
-        debug_msg << "Artwork Manager: NEW REQUEST for '" << artist << "' - '" << track_name << "' (path: " << file_path << ")";
-        console::info(debug_msg);
     }
     
     if (!initialized_) {
@@ -108,12 +105,6 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     
     pfc::string8 cache_key = generate_cache_key(artist, track_name);
     
-    // DEBUG: Log artwork pipeline start
-    {
-        pfc::string8 debug_msg;
-        debug_msg << "Artwork Pipeline: Starting search for path='" << file_path << "', cache_key='" << cache_key << "'";
-        console::info(debug_msg);
-    }
     
     // CACHE SKIP FOR INTERNET STREAMS: For internet streams, metadata is often wrong initially
     // (belongs to previous track), causing wrong cached artwork to be returned.
@@ -122,13 +113,19 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
                               !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
     
     if (is_internet_stream) {
-        console::info("Artwork Pipeline: Detected internet stream, skipping cache and going directly to APIs");
-        // For internet streams, skip cache entirely and go directly to API search
+        // For internet streams, skip cache but still check for tagged artwork first
         // This prevents stale artwork from being returned when track metadata changes
-        // Use empty cache_key to signal "don't cache results"
-        search_apis_async(artist, track_name, pfc::string8(""), callback);
+        find_local_artwork_async(track, [artist, track_name, callback](const artwork_result& result) {
+            if (result.success) {
+                // Tagged artwork found and supported format - use it (don't cache for streams)
+                callback(result);
+            } else {
+                // No tagged artwork or unsupported format - fall back to API search
+                // Use empty cache_key to signal "don't cache results"
+                search_apis_async(artist, track_name, pfc::string8(""), callback);
+            }
+        });
     } else {
-        console::info("Artwork Pipeline: Local file detected, using cache");
         // For local files, use normal cache -> local -> APIs pipeline
         check_cache_async(cache_key, track, callback);
     }
@@ -750,16 +747,23 @@ void artwork_manager::find_local_artwork_async(metadb_handle_ptr track, artwork_
                     
                     auto art_data = extractor->query(artwork_ids[i], fb2k::noAbort);
                     if (art_data.is_valid() && art_data->get_size() > 0) {
-                        result.success = true;
                         result.data.set_size(art_data->get_size());
                         memcpy(result.data.get_ptr(), art_data->get_ptr(), art_data->get_size());
                         result.mime_type = detect_mime_type(result.data.get_ptr(), result.data.get_size());
-                        result.source = "Local artwork";
                         
-                        async_io_manager::instance().post_to_main_thread([callback, result]() {
-                            callback(result);
-                        });
-                        return;
+                        // Check if the tagged artwork format is supported
+                        if (is_supported_image_format(result.mime_type)) {
+                            result.success = true;
+                            result.source = "Local artwork";
+                            
+                            async_io_manager::instance().post_to_main_thread([callback, result]() {
+                                callback(result);
+                            });
+                            return;
+                        } else {
+                            // Tagged artwork format not supported, continue checking other artwork types
+                            continue;
+                        }
                     }
                 } catch (...) {
                     // Continue to next artwork ID if this one fails
@@ -1342,6 +1346,14 @@ pfc::string8 artwork_manager::detect_mime_type(const t_uint8* data, size_t size)
     if (data[0] == 'B' && data[1] == 'M') return "image/bmp";
     
     return "application/octet-stream";
+}
+
+bool artwork_manager::is_supported_image_format(const pfc::string8& mime_type) {
+    // Supported formats that can be displayed in foobar2000
+    return mime_type == "image/jpeg" || 
+           mime_type == "image/png" || 
+           mime_type == "image/gif" || 
+           mime_type == "image/bmp";
 }
 
 pfc::string8 artwork_manager::get_file_directory(const char* file_path) {
