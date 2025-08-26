@@ -611,10 +611,15 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 delete source_ptr;
             }
             
-            // PRIORITY CHECK: Don't let API results override tagged artwork
+            // PRIORITY CHECK: Don't let API results override tagged artwork, but allow API to override station logos
             if (m_artwork_loaded && !m_artwork_source.empty() && 
                 m_artwork_source == "Local artwork" && artwork_source != "Local artwork") {
                 break;
+            }
+            // Allow API results to override station logos (API has higher priority)
+            if (m_artwork_loaded && !m_artwork_source.empty() && 
+                m_artwork_source == "Station logo" && artwork_source != "Station logo") {
+                // Continue - allow the override
             }
             
             // Now it's safe to call UI functions since we're on the main thread
