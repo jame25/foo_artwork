@@ -629,12 +629,15 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
                 ::PostMessage(m_hWnd, WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(heap_result));
             });
         } else {
-            // For internet radio streams that cannot have embedded artwork,
-            // skip tagged artwork search to avoid cached results from previous searches
+            // For regular internet radio streams that cannot have embedded artwork,
+            // skip tagged artwork search and start with API search
             
             // Clear any existing artwork to avoid showing old artwork
             cleanup_gdiplus_image();
-            m_artwork_loading = false;
+            m_artwork_loading = true;
+            
+            // Start API search directly for radio streams
+            start_artwork_search();
         }
         
         // Also call the compatibility function for logging
@@ -716,6 +719,8 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
         
+        console::printf("foo_artwork: UI metadata validation - Artist: '%s', Track: '%s', Valid: %s", 
+                       cleaned_artist.c_str(), cleaned_track.c_str(), is_valid_metadata ? "YES" : "NO");
 
       //store metadata for infobar
 
@@ -805,6 +810,11 @@ void artwork_ui_element::start_artwork_search() {
 }
 
 void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result& result) {
+    console::printf("foo_artwork: UI received artwork result - Success: %s, Source: %s, Size: %d bytes", 
+                   result.success ? "YES" : "NO", 
+                   result.source.is_empty() ? "Unknown" : result.source.c_str(),
+                   result.success ? result.data.get_size() : 0);
+    
     m_artwork_loading = false;
     
     if (result.success && result.data.get_size() > 0) {
@@ -891,8 +901,49 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             ));
         }
     } else {
-        // Tagged artwork search failed - try fallback images (like Columns UI)
-        // This implements the same fallback hierarchy as Columns UI
+        // Tagged artwork search failed - implement proper fallback chain
+        
+        // For YouTube streams with metadata, try API search first before station logos
+        if (m_current_track.is_valid() && is_youtube_stream(m_current_track)) {
+            // Check if we have metadata for API search
+            metadb_info_container::ptr info_container = m_current_track->get_info_ref();
+            if (info_container.is_valid()) {
+                const file_info& info = info_container->info();
+                
+                const char* artist_ptr = info.meta_get("ARTIST", 0);
+                const char* title_ptr = info.meta_get("TITLE", 0);
+                
+                if (artist_ptr && title_ptr && strlen(artist_ptr) > 0 && strlen(title_ptr) > 0) {
+                    // We have valid metadata - trigger API search before station logos
+                    pfc::string8 artist = artist_ptr;
+                    pfc::string8 title = title_ptr;
+                    
+                    // Clean metadata for search
+                    std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
+                    std::string cleaned_title = MetadataCleaner::clean_for_search(title.c_str(), true);
+                    
+                    // Validate metadata
+                    if (MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_title.c_str())) {
+                        // Clear any existing artwork before API search
+                        cleanup_gdiplus_image();
+                        m_artwork_source = "Loading from API...";
+                        m_artwork_loading = true;
+                        
+                        // Trigger API search for YouTube stream with failed embedded artwork
+                        trigger_main_component_search_with_metadata(cleaned_artist, cleaned_title);
+                        
+                        // Exit early - API search will handle fallbacks if it fails
+                        return;
+                    }
+                }
+            }
+        }
+        
+        // If we get here, either:
+        // 1. Not a YouTube stream, OR
+        // 2. YouTube stream with no valid metadata, OR  
+        // 3. Regular radio stream with failed local search
+        // Try fallback images (station logos, then no-art)
         
         bool fallback_loaded = false;
         
