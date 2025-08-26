@@ -190,6 +190,8 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 }
 
 void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback) {
+    console::printf("foo_artwork: STARTING API search for '%s - %s'", artist.c_str(), track.c_str());
+    
     // Get the API search order from user preferences
     auto api_order = get_api_search_order();
     
@@ -239,13 +241,28 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
     
     // Create a callback that will either return success or try the next API
     auto api_callback = [artist, track, cache_key, callback, api_order, index](const artwork_result& result) {
+        pfc::string8 api_name;
+        switch (api_order[index]) {
+            case ApiType::iTunes: api_name = "iTunes"; break;
+            case ApiType::Deezer: api_name = "Deezer"; break;
+            case ApiType::LastFm: api_name = "Last.fm"; break;
+            case ApiType::MusicBrainz: api_name = "MusicBrainz"; break;
+            case ApiType::Discogs: api_name = "Discogs"; break;
+        }
+        
         if (result.success) {
+            console::printf("foo_artwork: API SUCCESS - %s found artwork for '%s - %s' (source: %s)", 
+                           api_name.c_str(), artist.c_str(), track.c_str(), result.source.c_str());
+            
             // Cache the result if cache_key is not empty (empty means internet stream)
             if (!cache_key.is_empty()) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
             }
             callback(result);
         } else {
+            console::printf("foo_artwork: API FAILED - %s failed for '%s - %s' (error: %s)", 
+                           api_name.c_str(), artist.c_str(), track.c_str(), result.error_message.c_str());
+            
             // This API failed, try the next one
             search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1);
         }
