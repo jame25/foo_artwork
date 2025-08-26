@@ -288,7 +288,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.19",
+    "1.5.20",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -305,7 +305,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.19",
+    "1.5.20",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -2241,7 +2241,13 @@ void unsubscribe_from_artwork_events(IArtworkEventListener* listener) {
 
 // Function to trigger main component search from CUI panels with metadata
 void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title) {
-
+    console::printf("foo_artwork: TRIGGER search with metadata: '%s - %s'", artist.c_str(), title.c_str());
+    
+    // Prevent searches with empty/invalid metadata that could overwrite good results
+    if (artist.empty() || title.empty() || artist.length() < 2 || title.length() < 2) {
+        console::printf("foo_artwork: BLOCKED search - invalid metadata (artist: '%s', title: '%s')", artist.c_str(), title.c_str());
+        return;
+    }
 	
     // Use artwork manager directly instead of bridge functions
     g_artwork_loading = true;
@@ -2287,6 +2293,7 @@ void trigger_main_component_search_with_metadata(const std::string& artist, cons
 
 // Legacy function (kept for compatibility)
 void trigger_main_component_search(metadb_handle_ptr track) {
+    console::printf("foo_artwork: TRIGGER search with track: %s", track.is_valid() ? track->get_path() : "invalid");
     
     // Always use consistent bridge-based search for API preference respect
     if (track.is_valid()) {
