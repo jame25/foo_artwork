@@ -63,6 +63,7 @@ private:
     
     // Utility functions
     static bool is_valid_image_data(const t_uint8* data, size_t size);
+    static bool is_supported_image_format(const pfc::string8& mime_type);
     static pfc::string8 get_file_directory(const char* file_path);
     static pfc::string8 url_encode(const char* str);
     static pfc::string8 generate_cache_key(const char* artist, const char* track);
