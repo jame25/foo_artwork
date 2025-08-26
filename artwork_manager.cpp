@@ -190,516 +190,84 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 }
 
 void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback) {
-    // Try APIs in sequence: iTunes -> Deezer -> Last.fm -> MusicBrainz -> Discogs
+    // Get the API search order from user preferences
+    auto api_order = get_api_search_order();
     
-    
-    if (cfg_enable_itunes) {
-        search_itunes_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-            if (result.success) {
-                async_io_manager::instance().cache_set_async(cache_key, result.data);
-                callback(result);
-            } else if (cfg_enable_deezer) {
-                search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                        callback(result);
-                    } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
-                        search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                callback(result);
-                            } else if (cfg_enable_musicbrainz) {
-                                search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                                    if (result.success) {
-                                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                        callback(result);
-                                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                                            if (result.success) {
-                                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                            }
-                                            callback(result);
-                                        });
-                                    } else {
-                                        artwork_result final_result;
-                                        final_result.success = false;
-                                        final_result.error_message = "No artwork found";
-                                        callback(final_result);
-                                    }
-                                });
-                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                                    if (result.success) {
-                                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                    }
-                                    callback(result);
-                                });
-                            } else {
-                                artwork_result final_result;
-                                final_result.success = false;
-                                final_result.error_message = "No artwork found";
-                                callback(final_result);
-                            }
-                        });
-                    } else if (cfg_enable_musicbrainz) {
-                        search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                callback(result);
-                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                                    if (result.success) {
-                                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                    }
-                                    callback(result);
-                                });
-                            } else {
-                                artwork_result final_result;
-                                final_result.success = false;
-                                final_result.error_message = "No artwork found";
-                                callback(final_result);
-                            }
-                        });
-                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                            }
-                            callback(result);
-                        });
-                    } else {
-                        artwork_result final_result;
-                        final_result.success = false;
-                        final_result.error_message = "No artwork found";
-                        callback(final_result);
-                    }
-                });
-            } else {
-                artwork_result final_result;
-                final_result.success = false;
-                final_result.error_message = "No artwork found";
-                callback(final_result);
-            }
-        });
-    } else if (cfg_enable_deezer) {
-        search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-            if (result.success) {
-                async_io_manager::instance().cache_set_async(cache_key, result.data);
-                callback(result);
-            } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
-                search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                        callback(result);
-                    } else if (cfg_enable_musicbrainz) {
-                        search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                callback(result);
-                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                                    if (result.success) {
-                                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                    }
-                                    callback(result);
-                                });
-                            } else {
-                                artwork_result final_result;
-                                final_result.success = false;
-                                final_result.error_message = "No artwork found";
-                                callback(final_result);
-                            }
-                        });
-                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                            }
-                            callback(result);
-                        });
-                    } else {
-                        artwork_result final_result;
-                        final_result.success = false;
-                        final_result.error_message = "No artwork found";
-                        callback(final_result);
-                    }
-                });
-            } else if (cfg_enable_musicbrainz) {
-                search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                        callback(result);
-                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                            }
-                            callback(result);
-                        });
-                    } else {
-                        artwork_result final_result;
-                        final_result.success = false;
-                        final_result.error_message = "No artwork found";
-                        callback(final_result);
-                    }
-                });
-            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                    }
-                    callback(result);
-                });
-            } else {
-                artwork_result final_result;
-                final_result.success = false;
-                final_result.error_message = "No artwork found";
-                callback(final_result);
-            }
-        });
+    // Helper function to search with the ordered APIs
+    search_apis_by_priority(artist, track, cache_key, callback, api_order, 0);
+}
+
+void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index) {
+    if (index >= api_order.size()) {
+        // No more APIs to try
+        artwork_result final_result;
+        final_result.success = false;
+        final_result.error_message = "No artwork found from any source";
+        callback(final_result);
         return;
     }
     
-    if (cfg_enable_itunes) {
-        search_itunes_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-            if (result.success) {
-                // iTunes success - cache and return
-                async_io_manager::instance().cache_set_async(cache_key, result.data);
-                callback(result);
-            } else if (cfg_enable_deezer) {
-                // iTunes failed - try Deezer
-                search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                        callback(result);
-                    } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
-                        // Deezer failed - try Last.fm
-                        search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                callback(result);
-                            } else if (cfg_enable_musicbrainz) {
-                                // Last.fm failed - try MusicBrainz
-                                search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                                    if (result.success) {
-                                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                        callback(result);
-                                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                                        // MusicBrainz failed - try Discogs
-                                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                                            if (result.success) {
-                                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                            }
-                                            callback(result); // Final result regardless of success
-                                        });
-                                    } else {
-                                        // No more APIs to try
-                                        artwork_result final_result;
-                                        final_result.success = false;
-                                        final_result.error_message = "No artwork found";
-                                        callback(final_result);
-                                    }
-                                });
-                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                                // Last.fm failed, MusicBrainz disabled - try Discogs
-                                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                                    if (result.success) {
-                                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                    }
-                                    callback(result); // Final result regardless of success
-                                });
-                            } else {
-                                // No more APIs to try
-                                artwork_result final_result;
-                                final_result.success = false;
-                                final_result.error_message = "No artwork found";
-                                callback(final_result);
-                            }
-                        });
-                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                        // Deezer failed, Last.fm disabled - try Discogs
-                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                            }
-                            callback(result);
-                        });
-                    } else {
-                        // No more APIs available
-                        artwork_result final_result;
-                        final_result.success = false;
-                        final_result.error_message = "No artwork found";
-                        callback(final_result);
-                    }
-                });
-            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                // iTunes failed, Last.fm disabled - try Discogs
-                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                    }
-                    callback(result);
-                });
-            } else {
-                // No APIs available
-                artwork_result final_result;
-                final_result.success = false;
-                final_result.error_message = "No artwork found";
-                callback(final_result);
-            }
-        });
-    } else if (cfg_enable_deezer) {
-        // iTunes disabled - start with Deezer
-        search_deezer_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-            if (result.success) {
-                async_io_manager::instance().cache_set_async(cache_key, result.data);
-                callback(result);
-            } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
-                search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                        callback(result);
-                    } else if (cfg_enable_musicbrainz) {
-                        search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                callback(result);
-                            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                                    if (result.success) {
-                                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                                    }
-                                    callback(result);
-                                });
-                            } else {
-                                artwork_result final_result;
-                                final_result.success = false;
-                                final_result.error_message = "No artwork found";
-                                callback(final_result);
-                            }
-                        });
-                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                            }
-                            callback(result);
-                        });
-                    } else {
-                        artwork_result final_result;
-                        final_result.success = false;
-                        final_result.error_message = "No artwork found";
-                        callback(final_result);
-                    }
-                });
-            } else if (cfg_enable_musicbrainz) {
-                search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                        callback(result);
-                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                            }
-                            callback(result);
-                        });
-                    } else {
-                        artwork_result final_result;
-                        final_result.success = false;
-                        final_result.error_message = "No artwork found";
-                        callback(final_result);
-                    }
-                });
-            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                    }
-                    callback(result);
-                });
-            } else {
-                artwork_result final_result;
-                final_result.success = false;
-                final_result.error_message = "No artwork found";
-                callback(final_result);
-            }
-        });
-    } else if (cfg_enable_lastfm && !cfg_lastfm_key.is_empty()) {
-        // iTunes and Deezer disabled - start with Last.fm
-        search_lastfm_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-            if (result.success) {
-                async_io_manager::instance().cache_set_async(cache_key, result.data);
-                callback(result);
-            } else if (cfg_enable_musicbrainz) {
-                search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                        callback(result);
-                    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                            if (result.success) {
-                                // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                            }
-                            callback(result);
-                        });
-                    } else {
-                        artwork_result final_result;
-                        final_result.success = false;
-                        final_result.error_message = "No artwork found";
-                        callback(final_result);
-                    }
-                });
-            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                    }
-                    callback(result);
-                });
-            } else {
-                artwork_result final_result;
-                final_result.success = false;
-                final_result.error_message = "No artwork found";
-                callback(final_result);
-            }
-        });
-    } else if (cfg_enable_musicbrainz) {
-        // iTunes, Deezer, and LastFM disabled - start with MusicBrainz
-        search_musicbrainz_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-            if (result.success) {
-                // Only cache if cache_key is not empty (empty means internet stream)
-                if (!cache_key.is_empty()) {
-                    async_io_manager::instance().cache_set_async(cache_key, result.data);
-                }
-                callback(result);
-            } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-                search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-                    if (result.success) {
-                        // Only cache if cache_key is not empty (empty means internet stream)
-                        if (!cache_key.is_empty()) {
-                            async_io_manager::instance().cache_set_async(cache_key, result.data);
-                        }
-                    }
-                    callback(result);
-                });
-            } else {
-                artwork_result final_result;
-                final_result.success = false;
-                final_result.error_message = "No artwork found";
-                callback(final_result);
-            }
-        });
-    } else if (cfg_enable_discogs && (!cfg_discogs_key.is_empty() || (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()))) {
-        // Only Discogs available
-        search_discogs_api_async(artist, track, [cache_key, artist, track, callback](const artwork_result& result) {
-            if (result.success) {
+    ApiType current_api = api_order[index];
+    
+    // Check if this API is enabled and has required keys
+    bool api_enabled = false;
+    switch (current_api) {
+        case ApiType::iTunes:
+            api_enabled = cfg_enable_itunes;
+            break;
+        case ApiType::Deezer:
+            api_enabled = cfg_enable_deezer;
+            break;
+        case ApiType::LastFm:
+            api_enabled = cfg_enable_lastfm && !cfg_lastfm_key.is_empty();
+            break;
+        case ApiType::MusicBrainz:
+            api_enabled = cfg_enable_musicbrainz;
+            break;
+        case ApiType::Discogs:
+            api_enabled = cfg_enable_discogs && 
+                         (!cfg_discogs_key.is_empty() || 
+                          (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()));
+            break;
+    }
+    
+    if (!api_enabled) {
+        // Skip this API and try the next one
+        search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1);
+        return;
+    }
+    
+    // Create a callback that will either return success or try the next API
+    auto api_callback = [artist, track, cache_key, callback, api_order, index](const artwork_result& result) {
+        if (result.success) {
+            // Cache the result if cache_key is not empty (empty means internet stream)
+            if (!cache_key.is_empty()) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
             }
             callback(result);
-        });
-    } else {
-        // No APIs enabled
-        artwork_result final_result;
-        final_result.success = false;
-        final_result.error_message = "No online artwork sources enabled";
-        callback(final_result);
+        } else {
+            // This API failed, try the next one
+            search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1);
+        }
+    };
+    
+    // Call the appropriate API search function
+    switch (current_api) {
+        case ApiType::iTunes:
+            search_itunes_api_async(artist, track, api_callback);
+            break;
+        case ApiType::Deezer:
+            search_deezer_api_async(artist, track, api_callback);
+            break;
+        case ApiType::LastFm:
+            search_lastfm_api_async(artist, track, api_callback);
+            break;
+        case ApiType::MusicBrainz:
+            search_musicbrainz_api_async(artist, track, api_callback);
+            break;
+        case ApiType::Discogs:
+            search_discogs_api_async(artist, track, api_callback);
+            break;
     }
 }
 
