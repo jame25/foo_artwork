@@ -719,8 +719,6 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
         
-        console::printf("foo_artwork: UI metadata validation - Artist: '%s', Track: '%s', Valid: %s", 
-                       cleaned_artist.c_str(), cleaned_track.c_str(), is_valid_metadata ? "YES" : "NO");
 
       //store metadata for infobar
 
@@ -810,11 +808,6 @@ void artwork_ui_element::start_artwork_search() {
 }
 
 void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result& result) {
-    console::printf("foo_artwork: UI received artwork result - Success: %s, Source: %s, Size: %d bytes", 
-                   result.success ? "YES" : "NO", 
-                   result.source.is_empty() ? "Unknown" : result.source.c_str(),
-                   result.success ? result.data.get_size() : 0);
-    
     m_artwork_loading = false;
     
     if (result.success && result.data.get_size() > 0) {
