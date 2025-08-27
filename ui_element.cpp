@@ -225,7 +225,8 @@ private:
     std::wstring m_infobar_artist;
     std::wstring m_infobar_title;
     std::wstring m_infobar_album;
-    std::wstring m_infobar_station;		
+    std::wstring m_infobar_station;	
+    std::wstring m_infobar_result;
 
     // UI state
     RECT m_client_rect;
@@ -615,10 +616,10 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
         bool is_stream = is_internet_stream(track);
         
         // Check if this stream can have embedded artwork (like YouTube videos)
-        bool can_have_embedded_artwork = !is_stream || is_stream_with_possible_artwork(track);
-        
+        bool can_have_embedded_artwork = is_stream || is_stream_with_possible_artwork(track);
+
         if (can_have_embedded_artwork) {
-            // For local files and streams that can have embedded artwork (YouTube videos),
+            // For local files and streams that can have embedded artwork (YouTube videos) OR station logo via album_art_manager_v2,
             // try to load tagged artwork first
             // Clear any existing artwork first to avoid conflicts
             cleanup_gdiplus_image();
@@ -773,7 +774,8 @@ void artwork_ui_element::start_artwork_search() {
     if (!m_current_track.is_valid()) {
         return;
     }
-    
+
+
     try {
         // PRIORITY CHECK: Disabled for local files to allow tagged artwork display  
         // Local artwork will be loaded via the artwork_manager in on_playback_new_track()
@@ -883,6 +885,9 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
                 "",  // Artist info not available in UI element context
                 ""   // Title info not available in UI element context  
             ));
+            
+            //Add result metadata to infobar
+            m_infobar_result = L"Artwork Source: " + stringToWstring(m_artwork_source) + L" [ " + m_infobar_artist + L" / " + m_infobar_title + +L" ] ";
             
             Invalidate();
         } else {
@@ -1043,6 +1048,7 @@ void artwork_ui_element::clear_infobar() {
     m_infobar_title.clear();
     m_infobar_album.clear();
     m_infobar_station.clear();
+    m_infobar_result.clear();
 }
 
 void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
@@ -1210,21 +1216,16 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                         }
                     }
 
-                  
-
                     FontFamily fontFamily(L"Segoe UI");
                     Font font(&fontFamily, 16, FontStyleRegular, UnitPixel);
                     Font font2(&fontFamily, 14, FontStyleItalic, UnitPixel);
                     SolidBrush brush(Color(255, GetRValue(text_color), GetGValue(text_color), GetBValue(text_color)));
 
-                    std::wstring wstr_source = L"Artwork Source: ";
-                    wstr_source += stringToWstring(m_artwork_source);
-
-                    graphics.DrawString(m_infobar_artist.c_str(), -1, &font, PointF(infobar_height, client_height + infobar_text_height/2), &brush);
-                    graphics.DrawString(m_infobar_title.c_str(), -1, &font, PointF(infobar_height, client_height + infobar_text_height * 2 - infobar_text_height / 2), &brush);
-                    graphics.DrawString(m_infobar_album.c_str(), -1, &font, PointF(infobar_height, client_height + infobar_text_height *3 - infobar_text_height/2), &brush);
-                    graphics.DrawString(m_infobar_station.c_str(), -1, &font, PointF(infobar_height, client_height + infobar_text_height *4), &brush);
-                    graphics.DrawString(wstr_source.c_str(), -1, &font2, PointF(infobar_height, client_height + infobar_text_height *5), &brush);
+                    graphics.DrawString(m_infobar_artist.c_str(), -1, &font, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height/2)), &brush);
+                    graphics.DrawString(m_infobar_title.c_str(), -1, &font, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height * 2 - infobar_text_height / 2)), &brush);
+                    graphics.DrawString(m_infobar_album.c_str(), -1, &font, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height *3 - infobar_text_height/2)), &brush);
+                    graphics.DrawString(m_infobar_station.c_str(), -1, &font, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height *4)), &brush);
+                    graphics.DrawString(m_infobar_result.c_str(), -1, &font2, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height *5)), &brush);
                 }
 
                 
@@ -1775,6 +1776,9 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                             show_osd("Artwork from " + event.source);
                         }
                         
+                        //Add result metadata to infobar
+                        m_infobar_result = L"Artwork Source: " + stringToWstring(m_artwork_source) + L" [ " + m_infobar_artist + L" / " + m_infobar_title + +L" ] ";
+
                         Invalidate(); // Trigger repaint
                     } else {
                         cleanup_gdiplus_image();
