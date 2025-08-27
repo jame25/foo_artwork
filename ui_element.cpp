@@ -720,12 +720,14 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
         
 
-      //store metadata for infobar
-
-      m_infobar_artist = stringToWstring(cleaned_artist);
-      m_infobar_title = stringToWstring(cleaned_track);
-      m_infobar_album = stringToWstring(album.c_str());
-      m_infobar_station = stringToWstring(station.c_str());
+        //Infobar
+        //store metadata for infobar
+        m_infobar_artist = stringToWstring(cleaned_artist);
+        m_infobar_title = stringToWstring(cleaned_track);
+        m_infobar_album = stringToWstring(album.c_str());
+        m_infobar_station = stringToWstring(station.c_str());
+        // Invalidate to trigger repaint with new metadata
+        Invalidate();
 
 				   
         if (is_valid_metadata) {
