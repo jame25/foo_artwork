@@ -616,7 +616,7 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
         bool is_stream = is_internet_stream(track);
         
         // Check if this stream can have embedded artwork (like YouTube videos)
-        bool can_have_embedded_artwork = !is_stream || is_stream_with_possible_artwork(track);
+        bool can_have_embedded_artwork = is_stream || is_stream_with_possible_artwork(track);
 
         if (can_have_embedded_artwork) {
             // For local files and streams that can have embedded artwork (YouTube videos) OR station logo via album_art_manager_v2 ,
@@ -630,7 +630,7 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
                 ::PostMessage(m_hWnd, WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(heap_result));
             });
         } else {
-            // For regular internet radio streams that cannot have embedded artwork,
+           // For regular internet radio streams that cannot have embedded artwork,
             // skip tagged artwork search and start with API search
             
             // Clear any existing artwork to avoid showing old artwork
@@ -1831,7 +1831,6 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                         // Try loading directly as GDI+ bitmap to preserve alpha
                         m_artwork_image = load_station_logo_gdiplus(m_current_track);
                         if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                            
                             m_artwork_loading = false;
                             m_artwork_source = "Station logo";
                             fallback_loaded = true;
