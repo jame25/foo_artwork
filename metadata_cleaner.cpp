@@ -60,6 +60,7 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     std::regex pattern("^(([^~]*~){1}[^~]*)");
     std::smatch match;
 
+
     if (std::regex_search(str, match, pattern)) {
         std::string result = match[1];
         str = result;
@@ -104,7 +105,7 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
     // Rule 3: Block advertisement breaks
     std::string title_lower = title_str;
     std::transform(title_lower.begin(), title_lower.end(), title_lower.begin(), ::tolower);
-    if (title_lower.find("adbreak") != std::string::npos) {
+    if (title_lower.find("adbreak") != std::string::npos || title_lower.find("advertisement") != std::string::npos) {
         return false;
     }
     
