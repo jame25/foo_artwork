@@ -616,10 +616,10 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
         bool is_stream = is_internet_stream(track);
         
         // Check if this stream can have embedded artwork (like YouTube videos)
-        bool can_have_embedded_artwork = is_stream || is_stream_with_possible_artwork(track);
+        bool can_have_embedded_artwork = !is_stream || is_stream_with_possible_artwork(track);
 
         if (can_have_embedded_artwork) {
-            // For local files and streams that can have embedded artwork (YouTube videos) OR station logo via album_art_manager_v2,
+            // For local files and streams that can have embedded artwork (YouTube videos) OR station logo via album_art_manager_v2 ,
             // try to load tagged artwork first
             // Clear any existing artwork first to avoid conflicts
             cleanup_gdiplus_image();
@@ -717,6 +717,22 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             cleaned_artist = clean_title_old;
             cleaned_track = clean_artist_old;
         }  
+
+        //If no artist and title is "artist - title" split 
+        if (cleaned_artist.empty()) {
+            std::string delimiter = " - ";
+            size_t pos = cleaned_track.find(delimiter);
+            if (pos != std::string::npos) {
+                std::string lvalue = cleaned_track.substr(0, pos);
+                std::string rvalue = cleaned_track.substr(pos + delimiter.length());
+                cleaned_artist = lvalue;
+                cleaned_track = rvalue;
+            }
+            else {
+                //do nothing
+            }
+        }       
+        
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
         

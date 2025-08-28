@@ -1267,6 +1267,21 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     artist = cleaned_artist;
     title = cleaned_title;
     
+    //If no artist and title is "artist - title" split 
+    if (cleaned_artist.empty()) {
+        std::string delimiter = " - ";
+        size_t pos = cleaned_title.find(delimiter);
+        if (pos != std::string::npos) {
+            std::string lvalue = cleaned_title.substr(0, pos);
+            std::string rvalue = cleaned_title.substr(pos + delimiter.length());
+            artist = lvalue;
+            title = rvalue;
+        }
+        else {
+            //do nothing
+        }
+    }
+
     // Apply comprehensive metadata validation using the unified cleaner (same as DUI)
     if (!MetadataCleaner::is_valid_for_search(artist.c_str(), title.c_str())) {
         return;

@@ -109,9 +109,11 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     // CACHE SKIP FOR INTERNET STREAMS: For internet streams, metadata is often wrong initially
     // (belongs to previous track), causing wrong cached artwork to be returned.
     // Skip cache and go directly to local (tagged) artwork search.
-    bool is_internet_stream = (strstr(file_path.c_str(), "://") && 
-                              !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
+    const double length = track->get_length();
+    bool is_internet_stream = (strstr(file_path.c_str(), "://") &&
+                              !(strstr(file_path.c_str(), "file://") == file_path.c_str()) || (strstr(file_path.c_str(), "://") && (strstr(file_path.c_str(), ".tags") && (length <= 0))));
     
+
     if (is_internet_stream) {
         // For internet streams, skip cache but still check for tagged artwork first
         // This prevents stale artwork from being returned when track metadata changes
