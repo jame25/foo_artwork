@@ -13,8 +13,8 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     //FIXME
     //resize str to a resonable amount of characters
     //crashed with http://stream.revma.ihrhls.com/zc7934.m3u8 that had 285 characters in bullshit title..
-    str.resize(100);
-    
+    if (str.length() > 100) str.resize(100);
+
     // Use v1.3.1's proven approach: simple hex byte replacements for UTF-8 safety
     // This approach preserves Cyrillic and other non-Latin characters correctly
   
