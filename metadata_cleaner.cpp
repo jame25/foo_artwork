@@ -9,10 +9,15 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     }
     
     std::string str(metadata);
+
+    //FIXME
+    //resize str to a resonable amount of characters
+    //crashed with http://stream.revma.ihrhls.com/zc7934.m3u8 that had 285 characters in bullshit title..
+    str.resize(100);
     
     // Use v1.3.1's proven approach: simple hex byte replacements for UTF-8 safety
     // This approach preserves Cyrillic and other non-Latin characters correctly
-    
+  
     // Handle all variants of apostrophes and quotes (UTF-8 safe using hex sequences)
     size_t pos = 0;
     while ((pos = str.find("\xE2\x80\x98", pos)) != std::string::npos) { // Left single quotation mark
@@ -91,6 +96,7 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
     std::string artist_str = artist ? artist : "";
     std::string title_str = title ? title : "";
     
+
     // Rule 1: Must have a title - no search without title
     if (title_str.empty() || title_str.length() < 2) {
         return false;
