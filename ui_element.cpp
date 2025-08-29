@@ -612,15 +612,10 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
     
     if (track.is_valid()) {
         
-        // Check if this is an internet stream
-        bool is_stream = is_internet_stream(track);
-        
-        // Check if this stream can have embedded artwork (like YouTube videos)
-        bool can_have_embedded_artwork = is_stream || is_stream_with_possible_artwork(track);
+        bool get_all_album_art_manager = true;
 
-        if (can_have_embedded_artwork) {
-            // For local files and streams that can have embedded artwork (YouTube videos) OR station logo via album_art_manager_v2 ,
-            // try to load tagged artwork first
+        if (get_all_album_art_manager) {
+            // Get any art for all cases via album_art_manager_v2 , for radio display logo on startup
             // Clear any existing artwork first to avoid conflicts
             cleanup_gdiplus_image();
             m_artwork_loading = true;
@@ -630,34 +625,11 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
                 ::PostMessage(m_hWnd, WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(heap_result));
             });
         } else {
-           // For regular internet radio streams that cannot have embedded artwork,
-            // skip tagged artwork search and start with API search
             
-            // Clear any existing artwork to avoid showing old artwork
-            cleanup_gdiplus_image();
-            m_artwork_loading = true;
-            
-            // Start API search directly for radio streams
-            start_artwork_search();
-        }
+        //Don't search yet,wait for the first on_dynamic_info_track to get called
+        //Fixes wrong first image with radio
+        //Don't use stream delay - there are no benefits with stream delay - we should remove it
         
-        // Also call the compatibility function for logging
-        trigger_main_component_local_search(track);
-        
-        // For internet streams, ALSO set up metadata timers for fallback
-        if (is_internet_stream(track)) {
-            // Kill any existing timers
-            KillTimer(100); // Metadata arrival timer
-            KillTimer(101); // Stream delay timer
-            
-            // Respect stream delay configuration for internet streams
-            if (cfg_stream_delay > 0) {
-                // Use configured stream delay - this allows streams time to provide metadata
-                SetTimer(101, cfg_stream_delay * 1000); // Timer ID 101, stream delay timeout
-            } else {
-                // No stream delay configured - use short metadata arrival timer
-                SetTimer(100, 3000); // Timer ID 100, 3 second timeout
-            }
         }
     }
 }
@@ -689,6 +661,7 @@ bool artwork_ui_element::is_inverted_internet_stream(metadb_handle_ptr track, co
     return false;
 }											
 void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
+
     try {
         // Get artist and track from the updated info safely
         const char* artist_ptr = p_info.meta_get("ARTIST", 0);
@@ -735,7 +708,6 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
-        
 
         //Infobar
         //store metadata for infobar
@@ -748,6 +720,7 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
 
 				   
         if (is_valid_metadata) {
+
             // Cancel metadata arrival timer since we got valid metadata (like CUI)
             KillTimer(100);
             

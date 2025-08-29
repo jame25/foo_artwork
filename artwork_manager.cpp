@@ -95,10 +95,11 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
 void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
     
+
     // Extract metadata and path on main thread (this is fast)
     metadb_info_container::ptr info_container = track->get_info_ref();
     const file_info* info = &info_container->info();
-    
+
     pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "Unknown Artist";
     pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
     pfc::string8 file_path = track->get_path();
@@ -113,7 +114,6 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     bool is_internet_stream = (strstr(file_path.c_str(), "://") &&
                               !(strstr(file_path.c_str(), "file://") == file_path.c_str()) || (strstr(file_path.c_str(), "://") && (strstr(file_path.c_str(), ".tags") && (length <= 0))));
     
-
     if (is_internet_stream) {
         // For internet streams, skip cache but still check for tagged artwork first
         // This prevents stale artwork from being returned when track metadata changes
@@ -123,8 +123,11 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
                 callback(result);
             } else {
                 // No tagged artwork or unsupported format - fall back to API search
+                // Don't search for failed metadata
                 // Use empty cache_key to signal "don't cache results"
-                search_apis_async(artist, track_name, pfc::string8(""), callback);
+                if (artist != "Unknown Artist" && track_name != "Unknown Track") {
+                    search_apis_async(artist, track_name, pfc::string8(""), callback);
+                }
             }
         });
     } else {
