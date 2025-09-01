@@ -228,6 +228,13 @@ private:
     std::wstring m_infobar_station;	
     std::wstring m_infobar_result;
 
+    // Stream dynamic info metadata storage
+
+    void clear_dinfo();
+
+    std::string m_dinfo_artist;
+    std::string m_dinfo_title;
+
     // UI state
     RECT m_client_rect;
     
@@ -269,6 +276,7 @@ private:
                 m_parent->clear_artwork();
             }
             m_parent->clear_infobar();
+            m_parent->clear_dinfo();
         }
         
         // Required by play_callback base class
@@ -672,8 +680,10 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         pfc::string8 artist = artist_ptr ? artist_ptr : "";
         pfc::string8 track = track_ptr ? track_ptr : "";
         pfc::string8 album = album_ptr ? album_ptr : "";
-        pfc::string8 station = station_ptr ? station_ptr : "";														
-        
+        pfc::string8 station = station_ptr ? station_ptr : "";		
+
+
+                
         // Extract only the first artist for better artwork search results
         std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
         
@@ -690,6 +700,18 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             cleaned_artist = clean_title_old;
             cleaned_track = clean_artist_old;
         }  
+
+        //Don't search if recieved same artist title
+        //same info - don't search - stop
+        if (m_dinfo_artist == cleaned_artist && m_dinfo_title == cleaned_track) {
+            return;
+        }
+        else {
+        //differnet info - save new info and continue
+            m_dinfo_artist = cleaned_artist;
+            m_dinfo_title = cleaned_track;
+        }
+
 
         //If no artist and title is "artist - title" split 
         if (cleaned_artist.empty()) {
@@ -708,6 +730,7 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
+
 
         //Infobar
         //store metadata for infobar
@@ -1039,6 +1062,11 @@ void artwork_ui_element::clear_infobar() {
     m_infobar_album.clear();
     m_infobar_station.clear();
     m_infobar_result.clear();
+}
+
+void artwork_ui_element::clear_dinfo() {
+    m_dinfo_artist.clear();
+    m_dinfo_title.clear();
 }
 
 void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
