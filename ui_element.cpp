@@ -595,6 +595,7 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
             station = info.meta_get("STREAM_NAME", 0);
         }
 
+
         //store metadata for infobar
 
         m_infobar_artist = stringToWstring(artist);
@@ -700,7 +701,7 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             cleaned_track = clean_artist_old;
         }  
 
-        //If no artist and title is "artist - title" (eg https://stream.radioclub80.cl:8022/retro80.opus) or "artist ˗ title" (eg https://energybasel.ice.infomaniak.ch/energybasel-high.mp3) split 
+        //If no artist and title is "artist - title" (eg https://stream.radioclub80.cl:8022/retro80.opus)  split 
         if (cleaned_artist.empty()) {
             std::string delimiter = " - ";
             size_t pos = cleaned_track.find(delimiter);
@@ -710,6 +711,9 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                 cleaned_artist = lvalue;
                 cleaned_track = rvalue;
             }
+
+            //or "artist ˗ title" (eg https ://energybasel.ice.infomaniak.ch/energybasel-high.mp3)
+
             std::string delimiter2 = " ˗ ";
             size_t pos2 = cleaned_track.find(delimiter2);
             if (pos2 != std::string::npos) {
@@ -717,7 +721,18 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                 std::string rvalue = cleaned_track.substr(pos2 + delimiter2.length());
                 cleaned_artist = lvalue;
                 cleaned_track = rvalue;
-            }            
+            }
+        }
+            //with inverted (eg https://icy.unitedradio.it/um049.mp3?inverted )
+            else if (cleaned_track.empty() && is_inverted_stream) {
+                std::string delimiter = " - ";
+                size_t pos = cleaned_artist.find(delimiter);
+                if (pos != std::string::npos) {
+                    std::string lvalue = cleaned_artist.substr(0, pos);
+                    std::string rvalue = cleaned_artist.substr(pos + delimiter.length());
+                    cleaned_artist = rvalue;
+                    cleaned_track =  lvalue;
+                }
             else {
                 //do nothing
             }
