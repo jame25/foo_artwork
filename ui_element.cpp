@@ -682,7 +682,6 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         pfc::string8 album = album_ptr ? album_ptr : "";
         pfc::string8 station = station_ptr ? station_ptr : "";		
 
-
                 
         // Extract only the first artist for better artwork search results
         std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
@@ -701,19 +700,7 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             cleaned_track = clean_artist_old;
         }  
 
-        //Don't search if recieved same artist title
-        //same info - don't search - stop
-        if (m_dinfo_artist == cleaned_artist && m_dinfo_title == cleaned_track) {
-            return;
-        }
-        else {
-        //differnet info - save new info and continue
-            m_dinfo_artist = cleaned_artist;
-            m_dinfo_title = cleaned_track;
-        }
-
-
-        //If no artist and title is "artist - title" split 
+        //If no artist and title is "artist - title" (eg https://stream.radioclub80.cl:8022/retro80.opus) or "artist ˗ title" (eg https://energybasel.ice.infomaniak.ch/energybasel-high.mp3) split 
         if (cleaned_artist.empty()) {
             std::string delimiter = " - ";
             size_t pos = cleaned_track.find(delimiter);
@@ -723,10 +710,29 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                 cleaned_artist = lvalue;
                 cleaned_track = rvalue;
             }
+            std::string delimiter2 = " ˗ ";
+            size_t pos2 = cleaned_track.find(delimiter2);
+            if (pos2 != std::string::npos) {
+                std::string lvalue = cleaned_track.substr(0, pos2);
+                std::string rvalue = cleaned_track.substr(pos2 + delimiter2.length());
+                cleaned_artist = lvalue;
+                cleaned_track = rvalue;
+            }            
             else {
                 //do nothing
             }
-        }       
+        }  
+
+        //Don't search if recieved same artist title
+        //same info - don't search - stop
+        if (m_dinfo_artist == cleaned_artist && m_dinfo_title == cleaned_track) {
+            return;
+        }
+        else {
+            //differnet info - save new info and continue
+            m_dinfo_artist = cleaned_artist;
+            m_dinfo_title = cleaned_track;
+        }
         
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
