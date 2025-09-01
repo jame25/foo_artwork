@@ -876,7 +876,7 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             ));
             
             //Add result metadata to infobar
-            m_infobar_result = L"Artwork Source: " + stringToWstring(m_artwork_source) + L" [ " + m_infobar_artist + L" / " + m_infobar_title + +L" ] ";
+            m_infobar_result = L"Artwork Source: " + stringToWstring(m_artwork_source) + L" [ " + m_infobar_artist + L" / " + m_infobar_title  + L" ] ";
             
             Invalidate();
         } else {
@@ -944,6 +944,7 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
                 
                 // Try loading directly as GDI+ bitmap to preserve alpha
                 m_artwork_image = load_station_logo_gdiplus(m_current_track);
+                
                 if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
                     m_artwork_loading = false;
                     m_artwork_source = "Station logo";
@@ -1186,10 +1187,15 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                     Gdiplus::Rect dest_rect3(0, client_height, client_width, infobar_height);
                     graphics.FillRectangle(&solidBrush, dest_rect3);
 
-                    if (load_station_logo_gdiplus(m_current_track)) {
+                    Gdiplus::Bitmap*  m_infobar_image = load_station_logo_gdiplus(m_current_track);
+
+                    if (m_infobar_image) {
                         Gdiplus::Rect dest_rect2(10, client_height + 10, infobar_height - 20, infobar_height - 20);
-                        graphics.DrawImage(load_station_logo_gdiplus(m_current_track), dest_rect2);
+                        graphics.DrawImage(m_infobar_image, dest_rect2);
+                        delete m_infobar_image;
+                        m_infobar_image = nullptr;
                     }
+
 
                     
                     // Get contrasting text color using DUI callback
