@@ -722,6 +722,18 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                 cleaned_artist = lvalue;
                 cleaned_track = rvalue;
             }
+
+            //or "artist / title" (eg https://radiostream.pl/tuba8-1.mp3?cache=1650763965 )
+
+            std::string delimiter3 = " / ";
+            size_t pos3 = cleaned_track.find(delimiter3);
+            if (pos3 != std::string::npos) {
+                std::string lvalue = cleaned_track.substr(0, pos3);
+                std::string rvalue = cleaned_track.substr(pos3 + delimiter3.length());
+                cleaned_artist = lvalue;
+                cleaned_track = rvalue;
+            }
+
         }
             //with inverted (eg https://icy.unitedradio.it/um049.mp3?inverted )
             else if (cleaned_track.empty() && is_inverted_stream) {
@@ -738,7 +750,7 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             }
         }  
 
-        //Don't search if recieved same artist title
+        //Don't search if received same artist title
         //same info - don't search - stop
         if (m_dinfo_artist == cleaned_artist && m_dinfo_title == cleaned_track) {
             return;
