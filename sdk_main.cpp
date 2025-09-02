@@ -649,6 +649,7 @@ HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8
 
 // Function to load station logo with full path fallback to domain-only
 HBITMAP load_station_logo(metadb_handle_ptr track) {
+    
     if (!track.is_valid()) return NULL;
     
     // Check if custom station logos are enabled
@@ -703,6 +704,7 @@ HBITMAP load_station_logo(metadb_handle_ptr track) {
         
         // Try 1: Full host+path matching (most specific)
         pfc::string8 full_path = extract_full_path_from_stream_url(track);
+        
         if (!full_path.is_empty()) {
             HBITMAP result = try_load_station_logo(full_path, logos_dir);
             if (result) return result;
@@ -2241,10 +2243,6 @@ void unsubscribe_from_artwork_events(IArtworkEventListener* listener) {
 
 // Function to trigger main component search from CUI panels with metadata
 void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title) {
-    // Prevent searches with empty/invalid metadata that could overwrite good results
-    if (artist.empty() || title.empty() || artist.length() < 2 || title.length() < 2) {
-        return;
-    }
 	
     // Use artwork manager directly instead of bridge functions
     g_artwork_loading = true;

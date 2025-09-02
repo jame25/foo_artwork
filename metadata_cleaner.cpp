@@ -9,10 +9,15 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     }
     
     std::string str(metadata);
-    
+
+    //FIXME
+    //resize str to a resonable amount of characters
+    //crashed with http://stream.revma.ihrhls.com/zc7934.m3u8 that had 285 characters in bullshit title..
+    if (str.length() > 100) str.resize(100);
+
     // Use v1.3.1's proven approach: simple hex byte replacements for UTF-8 safety
     // This approach preserves Cyrillic and other non-Latin characters correctly
-    
+  
     // Handle all variants of apostrophes and quotes (UTF-8 safe using hex sequences)
     size_t pos = 0;
     while ((pos = str.find("\xE2\x80\x98", pos)) != std::string::npos) { // Left single quotation mark
@@ -60,6 +65,7 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     std::regex pattern("^(([^~]*~){1}[^~]*)");
     std::smatch match;
 
+
     if (std::regex_search(str, match, pattern)) {
         std::string result = match[1];
         str = result;
@@ -90,8 +96,10 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
     std::string artist_str = artist ? artist : "";
     std::string title_str = title ? title : "";
     
-    // Rule 1: Must have a title - no search without title
-    if (title_str.empty() || title_str.length() < 2) {
+
+    // Rule 1: Must have a artist title - no search without artist title 
+    // Prevent searches with empty/invalid metadata that could overwrite good results
+    if (artist_str.empty() || title_str.empty() || artist_str.length() < 2 || title_str.length() < 2) {
         return false;
     }
     
@@ -104,7 +112,7 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
     // Rule 3: Block advertisement breaks
     std::string title_lower = title_str;
     std::transform(title_lower.begin(), title_lower.end(), title_lower.begin(), ::tolower);
-    if (title_lower.find("adbreak") != std::string::npos) {
+    if (title_lower.find("adbreak") != std::string::npos || title_lower.find("ad_break") != std::string::npos || title_lower.find("advertisement") != std::string::npos) {
         return false;
     }
     
