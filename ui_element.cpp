@@ -228,6 +228,13 @@ private:
     std::wstring m_infobar_station;	
     std::wstring m_infobar_result;
 
+    // Stream dynamic info metadata storage
+
+    void clear_dinfo();
+
+    std::string m_dinfo_artist;
+    std::string m_dinfo_title;
+
     // UI state
     RECT m_client_rect;
     
@@ -269,6 +276,7 @@ private:
                 m_parent->clear_artwork();
             }
             m_parent->clear_infobar();
+            m_parent->clear_dinfo();
         }
         
         // Required by play_callback base class
@@ -587,6 +595,7 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
             station = info.meta_get("STREAM_NAME", 0);
         }
 
+
         //store metadata for infobar
 
         m_infobar_artist = stringToWstring(artist);
@@ -612,15 +621,10 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
     
     if (track.is_valid()) {
         
-        // Check if this is an internet stream
-        bool is_stream = is_internet_stream(track);
-        
-        // Check if this stream can have embedded artwork (like YouTube videos)
-        bool can_have_embedded_artwork = !is_stream || is_stream_with_possible_artwork(track);
+        bool get_all_album_art_manager = true;
 
-        if (can_have_embedded_artwork) {
-            // For local files and streams that can have embedded artwork (YouTube videos) OR station logo via album_art_manager_v2 ,
-            // try to load tagged artwork first
+        if (get_all_album_art_manager) {
+            // Get any art for all cases via album_art_manager_v2 , for radio display logo on startup
             // Clear any existing artwork first to avoid conflicts
             cleanup_gdiplus_image();
             m_artwork_loading = true;
@@ -630,34 +634,11 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
                 ::PostMessage(m_hWnd, WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(heap_result));
             });
         } else {
-            // For regular internet radio streams that cannot have embedded artwork,
-            // skip tagged artwork search and start with API search
             
-            // Clear any existing artwork to avoid showing old artwork
-            cleanup_gdiplus_image();
-            m_artwork_loading = true;
-            
-            // Start API search directly for radio streams
-            start_artwork_search();
-        }
+        //Don't search yet,wait for the first on_dynamic_info_track to get called
+        //Fixes wrong first image with radio
+        //Don't use stream delay - there are no benefits with stream delay - we should remove it
         
-        // Also call the compatibility function for logging
-        trigger_main_component_local_search(track);
-        
-        // For internet streams, ALSO set up metadata timers for fallback
-        if (is_internet_stream(track)) {
-            // Kill any existing timers
-            KillTimer(100); // Metadata arrival timer
-            KillTimer(101); // Stream delay timer
-            
-            // Respect stream delay configuration for internet streams
-            if (cfg_stream_delay > 0) {
-                // Use configured stream delay - this allows streams time to provide metadata
-                SetTimer(101, cfg_stream_delay * 1000); // Timer ID 101, stream delay timeout
-            } else {
-                // No stream delay configured - use short metadata arrival timer
-                SetTimer(100, 3000); // Timer ID 100, 3 second timeout
-            }
         }
     }
 }
@@ -689,6 +670,7 @@ bool artwork_ui_element::is_inverted_internet_stream(metadb_handle_ptr track, co
     return false;
 }											
 void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
+
     try {
         // Get artist and track from the updated info safely
         const char* artist_ptr = p_info.meta_get("ARTIST", 0);
@@ -699,8 +681,9 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         pfc::string8 artist = artist_ptr ? artist_ptr : "";
         pfc::string8 track = track_ptr ? track_ptr : "";
         pfc::string8 album = album_ptr ? album_ptr : "";
-        pfc::string8 station = station_ptr ? station_ptr : "";														
-        
+        pfc::string8 station = station_ptr ? station_ptr : "";		
+
+                
         // Extract only the first artist for better artwork search results
         std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
         
@@ -718,7 +701,7 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             cleaned_track = clean_artist_old;
         }  
 
-        //If no artist and title is "artist - title" split 
+        //If no artist and title is "artist - title" (eg https://stream.radioclub80.cl:8022/retro80.opus)  split 
         if (cleaned_artist.empty()) {
             std::string delimiter = " - ";
             size_t pos = cleaned_track.find(delimiter);
@@ -728,14 +711,59 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                 cleaned_artist = lvalue;
                 cleaned_track = rvalue;
             }
+
+            //or "artist ˗ title" (eg https ://energybasel.ice.infomaniak.ch/energybasel-high.mp3)
+
+            std::string delimiter2 = " ˗ ";
+            size_t pos2 = cleaned_track.find(delimiter2);
+            if (pos2 != std::string::npos) {
+                std::string lvalue = cleaned_track.substr(0, pos2);
+                std::string rvalue = cleaned_track.substr(pos2 + delimiter2.length());
+                cleaned_artist = lvalue;
+                cleaned_track = rvalue;
+            }
+
+            //or "artist / title" (eg https://radiostream.pl/tuba8-1.mp3?cache=1650763965 )
+
+            std::string delimiter3 = " / ";
+            size_t pos3 = cleaned_track.find(delimiter3);
+            if (pos3 != std::string::npos) {
+                std::string lvalue = cleaned_track.substr(0, pos3);
+                std::string rvalue = cleaned_track.substr(pos3 + delimiter3.length());
+                cleaned_artist = lvalue;
+                cleaned_track = rvalue;
+            }
+
+        }
+            //with inverted (eg https://icy.unitedradio.it/um049.mp3?inverted )
+            else if (cleaned_track.empty() && is_inverted_stream) {
+                std::string delimiter = " - ";
+                size_t pos = cleaned_artist.find(delimiter);
+                if (pos != std::string::npos) {
+                    std::string lvalue = cleaned_artist.substr(0, pos);
+                    std::string rvalue = cleaned_artist.substr(pos + delimiter.length());
+                    cleaned_artist = rvalue;
+                    cleaned_track =  lvalue;
+                }
             else {
                 //do nothing
             }
-        }       
+        }  
+
+        //Don't search if received same artist title
+        //same info - don't search - stop
+        if (m_dinfo_artist == cleaned_artist && m_dinfo_title == cleaned_track) {
+            return;
+        }
+        else {
+            //differnet info - save new info and continue
+            m_dinfo_artist = cleaned_artist;
+            m_dinfo_title = cleaned_track;
+        }
         
         // Apply comprehensive metadata validation rules
         bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
-        
+
 
         //Infobar
         //store metadata for infobar
@@ -748,6 +776,7 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
 
 				   
         if (is_valid_metadata) {
+
             // Cancel metadata arrival timer since we got valid metadata (like CUI)
             KillTimer(100);
             
@@ -903,7 +932,7 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             ));
             
             //Add result metadata to infobar
-            m_infobar_result = L"Artwork Source: " + stringToWstring(m_artwork_source) + L" [ " + m_infobar_artist + L" / " + m_infobar_title + +L" ] ";
+            m_infobar_result = L"Artwork Source: " + stringToWstring(m_artwork_source) + L" [ " + m_infobar_artist + L" / " + m_infobar_title  + L" ] ";
             
             Invalidate();
         } else {
@@ -971,6 +1000,7 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
                 
                 // Try loading directly as GDI+ bitmap to preserve alpha
                 m_artwork_image = load_station_logo_gdiplus(m_current_track);
+                
                 if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
                     m_artwork_loading = false;
                     m_artwork_source = "Station logo";
@@ -1065,6 +1095,11 @@ void artwork_ui_element::clear_infobar() {
     m_infobar_album.clear();
     m_infobar_station.clear();
     m_infobar_result.clear();
+}
+
+void artwork_ui_element::clear_dinfo() {
+    m_dinfo_artist.clear();
+    m_dinfo_title.clear();
 }
 
 void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
@@ -1213,10 +1248,15 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                     Gdiplus::Rect dest_rect3(0, client_height, client_width, infobar_height);
                     graphics.FillRectangle(&solidBrush, dest_rect3);
 
-                    if (load_station_logo_gdiplus(m_current_track)) {
+                    Gdiplus::Bitmap*  m_infobar_image = load_station_logo_gdiplus(m_current_track);
+
+                    if (m_infobar_image) {
                         Gdiplus::Rect dest_rect2(10, client_height + 10, infobar_height - 20, infobar_height - 20);
-                        graphics.DrawImage(load_station_logo_gdiplus(m_current_track), dest_rect2);
+                        graphics.DrawImage(m_infobar_image, dest_rect2);
+                        delete m_infobar_image;
+                        m_infobar_image = nullptr;
                     }
+
 
                     
                     // Get contrasting text color using DUI callback
@@ -1831,7 +1871,6 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
                         // Try loading directly as GDI+ bitmap to preserve alpha
                         m_artwork_image = load_station_logo_gdiplus(m_current_track);
                         if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                            
                             m_artwork_loading = false;
                             m_artwork_source = "Station logo";
                             fallback_loaded = true;
