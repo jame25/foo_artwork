@@ -802,7 +802,8 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                     m_has_delayed_metadata = true;
                     m_delayed_artist = cleaned_artist;
                     m_delayed_title = cleaned_track;
-                    // Don't kill Timer 101 - let it fire when delay expires
+                    // Set Timer 101 to fire after configured delay
+                    SetTimer(101, cfg_stream_delay * 1000);
                 } else {
                     // No stream delay - start search immediately
                     trigger_main_component_search_with_metadata(cleaned_artist, cleaned_track);
