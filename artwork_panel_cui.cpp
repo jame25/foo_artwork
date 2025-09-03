@@ -1298,9 +1298,6 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
             bool is_internet_stream = is_safe_internet_stream(current_track);
             
             if (is_internet_stream) {
-                // IMMEDIATE SEARCH: Use v1.3.1 approach - search immediately for faster response
-                // This provides much better user experience with immediate artwork loading
-                
                 // If inverted swap artist title
                 bool is_inverted_stream = is_inverted_internet_stream(current_track, p_info);
                 if (is_inverted_stream) {
@@ -1310,9 +1307,20 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                     title = artist_old;
                 }
                 
-                
-                extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
-                trigger_main_component_search_with_metadata(artist, title);
+                // STREAM DELAY HANDLING: Check if stream delay is configured
+                if (cfg_stream_delay > 0) {
+                    // Kill any existing stream delay timer
+                    KillTimer(m_hWnd, 101);
+                    // Store metadata for delayed search - don't start search immediately
+                    m_delayed_search_artist = artist;
+                    m_delayed_search_title = title;
+                    // Set Timer 101 to fire after configured delay
+                    SetTimer(m_hWnd, 101, cfg_stream_delay * 1000, NULL);
+                } else {
+                    // No stream delay - start search immediately
+                    extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
+                    trigger_main_component_search_with_metadata(artist, title);
+                }
                 return;
             } else {
                 // For local files, do NOT trigger API searches - local artwork will be handled elsewhere
