@@ -121,6 +121,12 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
         title_str == "Unknown" || artist_str == "Unknown") {
         return false;
     }
+
+    // Rule 5: Block "Known" problematic patterns
+    if (artist_str == "RADIO BOB") {
+        return false;
+    }
+
     
     return true;
 }
