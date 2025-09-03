@@ -599,16 +599,25 @@ void artwork_manager::search_lastfm_api_async(const char* artist, const char* ti
 }
 
 void artwork_manager::perform_deezer_fallback_search(const char* artist, const char* track, artwork_callback callback) {
-    
+
     // Copy parameters to ensure they remain valid throughout async operations
     pfc::string8 artist_copy = artist ? artist : "";
     pfc::string8 track_copy = track ? track : "";
     
+    pfc::string8 search_query;
+    pfc::string8 search_artist = "artist:\"";
+
+    // Build search query: "artist"
+    search_query += search_artist;
+    search_query += artist;
+    search_query += "\"";
+
+
     // Strategy 1: Try artist only
     if (!artist_copy.is_empty()) {
-        pfc::string8 artist_only_url = "https://api.deezer.com/search/track?q=";
-        artist_only_url << artwork_manager::url_encode(artist_copy.get_ptr()) << "&limit=5";
-        
+        pfc::string8 artist_only_url = "https://api.deezer.com/search?q=";
+        artist_only_url << artwork_manager::url_encode(search_query) << "&limit=5";
+       
         async_io_manager::instance().http_get_async(artist_only_url, [artist_copy, track_copy, callback](bool success, const pfc::string8& response, const pfc::string8& error) {
             if (success) {
                 pfc::string8 artwork_url;
@@ -647,7 +656,7 @@ void artwork_manager::perform_deezer_fallback_search(const char* artist, const c
 }
 
 void artwork_manager::search_deezer_api_async(const char* artist, const char* track, artwork_callback callback) {
-    
+   
     // Deezer API doesn't require authentication
     pfc::string8 search_query;
     pfc::string8 search_track = "track:\"";
@@ -669,10 +678,14 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
     
     pfc::string8 url = "https://api.deezer.com/search/?q=";
     url << url_encode(search_query) << "&limit=10";
-   
+
+    // Copy parameters to avoid lambda capture corruption
+    pfc::string8 artist_str = artist;
+    pfc::string8 track_str = track;
+
     // Make async HTTP request
     try {
-        async_io_manager::instance().http_get_async(url, [artist, track, callback](bool success, const pfc::string8& response, const pfc::string8& error) {
+        async_io_manager::instance().http_get_async(url, [artist_str, track_str, callback](bool success, const pfc::string8& response, const pfc::string8& error) {
         if (!success) {
             artwork_result result;
             result.success = false;
@@ -686,7 +699,7 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
         pfc::string8 artwork_url;
         if (!artwork_manager::parse_deezer_json(response, artwork_url)) {
             // Try fallback search strategies
-            artwork_manager::perform_deezer_fallback_search(artist, track, callback);
+            artwork_manager::perform_deezer_fallback_search(artist_str, track_str, callback);
             return;
         }
         
