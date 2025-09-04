@@ -6,7 +6,7 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 
 ## Features
 
-- **Local Artwork Search**: Automatically searches for artwork files in the same directory as your music files
+- **Local Artwork Search**: Automatically searches for artwork files defined in foobar2000 Preferences > Display > Album Art
 - **Online API Integration**: Falls back to iTunes, Deezer, Last.fm, MusicBrainz, and Discogs APIs when local artwork is not found
 - **User-Customizable API Priority**: Configure the order of API fallback chain through an intuitive interface
 - **Internet Radio Support**: Displays artwork for internet radio streams using metadata
@@ -59,12 +59,15 @@ The component supports five online artwork services.
 
 ### Local Artwork Search
 
-The component automatically searches for these common artwork filenames:
-- `cover.jpg`, `cover.jpeg`, `cover.png`
-- `folder.jpg`, `folder.jpeg`, `folder.png`
-- `album.jpg`, `album.jpeg`, `album.png`
-- `front.jpg`, `front.jpeg`, `front.png`
-- `artwork.jpg`, `artwork.jpeg`, `artwork.png`
+The component automatically searches searches for all artwork files defined in foobar2000 Preferences > Display > Album Art.
+The priority order to find any available tagged artwork is  Front cover > Disc > Artist > Back
+Supported image formats
+   - `.png` 
+   - `.jpg` / `.jpeg`
+   - `.gif`
+   - `.bmp`
+
+Webp format is not supported.
 
 ### Custom Station Logos
 
@@ -84,7 +87,7 @@ The component supports custom logo files for internet radio stations. This featu
    - **Example**: For `https://ice1.somafm.com/indiepop-128-aac` → create `https---ice1.somafm.com-indiepop-128-aac.png`
    - **Use Case**: Different logos for different streams on the same domain
    - **Help**: The matching filename without extension that must be created is displayed in the console when playback starts.
-   - **Using the logo with other readers**: The same file can be used to display the logo in other readers by adding for example the following Preferences>Display>Album Art (front cover)
+   - **Using the logo with other readers**: The same file can be used to display the logo in other readers by adding for example the following in Preferences>Display>Album Art (front cover)
 `C:\Users\name\Desktop\foobar2000\profile\foo_artwork_data\logos\$replace(%path%,$char(47),$char(45),$char(92),$char(45),$char(448),$char(45),$char(58),$char(45),$char(42),$char(140),$char(34),$char(39)$char(39),$char(60),$char(95),$char(62),$char(95),$char(63),$char(95)).*`
    
    **Domain-Only Matching** (Fallback Compatibility):
@@ -266,7 +269,7 @@ The **Stream Delay** setting controls how long the component waits before checki
 
 The component uses the following priority order for artwork retrieval:
 
-1. **Local Files**: Searches music file directory for common artwork filenames
+1. **Local Files**: Searches all artwork files defined in foobar2000 Preferences > Display > Album Art
 2. **iTunes API**: Searches iTunes database (if enabled)
 3. **Deezer API**: Searches Deezer database (if enabled)
 4. **Last.fm API**: Searches Last.fm database (if enabled and API key provided)
