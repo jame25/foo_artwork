@@ -7,7 +7,8 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
-
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shlwapi.lib")
@@ -558,7 +559,7 @@ void artwork_manager::search_lastfm_api_async(const char* artist, const char* ti
     url << url_encode(cfg_lastfm_key.get_ptr());
     url << "&artist=" << url_encode(artist);
     url << "&track=" << url_encode(title);
-    url << "&format=json";
+    url << "&autocorrect=1&format=json";
     
     // Make async HTTP request
     async_io_manager::instance().http_get_async(url, [callback](bool success, const pfc::string8& response, const pfc::string8& error) {
@@ -621,7 +622,7 @@ void artwork_manager::perform_deezer_fallback_search(const char* artist, const c
         async_io_manager::instance().http_get_async(artist_only_url, [artist_copy, track_copy, callback](bool success, const pfc::string8& response, const pfc::string8& error) {
             if (success) {
                 pfc::string8 artwork_url;
-                if (artwork_manager::parse_deezer_json(response, artwork_url)) {
+                if (artwork_manager::parse_deezer_json(artist_copy, track_copy, response, artwork_url)) {
                     // Download artwork
                     async_io_manager::instance().http_get_binary_async(artwork_url, [callback](bool dl_success, const pfc::array_t<t_uint8>& data, const pfc::string8& dl_error) {
                         artwork_result result;
@@ -661,6 +662,9 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
     pfc::string8 search_query;
     pfc::string8 search_track = "track:\"";
     pfc::string8 search_artist = "artist:\"";
+    
+    // Build search query: "track"
+    // NOTE: Metadata cleaner (is valid for search) rule 1 stops it from being used
     if (!artist || strlen(artist) == 0) {
         search_query += search_track;
         search_query += track;
@@ -676,9 +680,9 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
         search_query += "\"";
     }
     
-    pfc::string8 url = "https://api.deezer.com/search/?q=";
+    pfc::string8 url = "https://api.deezer.com/search?q=";
     url << url_encode(search_query) << "&limit=10";
-
+   
     // Copy parameters to avoid lambda capture corruption
     pfc::string8 artist_str = artist;
     pfc::string8 track_str = track;
@@ -697,7 +701,7 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
         
         // Parse JSON response to extract artwork URL
         pfc::string8 artwork_url;
-        if (!artwork_manager::parse_deezer_json(response, artwork_url)) {
+        if (!artwork_manager::parse_deezer_json(artist_str, track_str, response, artwork_url)) {
             // Try fallback search strategies
             artwork_manager::perform_deezer_fallback_search(artist_str, track_str, callback);
             return;
@@ -964,170 +968,166 @@ bool artwork_manager::parse_itunes_json(const pfc::string8& json, pfc::string8& 
     return false;
 }
 
-bool artwork_manager::parse_deezer_json(const pfc::string8& json, pfc::string8& artwork_url) {
-    // Simple JSON parsing for Deezer response
-    // Look for "cover_xl" field in album data
-    const char* json_str = json.get_ptr();
+bool artwork_manager::parse_deezer_json(const char* artist, const char* track ,const pfc::string8& json_in, pfc::string8& artwork_url) {
     
-    
-    // Look for data array first, then find album within the first result
-    const char* data_pos = strstr(json_str, "\"data\":[");
-    if (!data_pos) {
-        return false;
-    }
-    
-    // Find first album object within data array
-    const char* album_pos = strstr(data_pos, "\"album\":");
-    if (!album_pos) {
-        return false;
-    }
-    
-    // Look for cover_xl within album section
-    const char* cover_pos = strstr(album_pos, "\"cover_xl\":");
-    if (cover_pos) {
-        // Skip past "cover_xl": and find the opening quote of the value
-        const char* colon_pos = strchr(cover_pos, ':');
-        if (colon_pos) {
-            const char* url_start = strchr(colon_pos, '"');
-            if (url_start) {
-                url_start++; // Skip opening quote
-                const char* url_end = strchr(url_start, '"');
-                if (url_end && url_end > url_start) {
-                    artwork_url = pfc::string8(url_start, url_end - url_start);
-                    
-                    // Unescape JSON slashes (replace \/ with /)
-                    pfc::string8 unescaped_url;
-                    const char* src = artwork_url.get_ptr();
-                    while (*src) {
-                        if (*src == '\\' && *(src + 1) == '/') {
-                            unescaped_url += "/";
-                            src += 2; // Skip both \ and /
-                        } else {
-                            char single_char[2] = {*src, '\0'};
-                            unescaped_url += single_char;
-                            src++;
-                        }
-                    }
-                    artwork_url = unescaped_url;
-                    
-                    // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
-                    const char* size_pos = strstr(artwork_url.get_ptr(), "1000x1000");
-                    if (size_pos) {
-                        pfc::string8 upgraded_url;
-                        upgraded_url << pfc::string8(artwork_url.get_ptr(), size_pos - artwork_url.get_ptr());
-                        upgraded_url << "1200x1200";
-                        upgraded_url << (size_pos + 9); // Skip past "1000x1000"
-                        artwork_url = upgraded_url;
-                    }
-                    
-                    return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
-                }
-            }
-        }
-    } else {
-    }
-    
-    // Fallback to cover_big
-    const char* cover_big_pos = strstr(album_pos, "\"cover_big\":");
-    if (cover_big_pos) {
-        // Skip past "cover_big": and find the opening quote of the value
-        const char* colon_pos = strchr(cover_big_pos, ':');
-        if (colon_pos) {
-            const char* url_start = strchr(colon_pos, '"');
-            if (url_start) {
-                url_start++; // Skip opening quote
-                const char* url_end = strchr(url_start, '"');
-                if (url_end && url_end > url_start) {
-                    artwork_url = pfc::string8(url_start, url_end - url_start);
-                    
-                    // Unescape JSON slashes (replace \/ with /)
-                    pfc::string8 unescaped_url;
-                    const char* src = artwork_url.get_ptr();
-                    while (*src) {
-                        if (*src == '\\' && *(src + 1) == '/') {
-                            unescaped_url += "/";
-                            src += 2; // Skip both \ and /
-                        } else {
-                            char single_char[2] = {*src, '\0'};
-                            unescaped_url += single_char;
-                            src++;
-                        }
-                    }
-                    artwork_url = unescaped_url;
-                    
-                    return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
-                }
-            }
-        }
-    }
-    
-    return false;
+    //using nlohmann/json
+
+    //convert to std::string
+    std::string json_data;
+    json_data += json_in;
+
+    //parse
+    json data = json::parse(json_data);
+
+    //sort by rank to get higher ratings values first (api parameter &order= doesn't work) 
+    std::sort(data["data"].begin(), data["data"].end(),
+        [](const json& a, const json& b) {
+            return a["rank"].get<int>() > b["rank"].get<int>();
+        });
+
+    //select root
+    json s = data["data"];
+
+   //search for exact same artist track values first
+   for (const auto& item : s.items())
+   {
+       if (item.value()["title"].get<std::string>() == track && item.value()["artist"]["name"].get<std::string>() == artist) {
+
+           //search cover_xl
+           if (item.value()["album"]["cover_xl"].get<std::string>().c_str()) {
+               artwork_url = item.value()["album"]["cover_xl"].get<std::string>().c_str();
+
+               // Unescape JSON slashes (replace \/ with /)
+               pfc::string8 unescaped_url;
+               const char* src = artwork_url.get_ptr();
+               while (*src) {
+                   if (*src == '\\' && *(src + 1) == '/') {
+                       unescaped_url += "/";
+                       src += 2; // Skip both \ and /
+                   }
+                   else {
+                       char single_char[2] = { *src, '\0' };
+                       unescaped_url += single_char;
+                       src++;
+                   }
+               }
+               artwork_url = unescaped_url;
+
+               // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
+               artwork_url = artwork_url.replace("1000x1000", "1200x1200");
+               return true;
+           }
+
+           //cover_big
+           if (item.value()["album"]["cover_big"].get<std::string>().c_str()) {
+               artwork_url = item.value()["album"]["cover_big"].get<std::string>().c_str();
+
+               // Unescape JSON slashes (replace \/ with /)
+               pfc::string8 unescaped_url;
+               const char* src = artwork_url.get_ptr();
+               while (*src) {
+                   if (*src == '\\' && *(src + 1) == '/') {
+                       unescaped_url += "/";
+                       src += 2; // Skip both \ and /
+                   }
+                   else {
+                       char single_char[2] = { *src, '\0' };
+                       unescaped_url += single_char;
+                       src++;
+                   }
+               }
+               artwork_url = unescaped_url;
+               return true;
+           }          
+       }
+   }
+
+   //No same artist title - get first found
+   for (const auto& item : s.items())
+   {
+           //search cover_xl
+           if (item.value()["album"]["cover_xl"].get<std::string>().c_str()) {
+               artwork_url = item.value()["album"]["cover_xl"].get<std::string>().c_str();
+
+               // Unescape JSON slashes (replace \/ with /)
+               pfc::string8 unescaped_url;
+               const char* src = artwork_url.get_ptr();
+               while (*src) {
+                   if (*src == '\\' && *(src + 1) == '/') {
+                       unescaped_url += "/";
+                       src += 2; // Skip both \ and /
+                   }
+                   else {
+                       char single_char[2] = { *src, '\0' };
+                       unescaped_url += single_char;
+                       src++;
+                   }
+               }
+               artwork_url = unescaped_url;
+
+               // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
+               artwork_url = artwork_url.replace("1000x1000", "1200x1200");
+               return true;
+           }
+
+           //cover_big
+           if (item.value()["album"]["cover_big"].get<std::string>().c_str()) {
+               artwork_url = item.value()["album"]["cover_big"].get<std::string>().c_str();
+
+               // Unescape JSON slashes (replace \/ with /)
+               pfc::string8 unescaped_url;
+               const char* src = artwork_url.get_ptr();
+               while (*src) {
+                   if (*src == '\\' && *(src + 1) == '/') {
+                       unescaped_url += "/";
+                       src += 2; // Skip both \ and /
+                   }
+                   else {
+                       char single_char[2] = { *src, '\0' };
+                       unescaped_url += single_char;
+                       src++;
+                   }
+               }
+               artwork_url = unescaped_url;
+               return true;
+           }
+
+           return false;
+   }
 }
 
-bool artwork_manager::parse_lastfm_json(const pfc::string8& json, pfc::string8& artwork_url) {
-  
-    // Simple JSON parsing for Last.fm response
-    // Look for image array with size "extralarge" or "large"
-    const char* json_str = json.get_ptr();
+bool artwork_manager::parse_lastfm_json(const pfc::string8& json_in, pfc::string8& artwork_url) {
     
-    // Look for image array
-    const char* image_pos = strstr(json_str, "\"image\":");
+    //using nlohmann/json
     
-    if (!image_pos) return false;
-    
-    // Try to find extralarge image first
-    const char* search_pos = image_pos;
-    while ((search_pos = strstr(search_pos, "\"size\":\"extralarge\"")) != nullptr) {
-        
-        // Look backwards for the URL in this image object
-        const char* url_search = search_pos;
-        while (url_search > image_pos && *url_search != '{') url_search--;
-        
-        const char* url_pos = strstr(url_search, "\"#text\":");
-        if (url_pos && url_pos < search_pos) {
-            const char* url_start = strchr(url_pos, '"');
-            if (url_start) {            
-                const char* url_end = strchr(url_start, '",');
-                if (url_end && url_end > url_start) {
-                    artwork_url = pfc::string8(url_start,  url_end - url_start - 1);
-                    if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http")) {
-                        artwork_url = strstr(artwork_url.get_ptr(), "http");
-			// Upgrade resolution to none for original quality
-                        artwork_url = artwork_url.replace("u/300x300", "u/");
-                        return true;
-                    }
-                }
-            }
+    std::string json_data;
+    json_data += json_in;
+
+    json data = json::parse(json_data);
+    json s = data["track"]["album"]["image"];
+
+    //extralarge
+    for (const auto& item : s.items())
+    {
+        if (item.value()["size"].get<std::string>() == "extralarge") {
+            artwork_url = item.value()["#text"].get<std::string>().c_str();
+            // Upgrade resolution to none for original quality
+            artwork_url = artwork_url.replace("u/300x300", "u/");
+            return true;
         }
-        search_pos++;
-        
     }
-    
-    // Fallback to large image
-    search_pos = image_pos;
-    while ((search_pos = strstr(search_pos, "\"size\":\"large\"")) != nullptr) {
-        const char* url_search = search_pos;
-        while (url_search > image_pos && *url_search != '{') url_search--;
-        
-        const char* url_pos = strstr(url_search, "\"#text\":");
-        if (url_pos && url_pos < search_pos) {
-            const char* url_start = strchr(url_pos, '"');
-            if (url_start) {
-                const char* url_end = strchr(url_start, '",');
-                if (url_end && url_end > url_start) {
-                    artwork_url = pfc::string8(url_start, url_end - url_start - 1);
-                    if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http")) {
-                        artwork_url = strstr(artwork_url.get_ptr(), "http");
-			// Upgrade resolution to none for original quality
-                        artwork_url = artwork_url.replace("u/174s", "u/");
-                        return true;
-                    }
-                }
-            }
+
+    //large
+    for (const auto& item : s.items())
+    {
+        if (item.value()["size"].get<std::string>() == "large") {
+            artwork_url = item.value()["#text"].get<std::string>().c_str();
+            // Upgrade resolution to none for original quality
+            artwork_url = artwork_url.replace("u/174s", "u/");
+            return true;
         }
-        search_pos++;
     }
-    
+
     return false;
 }
 
