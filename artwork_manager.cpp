@@ -618,7 +618,7 @@ void artwork_manager::perform_deezer_fallback_search(const char* artist, const c
     if (!artist_copy.is_empty()) {
         pfc::string8 artist_only_url = "https://api.deezer.com/search?q=";
         artist_only_url << artwork_manager::url_encode(search_query) << "&limit=5";
-       
+
         async_io_manager::instance().http_get_async(artist_only_url, [artist_copy, track_copy, callback](bool success, const pfc::string8& response, const pfc::string8& error) {
             if (success) {
                 pfc::string8 artwork_url;
@@ -682,7 +682,7 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
     
     pfc::string8 url = "https://api.deezer.com/search?q=";
     url << url_encode(search_query) << "&limit=10";
-   
+
     // Copy parameters to avoid lambda capture corruption
     pfc::string8 artist_str = artist;
     pfc::string8 track_str = track;
@@ -978,6 +978,9 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track ,c
 
     //parse
     json data = json::parse(json_data);
+    
+    //No data return
+    if (data["total"] == 0) return false;
 
     //sort by rank to get higher ratings values first (api parameter &order= doesn't work) 
     std::sort(data["data"].begin(), data["data"].end(),
@@ -1104,6 +1107,10 @@ bool artwork_manager::parse_lastfm_json(const pfc::string8& json_in, pfc::string
     json_data += json_in;
 
     json data = json::parse(json_data);
+
+    //No data return
+    if (data["message"] == "Track not found") return false;
+
     json s = data["track"]["album"]["image"];
 
     //extralarge
