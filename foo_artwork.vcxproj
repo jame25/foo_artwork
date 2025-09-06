@@ -98,7 +98,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;_CRT_SECURE_NO_WARNINGS;_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.;columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -124,7 +124,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.;columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -154,7 +154,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;_CRT_SECURE_NO_WARNINGS;_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.;columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -180,7 +180,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;FOOBAR2000_TARGET_VERSION=86;_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.;columns_ui/foobar2000;columns_ui;columns_ui/pfc;columns_ui/columns_ui-sdk</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
       <BufferSecurityCheck>false</BufferSecurityCheck>
