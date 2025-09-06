@@ -1267,18 +1267,55 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     artist = cleaned_artist;
     title = cleaned_title;
     
-    //If no artist and title is "artist - title" split 
-    if (cleaned_artist.empty()) {
+    //If no artist and title is "artist - title" (eg https://stream.radioclub80.cl:8022/retro80.opus)  split 
+    if (artist.empty()) {
         std::string delimiter = " - ";
-        size_t pos = cleaned_title.find(delimiter);
+        size_t pos = title.find(delimiter);
         if (pos != std::string::npos) {
-            std::string lvalue = cleaned_title.substr(0, pos);
-            std::string rvalue = cleaned_title.substr(pos + delimiter.length());
+            std::string lvalue = title.substr(0, pos);
+            std::string rvalue = title.substr(pos + delimiter.length());
             artist = lvalue;
             title = rvalue;
         }
+
+        //or "artist ˗ title" (eg https ://energybasel.ice.infomaniak.ch/energybasel-high.mp3)
+
+        std::string delimiter2 = " ˗ ";
+        size_t pos2 = title.find(delimiter2);
+        if (pos2 != std::string::npos) {
+            std::string lvalue = title.substr(0, pos2);
+            std::string rvalue = title.substr(pos2 + delimiter2.length());
+            artist = lvalue;
+            title = rvalue;
+        }
+
+        //or "artist / title" (eg https://radiostream.pl/tuba8-1.mp3?cache=1650763965 )
+
+        std::string delimiter3 = " / ";
+        size_t pos3 = title.find(delimiter3);
+        if (pos3 != std::string::npos) {
+            std::string lvalue = title.substr(0, pos3);
+            std::string rvalue = title.substr(pos3 + delimiter3.length());
+            artist = lvalue;
+            title = rvalue;
+        }
+
+    
         else {
             //do nothing
+        }
+    }
+
+    //WalmRadio
+    //If no title and artist is "title by artist" (eg https://icecast.walmradio.com:8443/classic)  split 
+    if (title.empty()) {
+        std::string delimiter = " by ";
+        size_t pos = artist.find(delimiter);
+        if (pos != std::string::npos) {
+            std::string lvalue = artist.substr(0, pos);
+            std::string rvalue = artist.substr(pos + delimiter.length());
+            artist = rvalue;
+            title = lvalue;
         }
     }
 

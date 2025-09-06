@@ -85,6 +85,18 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
         }
     }
     
+    // Remove common suffixes
+    std::vector<std::string> suffixes = {
+        "*** www.ipmusic.ch", "Classic Vinyl on walmradio.com","Adroit Jazz Underground on walmradio.com","OTR on walmradio.com" ,"Christmas Vinyl on walmradio.com","walmradio.com"
+    };
+
+    for (const auto& suffix : suffixes) {
+        if (str.size() >= suffix.size()) {
+            if (str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                str.erase(str.size() - suffix.size()); // remove suffix
+            }
+        }
+    }								 
     // Clean up whitespace (safe for all character sets)
     str = std::regex_replace(str, std::regex("\\s{2,}"), " ");
     str = trim(str);
