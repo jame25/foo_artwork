@@ -309,6 +309,11 @@ This approach provides:
 - **Complete SDK**: All necessary foobar2000 headers and libraries
 - **64-bit Ready**: Pre-compiled for x64 architecture
 
+### Additional libraries needed
+
+- **nlohmann/json** https://github.com/nlohmann/json
+
+
 ### Manual Build (Recommended)
 
 #### Step 1: Build SDK Dependencies
