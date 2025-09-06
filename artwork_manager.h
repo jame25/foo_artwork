@@ -71,7 +71,7 @@ private:
     static pfc::string8 generate_cache_key(const char* artist, const char* track);
     
     // JSON parsing functions
-    static bool parse_itunes_json(const pfc::string8& json, pfc::string8& artwork_url);
+    static bool parse_itunes_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url);
     static bool parse_deezer_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url);
     static bool parse_lastfm_json(const pfc::string8& json, pfc::string8& artwork_url);
     static bool parse_discogs_json(const pfc::string8& json, pfc::string8& artwork_url);

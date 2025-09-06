@@ -398,53 +398,14 @@ void artwork_manager::search_itunes_api_async(const char* artist, const char* tr
        
         // Parse JSON response to extract artwork URL
         pfc::string8 artwork_url;
-        if (!parse_itunes_json(response, artwork_url)) {
-            
-            // Fallback: try searching as an album instead
-            pfc::string8 album_url = "https://itunes.apple.com/search?term=";
-            album_url << artwork_manager::url_encode(artist_str) << "+" << artwork_manager::url_encode(track_str);
-            album_url << "&entity=album&limit=5";
-            
-            async_io_manager::instance().http_get_async(album_url, [callback](bool album_success, const pfc::string8& album_response, const pfc::string8& album_error) {
-                if (!album_success) {
-                    artwork_result result;
-                    result.success = false;
-                    result.error_message = "iTunes API album search failed: ";
-                    result.error_message << album_error;
-                    callback(result);
-                    return;
-                }
-                
-                
-                pfc::string8 album_artwork_url;
-                if (!artwork_manager::parse_itunes_json(album_response, album_artwork_url)) {
-                    artwork_result result;
-                    result.success = false;
-                    result.error_message = "No artwork found in iTunes response";
-                    callback(result);
-                    return;
-                }
-                
-               
-                
-                // Download the artwork image
-                async_io_manager::instance().http_get_binary_async(album_artwork_url, [callback, album_artwork_url](bool download_success, const pfc::array_t<t_uint8>& data, const pfc::string8& download_error) {
-                    artwork_result result;
-                    if (download_success && data.get_size() > 0) {
-                        result.success = true;
-                        result.data = data;
-                        result.mime_type = artwork_manager::detect_mime_type(data.get_ptr(), data.get_size());
-                        result.source = "iTunes";
-                    } else {
-                        result.success = false;
-                        result.error_message = "Failed to download iTunes artwork: ";
-                        result.error_message << download_error;
-                    }
-                    callback(result);
-                });
-            });
+        if (!parse_itunes_json(artist_str, track_str, response, artwork_url)) {
+            artwork_result result;
+            result.success = false;
+            result.error_message = "No artwork found in itunes response";
+            callback(result);
             return;
         }
+
         
         
         // Download the artwork image
@@ -889,80 +850,146 @@ pfc::string8 artwork_manager::generate_cache_key(const char* artist, const char*
 }
 
 // JSON parsing implementations
-bool artwork_manager::parse_itunes_json(const pfc::string8& json, pfc::string8& artwork_url) {
-    // Simple JSON parsing for iTunes response
-    // Look for artwork URLs and upgrade to highest available resolution
-    const char* json_str = json.get_ptr();
+bool artwork_manager::parse_itunes_json(const char* artist, const char* track, const pfc::string8& json_in, pfc::string8& artwork_url) {
 
-    
+    //using nlohmann/json
+
+    std::string json_data;
+    json_data += json_in;
+
+    json data = json::parse(json_data);
+
+    //No data return
+    if (data["resultCount"] == 0) return false;
+
+    // root
+    json s = data["results"];
+
     // Try multiple artwork URL fields in order of preference
-    const char* artwork_fields[] = {
-        "\"artworkUrl600\":",    // 600x600 (if available)
-        "\"artworkUrl512\":",    // 512x512 (if available) 
-        "\"artworkUrl100\":",    // 100x100 (most common)
-        "\"artworkUrl60\":",     // 60x60 (fallback)
-        "\"artworkUrl30\":"      // 30x30 (smallest)
-    };
-    
-    for (int i = 0; i < 5; i++) {
+ 
+    //search for exact same artist track values first
+    for (const auto& item : s)
+    {
+        
+        if (item["trackName"].get<std::string>() == track && item["artistName"].get<std::string>() == artist) {
 
-        const char* url_pos = strstr(json_str, artwork_fields[i]);
-        if (url_pos) {
-            
-            // Find the colon after the field name
-            const char* colon_pos = strchr(url_pos, ':');
-            if (colon_pos) {
-                // Skip past colon and any whitespace, then find opening quote of URL value
-                const char* url_start = colon_pos + 1;
-                while (*url_start == ' ' || *url_start == '\t') url_start++; // Skip whitespace
-                if (*url_start == '"') {
-                    url_start++; // Skip opening quote
-                    const char* url_end = strchr(url_start, '"');
-                    if (url_end && url_end > url_start) {
-                    artwork_url = pfc::string8(url_start, url_end - url_start);
-                    
-                    
-                    // Upgrade any resolution to 1200x1200 using iTunes URL manipulation with quality settings
-                    if (artwork_url.find_first("100x100") != pfc_infinite) {
-                        artwork_url.replace_string("100x100", "1200x1200");
-                    } else if (artwork_url.find_first("60x60") != pfc_infinite) {
-                        artwork_url.replace_string("60x60", "1200x1200");
-                    } else if (artwork_url.find_first("30x30") != pfc_infinite) {
-                        artwork_url.replace_string("30x30", "1200x1200");
-                    } else if (artwork_url.find_first("600x600") != pfc_infinite) {
-                        artwork_url.replace_string("600x600", "1200x1200");
-                    } else if (artwork_url.find_first("512x512") != pfc_infinite) {
-                        artwork_url.replace_string("512x512", "1200x1200");
-                    }
-                    
-                    // Set compression quality: 80 for PNG files, 90 for JPEG files
-                    if (artwork_url.find_first(".png") != pfc_infinite) {
-                        // For PNG files: add bb-80 quality parameter  
-                        if (artwork_url.find_first("bb.png") != pfc_infinite) {
-                            artwork_url.replace_string("bb.png", "bb-80.png");
-                        } else if (artwork_url.find_first("bf.png") != pfc_infinite) {
-                            artwork_url.replace_string("bf.png", "bb-80.png");
-                        } else if (artwork_url.find_first("1200x1200.png") != pfc_infinite) {
-                            artwork_url.replace_string("1200x1200.png", "1200x1200bb-80.png");
-                        }
-                    } else if (artwork_url.find_first(".jpg") != pfc_infinite || artwork_url.find_first(".jpeg") != pfc_infinite) {
-                        // For JPEG files: add bb-90 quality parameter for better quality
-                        if (artwork_url.find_first("bb.jpg") != pfc_infinite) {
-                            artwork_url.replace_string("bb.jpg", "bb-90.jpg");
-                        } else if (artwork_url.find_first("bf.jpg") != pfc_infinite) {
-                            artwork_url.replace_string("bf.jpg", "bb-90.jpg");
-                        } else if (artwork_url.find_first("1200x1200.jpg") != pfc_infinite) {
-                            artwork_url.replace_string("1200x1200.jpg", "1200x1200bb-90.jpg");
-                        }
-                    }
-                    
-                    bool is_valid = !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
+            if (item.contains("artworkUrl600")) {
+                artwork_url = item["artworkUrl600"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("600x600", "1200x1200");
+            }
+            else if (item.contains("artworkUrl512")) {
+                artwork_url = item["artworkUrl512"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("512x512", "1200x1200");
+            }
+            else if (item.contains("artworkUrl100")) {
+                artwork_url = item["artworkUrl100"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("100x100", "1200x1200");
+            }
+            else if (item.contains("artworkUrl60")) {
+                artwork_url = item["artworkUrl60"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("60x60", "1200x1200");
+            }
+            else if (item.contains("artworkUrl30")) {
+                artwork_url = item["artworkUrl30"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("30x30", "1200x1200");
+            }
 
-                    return is_valid;
-                    }
+            // Set compression quality: 80 for PNG files, 90 for JPEG files
+            if (artwork_url.find_first(".png") != pfc_infinite) {
+                // For PNG files: add bb-80 quality parameter  
+                if (artwork_url.find_first("bb.png") != pfc_infinite) {
+                    artwork_url.replace_string("bb.png", "bb-80.png");
+                }
+                else if (artwork_url.find_first("bf.png") != pfc_infinite) {
+                    artwork_url.replace_string("bf.png", "bb-80.png");
+                }
+                else if (artwork_url.find_first("1200x1200.png") != pfc_infinite) {
+                    artwork_url.replace_string("1200x1200.png", "1200x1200bb-80.png");
                 }
             }
+            else if (artwork_url.find_first(".jpg") != pfc_infinite || artwork_url.find_first(".jpeg") != pfc_infinite) {
+                // For JPEG files: add bb-90 quality parameter for better quality
+                if (artwork_url.find_first("bb.jpg") != pfc_infinite) {
+                    artwork_url.replace_string("bb.jpg", "bb-90.jpg");
+                }
+                else if (artwork_url.find_first("bf.jpg") != pfc_infinite) {
+                    artwork_url.replace_string("bf.jpg", "bb-90.jpg");
+                }
+                else if (artwork_url.find_first("1200x1200.jpg") != pfc_infinite) {
+                    artwork_url.replace_string("1200x1200.jpg", "1200x1200bb-90.jpg");
+                }
+            }
+
+            bool is_valid = !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
+
+            return is_valid;
         }
+    }
+
+    //No same artist title - get first found
+    for (const auto& item : s)
+    {
+            if (item.contains("artworkUrl600")) {
+                artwork_url = item["artworkUrl600"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("600x600", "1200x1200");
+            }
+            else if (item.contains("artworkUrl512")) {
+                artwork_url = item["artworkUrl512"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("512x512", "1200x1200");
+            }
+            else if (item.contains("artworkUrl100")) {
+                artwork_url = item["artworkUrl100"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("100x100", "1200x1200");
+            }
+            else if (item.contains("artworkUrl60")) {
+                artwork_url = item["artworkUrl60"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("60x60", "1200x1200");
+            }
+            else if (item.contains("artworkUrl30")) {
+                artwork_url = item["artworkUrl30"].get<std::string>().c_str();
+                // Upgrade resolution to none for original quality
+                artwork_url.replace_string("30x30", "1200x1200");
+            }
+
+            // Set compression quality: 80 for PNG files, 90 for JPEG files
+            if (artwork_url.find_first(".png") != pfc_infinite) {
+                // For PNG files: add bb-80 quality parameter  
+                if (artwork_url.find_first("bb.png") != pfc_infinite) {
+                    artwork_url.replace_string("bb.png", "bb-80.png");
+                }
+                else if (artwork_url.find_first("bf.png") != pfc_infinite) {
+                    artwork_url.replace_string("bf.png", "bb-80.png");
+                }
+                else if (artwork_url.find_first("1200x1200.png") != pfc_infinite) {
+                    artwork_url.replace_string("1200x1200.png", "1200x1200bb-80.png");
+                }
+            }
+            else if (artwork_url.find_first(".jpg") != pfc_infinite || artwork_url.find_first(".jpeg") != pfc_infinite) {
+                // For JPEG files: add bb-90 quality parameter for better quality
+                if (artwork_url.find_first("bb.jpg") != pfc_infinite) {
+                    artwork_url.replace_string("bb.jpg", "bb-90.jpg");
+                }
+                else if (artwork_url.find_first("bf.jpg") != pfc_infinite) {
+                    artwork_url.replace_string("bf.jpg", "bb-90.jpg");
+                }
+                else if (artwork_url.find_first("1200x1200.jpg") != pfc_infinite) {
+                    artwork_url.replace_string("1200x1200.jpg", "1200x1200bb-90.jpg");
+                }
+            }
+
+            bool is_valid = !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
+
+            return is_valid;
+        
     }
     
     return false;
@@ -978,7 +1005,7 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track ,c
 
     //parse
     json data = json::parse(json_data);
-    
+
     //No data return
     if (data["total"] == 0) return false;
 
