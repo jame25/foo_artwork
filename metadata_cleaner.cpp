@@ -61,6 +61,9 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     // Remove everything after pipe | (like "Hit 'N Run Lover || 4153 || S || 2ca82642-1c07-42f0-972b-1a663c1c39b9")
     str = std::regex_replace(str, std::regex("\\|.*"), "");
 
+    // Remove everything after •  (like "DERNIÈRE DANSE • 00:01/03:17, 7172003159940796416")
+    str = std::regex_replace(str, std::regex("\\•.*"), "");
+
     // Process tidle (like "Electric Light Orchestra~Last Train To London~Discovery~1979")
     std::regex pattern("^(([^~]*~){1}[^~]*)");
     std::smatch match;
@@ -85,6 +88,18 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
         }
     }
     
+    // Remove common suffixes
+    std::vector<std::string> suffixes = {
+        "*** www.ipmusic.ch", "Classic Vinyl on walmradio.com","Adroit Jazz Underground on walmradio.com","OTR on walmradio.com" ,"Christmas Vinyl on walmradio.com","walmradio.com"
+    };
+
+    for (const auto& suffix : suffixes) {
+        if (str.size() >= suffix.size()) {
+            if (str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                str.erase(str.size() - suffix.size()); // remove suffix
+            }
+        }
+    }								 
     // Clean up whitespace (safe for all character sets)
     str = std::regex_replace(str, std::regex("\\s{2,}"), " ");
     str = trim(str);

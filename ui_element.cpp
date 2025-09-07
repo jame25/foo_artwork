@@ -750,6 +750,22 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             }
         }  
 
+		        //WalmRadio
+        //If no title and artist is "title by artist" (eg https://icecast.walmradio.com:8443/classic)  split 
+        if (cleaned_track.empty()) {
+
+            //not use extract_first_artist , clean again
+            cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
+           
+            std::string delimiter = " by ";
+            size_t pos = cleaned_artist.find(delimiter);
+            if (pos != std::string::npos) {
+                std::string lvalue = cleaned_artist.substr(0, pos);
+                std::string rvalue = cleaned_artist.substr(pos + delimiter.length());
+                cleaned_artist = rvalue;
+                cleaned_track = lvalue;
+            }
+        }	   
         //Don't search if received same artist title
         //same info - don't search - stop
         if (m_dinfo_artist == cleaned_artist && m_dinfo_title == cleaned_track) {

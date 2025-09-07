@@ -293,6 +293,11 @@ private:
     bool is_metadata_valid_for_search(const char* artist, const char* title);  // Metadata validation
 	bool is_inverted_internet_stream(metadb_handle_ptr track, const file_info& p_info); //Inverted stream detection helper																													  
 
+    // Stream dynamic info metadata storage
+    void clear_dinfo();
+    std::string m_dinfo_artist;
+    std::string m_dinfo_title;
+
 public:
     // Static color change handler (public so color client can access it)
     static void g_on_colours_change();
@@ -1060,6 +1065,12 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
     }
 }
 
+void CUIArtworkPanel::clear_dinfo() {
+    m_dinfo_artist.clear();
+    m_dinfo_title.clear();
+}
+
+
 void CUIArtworkPanel::on_playback_stop(play_control::t_stop_reason p_reason) {
     if (!m_hWnd) return;
     
@@ -1073,6 +1084,7 @@ void CUIArtworkPanel::on_playback_stop(play_control::t_stop_reason p_reason) {
             force_clear_artwork_bitmap();
         }
         m_osd_text = "";
+        clear_dinfo();
     }
 }
 
@@ -1101,185 +1113,74 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     std::string cleaned_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
     std::string cleaned_title = MetadataCleaner::clean_for_search(title.c_str(), true);
     
-    // 2. Remove featuring patterns in parentheses/brackets (including unclosed ones)
-    auto remove_featuring_in_brackets = [](std::string& str) {
-        // Remove featuring patterns in parentheses - handles both complete and unclosed parentheses
-        // Patterns: (ft. Artist), (feat. Artist), (featuring Artist), (Ft. Artist), etc.
-        std::vector<std::string> feat_patterns = {
-            "ft\\.", "feat\\.", "featuring", "Ft\\.", "Feat\\.", "Featuring", 
-            "FT\\.", "FEAT\\.", "FEATURING"
-        };
-        
-        for (const auto& pattern : feat_patterns) {
-            // Match parentheses with featuring pattern: "(ft. Artist)" or "(ft. Artist" (unclosed)
-            std::string paren_regex = "\\s*\\(\\s*" + pattern + "\\s+[^)]*\\)?\\s*";
-            str = std::regex_replace(str, std::regex(paren_regex, std::regex_constants::icase), " ");
-            
-            // Match square brackets with featuring pattern: "[ft. Artist]" or "[ft. Artist" (unclosed)
-            std::string bracket_regex = "\\s*\\[\\s*" + pattern + "\\s+[^\\]]*\\]?\\s*";
-            str = std::regex_replace(str, std::regex(bracket_regex, std::regex_constants::icase), " ");
-        }
-        
-        // Clean up any remaining unmatched opening brackets/parentheses at the end
-        // This handles cases like "Song Title (Ft. Artist" where the closing ) is missing
-        std::regex trailing_open("\\s*[\\(\\[]\\s*$");
-        str = std::regex_replace(str, trailing_open, "");
-        
-        // Remove multiple consecutive spaces
-        std::regex multi_space("\\s{2,}");
-        str = std::regex_replace(str, multi_space, " ");
-        
-        // Trim leading and trailing spaces
-        str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
-    };
-    
-    // 3. Remove bracketed information and quality indicators
-    auto remove_bracketed_info = [](std::string& str) {
-        std::vector<std::string> patterns = {
-            "[Live]", "[Explicit]", "[Remastered]", "[Radio Edit]", "[Extended]", "[Remix]",
-            "[HD]", "[HQ]", "[320kbps]", "[256kbps]", "[192kbps]", "[128kbps]",
-            "(Live)", "(Explicit)", "(Remastered)", "(Radio Edit)", "(Extended)", "(Remix)",
-            "(HD)", "(HQ)", "(320kbps)", "(256kbps)", "(192kbps)", "(128kbps)"
-        };
-        
-        for (const auto& pattern : patterns) {
-            size_t pos = 0;
-            while ((pos = str.find(pattern, pos)) != std::string::npos) {
-                str.erase(pos, pattern.length());
-                // Clean up any double spaces
-                while ((pos = str.find("  ", pos)) != std::string::npos) {
-                    str.replace(pos, 2, " ");
-                }
-            }
-        }
-    };
-    
-    // 3. Remove time/duration indicators
-    auto remove_duration_info = [](std::string& str) {
-        // Remove (MM:SS) or (M:SS) patterns
-        std::regex duration_regex("\\s*\\(\\d{1,2}:\\d{2}\\)\\s*");
-        str = std::regex_replace(str, duration_regex, " ");
-        
-        // Remove " - MM:SS" or " - M:SS" timestamp patterns at the end (like " - 0:00")
-        std::regex dash_time_regex("\\s+-\\s+\\d{1,2}:\\d{2}\\s*$");
-        str = std::regex_replace(str, dash_time_regex, "");
-        
-        // Remove " - MM.SS" or " - M.SS" timestamp patterns with decimal point (like " - 0.00")
-        std::regex dash_decimal_regex("\\s+-\\s+\\d{1,2}\\.\\d{2}\\s*$");
-        str = std::regex_replace(str, dash_decimal_regex, "");
-        
-        // Remove " - X.XX" numeric timestamp patterns at the end
-        size_t dash_pos = str.rfind(" - ");
-        if (dash_pos != std::string::npos) {
-            std::string suffix = str.substr(dash_pos + 3);
-            // Check if suffix is a number (with optional decimal point)
-            bool is_numeric = true;
-            bool has_dot = false;
-            for (char c : suffix) {
-                if (c == '.' && !has_dot) {
-                    has_dot = true;
-                } else if (!isdigit(c)) {
-                    is_numeric = false;
-                    break;
-                }
-            }
-            if (is_numeric && !suffix.empty()) {
-                str = str.substr(0, dash_pos);
-            }
-        }
-    };
-    
-    // 4. Normalize artist collaborations
-    auto normalize_collaborations = [](std::string& str) {
-        // Normalize featuring patterns
-        std::vector<std::pair<std::string, std::string>> feat_patterns = {
-            {" ft. ", " feat. "}, {" ft ", " feat. "}, {" featuring ", " feat. "},
-            {" Ft. ", " feat. "}, {" Ft ", " feat. "}, {" Featuring ", " feat. "},
-            {" FT. ", " feat. "}, {" FT ", " feat. "}, {" FEATURING ", " feat. "}
-        };
-        
-        for (const auto& pattern : feat_patterns) {
-            size_t pos = 0;
-            while ((pos = str.find(pattern.first, pos)) != std::string::npos) {
-                str.replace(pos, pattern.first.length(), pattern.second);
-                pos += pattern.second.length();
-            }
-        }
-        
-        // Normalize vs/versus patterns
-        std::vector<std::pair<std::string, std::string>> vs_patterns = {
-            {" vs. ", " vs "}, {" vs ", " vs "}, {" versus ", " vs "},
-            {" Vs. ", " vs "}, {" Vs ", " vs "}, {" Versus ", " vs "},
-            {" VS. ", " vs "}, {" VS ", " vs "}, {" VERSUS ", " vs "}
-        };
-        
-        for (const auto& pattern : vs_patterns) {
-            size_t pos = 0;
-            while ((pos = str.find(pattern.first, pos)) != std::string::npos) {
-                str.replace(pos, pattern.first.length(), pattern.second);
-                pos += pattern.second.length();
-            }
-        }
-        
-        // Normalize & patterns (be careful not to break band names)
-        str = std::regex_replace(str, std::regex("\\s+&\\s+"), " & ");
-    };
-    
-    // 5. Clean up encoding artifacts and normalize spacing
-    auto clean_encoding_artifacts = [](std::string& str) {
-        // Normalize quotes and apostrophes
-        std::vector<std::pair<std::string, std::string>> quote_patterns = {
-            {"\u201C", "\""}, {"\u201D", "\""}, {"\u2018", "'"}, {"\u2019", "'"},
-            {"\u201A", "'"}, {"\u201E", "\""}, {"\u2039", "<"}, {"\u203A", ">"}
-        };
-        
-        for (const auto& pattern : quote_patterns) {
-            size_t pos = 0;
-            while ((pos = str.find(pattern.first, pos)) != std::string::npos) {
-                str.replace(pos, pattern.first.length(), pattern.second);
-                pos += pattern.second.length();
-            }
-        }
-        
-        // Remove multiple consecutive spaces
-        std::regex multi_space("\\s{2,}");
-        str = std::regex_replace(str, multi_space, " ");
-        
-        // Trim leading and trailing spaces
-        str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
-    };
-    
-    // Remove all parenthetical content (like "(Vocal Version)", "(Remix)", etc.)
-    auto remove_all_parentheses = [](std::string& str) {
-        std::regex paren_content_regex("\\s*\\([^)]*\\)\\s*");
-        str = std::regex_replace(str, paren_content_regex, " ");
-        
-        // Clean up multiple spaces
-        std::regex multi_space("\\s{2,}");
-        str = std::regex_replace(str, multi_space, " ");
-        
-        // Trim leading and trailing spaces
-        str = std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
-    };
-    
+   
+
     // Apply the unified cleaning to both artist and title  
     // This replaces all the complex lambda functions with UTF-8 safe processing
     artist = cleaned_artist;
     title = cleaned_title;
     
-    //If no artist and title is "artist - title" split 
-    if (cleaned_artist.empty()) {
+    //If no artist and title is "artist - title" (eg https://stream.radioclub80.cl:8022/retro80.opus)  split 
+    if (artist.empty()) {
         std::string delimiter = " - ";
-        size_t pos = cleaned_title.find(delimiter);
+        size_t pos = title.find(delimiter);
         if (pos != std::string::npos) {
-            std::string lvalue = cleaned_title.substr(0, pos);
-            std::string rvalue = cleaned_title.substr(pos + delimiter.length());
+            std::string lvalue = title.substr(0, pos);
+            std::string rvalue = title.substr(pos + delimiter.length());
             artist = lvalue;
             title = rvalue;
         }
+
+        //or "artist ˗ title" (eg https ://energybasel.ice.infomaniak.ch/energybasel-high.mp3)
+
+        std::string delimiter2 = " ˗ ";
+        size_t pos2 = title.find(delimiter2);
+        if (pos2 != std::string::npos) {
+            std::string lvalue = title.substr(0, pos2);
+            std::string rvalue = title.substr(pos2 + delimiter2.length());
+            artist = lvalue;
+            title = rvalue;
+        }
+
+        //or "artist / title" (eg https://radiostream.pl/tuba8-1.mp3?cache=1650763965 )
+
+        std::string delimiter3 = " / ";
+        size_t pos3 = title.find(delimiter3);
+        if (pos3 != std::string::npos) {
+            std::string lvalue = title.substr(0, pos3);
+            std::string rvalue = title.substr(pos3 + delimiter3.length());
+            artist = lvalue;
+            title = rvalue;
+        }
+
+    
         else {
             //do nothing
         }
+    }
+
+    //WalmRadio
+    //If no title and artist is "title by artist" (eg https://icecast.walmradio.com:8443/classic)  split 
+    if (title.empty()) {
+        std::string delimiter = " by ";
+        size_t pos = artist.find(delimiter);
+        if (pos != std::string::npos) {
+            std::string lvalue = artist.substr(0, pos);
+            std::string rvalue = artist.substr(pos + delimiter.length());
+            artist = rvalue;
+            title = lvalue;
+        }
+    }
+
+    //Don't search if received same artist title
+    //same info - don't search - stop
+    if (m_dinfo_artist == cleaned_artist && m_dinfo_title == cleaned_title) {
+        return;
+    }
+    else {
+        //differnet info - save new info and continue
+        m_dinfo_artist = cleaned_artist;
+        m_dinfo_title = cleaned_title;
     }
 
     // Apply comprehensive metadata validation using the unified cleaner (same as DUI)
