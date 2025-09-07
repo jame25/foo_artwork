@@ -61,6 +61,9 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     // Remove everything after pipe | (like "Hit 'N Run Lover || 4153 || S || 2ca82642-1c07-42f0-972b-1a663c1c39b9")
     str = std::regex_replace(str, std::regex("\\|.*"), "");
 
+    // Remove everything after •  (like "DERNIÈRE DANSE • 00:01/03:17, 7172003159940796416")
+    str = std::regex_replace(str, std::regex("\\•.*"), "");
+
     // Process tidle (like "Electric Light Orchestra~Last Train To London~Discovery~1979")
     std::regex pattern("^(([^~]*~){1}[^~]*)");
     std::smatch match;
