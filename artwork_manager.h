@@ -74,7 +74,7 @@ private:
     static bool parse_itunes_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url);
     static bool parse_deezer_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url);
     static bool parse_lastfm_json(const pfc::string8& json, pfc::string8& artwork_url);
-    static bool parse_discogs_json(const pfc::string8& json, pfc::string8& artwork_url);
+    static bool parse_discogs_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url);
     static bool parse_musicbrainz_json(const pfc::string8& json, pfc::string8& release_id);
     
     // Initialization flag

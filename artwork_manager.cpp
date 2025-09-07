@@ -449,7 +449,7 @@ void artwork_manager::search_discogs_api_async(const char* artist, const char* t
     pfc::string8 url = "https://api.discogs.com/database/search?q=";
     url << url_encode(search_query);
     url << "&type=release";
-    
+
     // Add authentication - prefer personal token over consumer credentials
     if (has_token) {
         url << "&token=" << url_encode(cfg_discogs_key.get_ptr());
@@ -457,7 +457,7 @@ void artwork_manager::search_discogs_api_async(const char* artist, const char* t
         url << "&key=" << url_encode(cfg_discogs_consumer_key.get_ptr());
         url << "&secret=" << url_encode(cfg_discogs_consumer_secret.get_ptr());
     }
-       
+
     // Copy parameters to avoid lambda capture issues
     pfc::string8 artist_str = artist;
     pfc::string8 track_str = track;
@@ -477,7 +477,7 @@ void artwork_manager::search_discogs_api_async(const char* artist, const char* t
         
         // Parse JSON response to extract artwork URL
         pfc::string8 artwork_url;
-        if (!parse_discogs_json(response, artwork_url)) {
+        if (!parse_discogs_json(artist_str, track_str, response, artwork_url)) {
             artwork_result result;
             result.success = false;
             result.error_message = "No artwork found in Discogs response";
@@ -1165,66 +1165,57 @@ bool artwork_manager::parse_lastfm_json(const pfc::string8& json_in, pfc::string
     return false;
 }
 
-bool artwork_manager::parse_discogs_json(const pfc::string8& json, pfc::string8& artwork_url) {
-    // Simple JSON parsing for Discogs response
-    // Look for "thumb" or "cover_image" field in results
-    const char* json_str = json.get_ptr();
+bool artwork_manager::parse_discogs_json(const char* artist, const char* track, const pfc::string8& json_in, pfc::string8& artwork_url) {
+    
+    //using nlohmann/json
 
-    
-    // Look for results array
-    const char* results_pos = strstr(json_str, "\"results\":");
-    if (!results_pos) {
-        return false;
-    }
- 
-    
-    // Try cover_image first (higher quality)
-    const char* cover_pos = strstr(results_pos, "\"cover_image\":");
-    if (cover_pos) {
-        
-        // Find the colon after the field name
-        const char* colon_pos = strchr(cover_pos, ':');
-        if (colon_pos) {
-            // Skip past colon and any whitespace, then find opening quote of URL value
-            const char* url_start = colon_pos + 1;
-            while (*url_start == ' ' || *url_start == '\t') url_start++; // Skip whitespace
-            if (*url_start == '"') {
-                url_start++; // Skip opening quote
-                const char* url_end = strchr(url_start, '"');
-                if (url_end && url_end > url_start) {
-                    artwork_url = pfc::string8(url_start, url_end - url_start);
-                    
-                    if (!artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr()) {
-                        return true;
-                    }
-                }
+    std::string json_data;
+    json_data += json_in;
+
+    json data = json::parse(json_data);
+
+    //No data return
+    if (data["pagination"]["items"] == 0) return false;
+
+    // root
+    json s = data["results"];
+
+    //search for exact same artist - track value first
+    std::string artist_title;
+    artist_title += artist;
+    artist_title += " - ";
+    artist_title += track;
+
+    for (const auto& item : s.items())
+    {
+        if (item.value()["title"].get<std::string>() == artist_title) {
+            console::info("here");
+            if (item.value()["cover_image"].get<std::string>().c_str()) {
+                artwork_url = item.value()["cover_image"].get<std::string>().c_str();
+                return true;
+            }
+            else if (item.value()["thumb"].get<std::string>().c_str()) {
+                artwork_url = item.value()["thumb"].get<std::string>().c_str();
+                return true;
             }
         }
     }
-    
-    // Fallback to thumb
-    const char* thumb_pos = strstr(results_pos, "\"thumb\":");
-    if (thumb_pos) {
-        
-        // Find the colon after the field name
-        const char* colon_pos = strchr(thumb_pos, ':');
-        if (colon_pos) {
-            // Skip past colon and any whitespace, then find opening quote of URL value
-            const char* url_start = colon_pos + 1;
-            while (*url_start == ' ' || *url_start == '\t') url_start++; // Skip whitespace
-            if (*url_start == '"') {
-                url_start++; // Skip opening quote
-                const char* url_end = strchr(url_start, '"');
-                if (url_end && url_end > url_start) {
-                    artwork_url = pfc::string8(url_start, url_end - url_start);
-                    
-                    
-                    return !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
-                }
-            }
+
+    //No same artist title - get first found
+    for (const auto& item : s.items())
+    {
+        if (item.value()["cover_image"].get<std::string>().c_str()) {
+            artwork_url = item.value()["cover_image"].get<std::string>().c_str();
+            console::info(artwork_url);
+            return true;
+        }
+        else if (item.value()["thumb"].get<std::string>().c_str()) {
+            artwork_url = item.value()["thumb"].get<std::string>().c_str();
+            return true;
         }
     }
-    
+
+
     return false;
 }
 
