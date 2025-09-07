@@ -1189,7 +1189,6 @@ bool artwork_manager::parse_discogs_json(const char* artist, const char* track, 
     for (const auto& item : s.items())
     {
         if (item.value()["title"].get<std::string>() == artist_title) {
-            console::info("here");
             if (item.value()["cover_image"].get<std::string>().c_str()) {
                 artwork_url = item.value()["cover_image"].get<std::string>().c_str();
                 return true;
@@ -1206,7 +1205,6 @@ bool artwork_manager::parse_discogs_json(const char* artist, const char* track, 
     {
         if (item.value()["cover_image"].get<std::string>().c_str()) {
             artwork_url = item.value()["cover_image"].get<std::string>().c_str();
-            console::info(artwork_url);
             return true;
         }
         else if (item.value()["thumb"].get<std::string>().c_str()) {
