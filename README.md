@@ -234,7 +234,6 @@ Configure:
 - **API Services**: Enable/disable individual API services
 - **API Keys**: Set API keys and consumer credentials for services that require them
 - **Priority Order**: Customize the fallback chain by selecting your preferred API for each position
-- **Stream Delay**: Configure delay (1-30 seconds) before checking metadata on internet radio streams
 - **Clear panel when playback stopped**: Option to automatically clear the artwork panel when playback stops
 - All changes are saved automatically
 
@@ -243,20 +242,6 @@ The **Priority** section contains five dropdown menus allowing you to customize 
 - Each dropdown lists all available APIs (iTunes, Deezer, Last.fm, MusicBrainz, Discogs)
 - Arrange them in your preferred order from left to right (highest to lowest priority)
 - Only enabled APIs will be used during searches, disabled APIs are automatically skipped
-
-#### Stream Delay (May fix stream issues)
-The **Stream Delay** setting controls how long the component waits before checking metadata and searching for artwork when **initially connecting** to internet radio streams:
-
-- **Range**: 1-10 seconds (adjustable with up/down arrows)
-- **Default**: 0 seconds
-- **Purpose**: Allows radio streams time to provide proper track metadata before artwork search begins
-- **When to increase**: If you experience issues with artwork searches using station names instead of track names
-- **Applies to**: Initial stream connections and station name detection
-
-**Recommended values:**
-- **Fast streams**: 0-2 seconds (default works well for most streams)
-- **Slow streams**: 3-5 seconds (for streams that take longer to provide initial track metadata)  
-- **Problem streams**: 5-10 seconds (for streams with persistent initial metadata issues)
 
 ## Usage
 
