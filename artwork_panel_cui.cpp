@@ -77,7 +77,6 @@ extern std::wstring g_current_artwork_path;
 
 // Global preference settings
 extern cfg_bool cfg_show_osd;
-extern cfg_int cfg_stream_delay;
 extern cfg_bool cfg_enable_custom_logos;
 extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
@@ -551,7 +550,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
             }
         } else if (wParam == 101) {
-            // Stream delay timer fired - now do the delayed search
+            // Delay timer fired - now do the delayed search
             KillTimer(m_hWnd, 101);
             
             // CHECK: Only trigger API search if we don't already have tagged artwork  
@@ -630,7 +629,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 // IMPORTANT: Kill all fallback timers since we found artwork
                 if (artwork_source == "Local artwork") {
                     KillTimer(m_hWnd, 100); // Metadata arrival timer
-                    KillTimer(m_hWnd, 101); // Stream delay timer
+                    KillTimer(m_hWnd, 101); // Delay timer
                 }
                 
                 // Only show OSD for online sources, not local files
@@ -993,7 +992,7 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
         if (is_internet_stream) {
             // Kill any existing timers
             KillTimer(m_hWnd, 100); // Metadata arrival timer
-            KillTimer(m_hWnd, 101); // Stream delay timer
+            KillTimer(m_hWnd, 101); // Delay timer
             
             // Try to get metadata immediately for online playlists
             file_info_impl info;
@@ -1010,8 +1009,8 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
                 has_immediate_metadata = !artist.empty() && !title.empty();
             }
                 
-            // If we have valid metadata AND no stream delay configured, search immediately
-            if (has_immediate_metadata && cfg_stream_delay == 0) {
+            // If we have valid metadata, search immediately
+            if (has_immediate_metadata) {
                 // Apply metadata cleaning
                 std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
                 std::string final_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
@@ -1020,16 +1019,10 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
                 // Trigger API search immediately
                 trigger_main_component_search_with_metadata(final_artist, final_title);
             } else {
-                // Either no immediate metadata OR stream delay is configured
-                if (cfg_stream_delay > 0) {
-                    // Use configured stream delay - store metadata for later use
-                    m_delayed_search_artist = artist;
-                    m_delayed_search_title = title;
-                    SetTimer(m_hWnd, 101, cfg_stream_delay * 1000, NULL); // Timer ID 101, stream delay timeout
-                } else {
-                    // No stream delay but no immediate metadata - use short fallback timer
-                    SetTimer(m_hWnd, 100, 3000, NULL); // Timer ID 100, 3 second timeout
-                }
+                // No immediate metadata - use short delay with fallback timer
+                m_delayed_search_artist = artist;
+                m_delayed_search_title = title;
+                SetTimer(m_hWnd, 101, 500, NULL); // Timer ID 101, short delay
             }
         }
         
@@ -1208,20 +1201,13 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
                     title = artist_old;
                 }
                 
-                // STREAM DELAY HANDLING: Check if stream delay is configured
-                if (cfg_stream_delay > 0) {
-                    // Kill any existing stream delay timer
-                    KillTimer(m_hWnd, 101);
-                    // Store metadata for delayed search - don't start search immediately
-                    m_delayed_search_artist = artist;
-                    m_delayed_search_title = title;
-                    // Set Timer 101 to fire after configured delay
-                    SetTimer(m_hWnd, 101, cfg_stream_delay * 1000, NULL);
-                } else {
-                    // No stream delay - start search immediately
-                    extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
-                    trigger_main_component_search_with_metadata(artist, title);
-                }
+                // Use minimal delay for internet streams
+                KillTimer(m_hWnd, 101);
+                // Store metadata for delayed search with minimal delay
+                m_delayed_search_artist = artist;
+                m_delayed_search_title = title;
+                // Set Timer 101 to fire after minimal delay
+                SetTimer(m_hWnd, 101, 500, NULL);
                 return;
             } else {
                 // For local files, do NOT trigger API searches - local artwork will be handled elsewhere
