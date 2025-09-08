@@ -19,8 +19,6 @@
 #define IDC_PRIORITY_3                 1013
 #define IDC_PRIORITY_4                 1014
 #define IDC_PRIORITY_5                 1015
-#define IDC_STREAM_DELAY               1016
-#define IDC_STREAM_DELAY_SPIN          1017
 #define IDC_SHOW_SOURCE                1018
 #define IDC_ENABLE_CUSTOM_LOGOS        1019
 #define IDC_LOGOS_FOLDER_PATH          1020
