@@ -228,11 +228,13 @@ private:
     std::wstring m_infobar_result;
 
     // Stream dynamic info metadata storage
-
     void clear_dinfo();
-
     std::string m_dinfo_artist;
     std::string m_dinfo_title;
+    
+    //First run counter
+    void reset_m_counter();
+    int m_counter = 0;
 
     // UI state
     RECT m_client_rect;
@@ -276,6 +278,7 @@ private:
             }
             m_parent->clear_infobar();
             m_parent->clear_dinfo();
+            m_parent->reset_m_counter();
         }
         
         // Required by play_callback base class
@@ -549,6 +552,9 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
 
 void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
 
+    //Set counter to 1 to define first run
+    m_counter++;
+
     // Check if it's an internet stream and custom logos enabled
     if (is_internet_stream(track) && cfg_enable_custom_logos) {
         pfc::string8 path = track->get_path();
@@ -669,7 +675,6 @@ bool artwork_ui_element::is_inverted_internet_stream(metadb_handle_ptr track, co
     return false;
 }											
 void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
-
     try {
         // Get artist and track from the updated info safely
         const char* artist_ptr = p_info.meta_get("ARTIST", 0);
@@ -794,7 +799,7 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
 
             // Cancel metadata arrival timer since we got valid metadata (like CUI)
             KillTimer(100);
-            
+     
             // Keep previous artwork visible until replaced (like CUI)
             // Don't clear artwork here - let new artwork replace it when found
             
@@ -923,7 +928,9 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             
             // IMPORTANT: Kill all fallback timers since we found tagged artwork
             KillTimer(100); // Metadata arrival timer
-            KillTimer(101); // Delay timer
+            // Don't kill timer on_playback_new_track or first delayed search gets killed.
+            // After that kill all late searches.
+            if (m_counter > 1 ) KillTimer(101); // Delay timer
             
             // Show OSD animation for Default UI (only for online sources, not local files)
             if (source != "Local file" && !source.empty() && source != "Cache") {
@@ -1110,6 +1117,11 @@ void artwork_ui_element::clear_infobar() {
 void artwork_ui_element::clear_dinfo() {
     m_dinfo_artist.clear();
     m_dinfo_title.clear();
+}
+
+void artwork_ui_element::reset_m_counter() {
+    m_counter = 0;
+
 }
 
 void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
