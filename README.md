@@ -2,7 +2,8 @@
 
 A comprehensive foobar2000 component that displays cover artwork for currently playing tracks and internet radio streams with intelligent API fallback support. Both Default UI (DUI) and Columns UI (CUI) are supported.
 
-<img width="742" height="550" alt="foo_artwork" src="https://github.com/user-attachments/assets/d9a495bc-34d4-48cf-9cb9-684f4cde2a7a" />
+<img width="745" height="553" alt="foo_artwork" src="https://github.com/user-attachments/assets/21bbdabe-5948-4129-9652-e35f939a30b7" />
+
 
 ## Features
 
