@@ -58,7 +58,6 @@ static constexpr GUID guid_cfg_priority_2 = { 0x12345683, 0x1234, 0x1234, { 0x12
 static constexpr GUID guid_cfg_priority_3 = { 0x12345684, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfc } };
 static constexpr GUID guid_cfg_priority_4 = { 0x12345685, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfd } };
 static constexpr GUID guid_cfg_priority_5 = { 0x12345686, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
-static constexpr GUID guid_cfg_stream_delay = { 0x12345687, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xff } };
 static constexpr GUID guid_cfg_show_osd = { 0x12345688, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
 static constexpr GUID guid_cfg_enable_custom_logos = { 0x12345689, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf9 } };
 static constexpr GUID guid_cfg_logos_folder = { 0x1234568a, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfa } };
@@ -90,8 +89,6 @@ cfg_int cfg_search_order_3(guid_cfg_priority_3, 2);  // 3rd choice: Last.fm (def
 cfg_int cfg_search_order_4(guid_cfg_priority_4, 3);  // 4th choice: MusicBrainz (default)
 cfg_int cfg_search_order_5(guid_cfg_priority_5, 4);  // 5th choice: Discogs (default)
 
-// Stream delay setting (in seconds, default 0 seconds - no delay)
-cfg_int cfg_stream_delay(guid_cfg_stream_delay, 0);
 
 // OSD display setting (default enabled)
 cfg_bool cfg_show_osd(guid_cfg_show_osd, true);
@@ -288,7 +285,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.26",
+    "1.5.27",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -305,7 +302,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.26",
+    "1.5.27",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -1386,7 +1383,6 @@ public:
     pfc::string8 m_pending_artwork_source;
     std::mutex m_artwork_found_mutex;  // Protect artwork found flag
     bool m_artwork_found;  // Track whether artwork has been found
-    bool m_new_stream_delay_active;  // Track when Timer 9 is active for new stream delay
     bool m_playback_stopped;  // Track when playback is stopped to detect initial connections
     bool m_was_playing;  // Track previous playback state for clear panel detection
     pfc::string8 m_pending_timer_artist;  // Store artist for Timer 9 delayed search
@@ -1491,7 +1487,7 @@ public:
     // GUID for our element
     static const GUID g_guid;
     artwork_ui_element(HWND parent, ui_element_config::ptr config, ui_element_instance_callback::ptr callback)
-        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_source(""), m_artwork_found(false), m_current_priority_position(0), m_new_stream_delay_active(false), m_playback_stopped(true), m_was_playing(false), m_osd_visible(false), m_osd_start_time(0), m_osd_slide_offset(0) {
+        : m_config(config), m_callback(callback), m_hWnd(NULL), m_artwork_bitmap(NULL), m_last_update_timestamp(0), m_last_search_timestamp(0), m_last_search_artist(""), m_last_search_title(""), m_artwork_source(""), m_artwork_found(false), m_current_priority_position(0), m_playback_stopped(true), m_was_playing(false), m_osd_visible(false), m_osd_start_time(0), m_osd_slide_offset(0) {
         
         
         // Register as main UI element for artwork sharing with CUI panels
@@ -1534,15 +1530,14 @@ public:
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
             if (pc->get_now_playing(current_track)) {
-                // Schedule initial artwork load using configured stream delay
+                // Schedule initial artwork load with minimal delay
                 // This handles cases where foobar2000 has resumed playback state
                 // but stream metadata takes time to populate
                 // m_status_text = "Detected resumed playback - scheduling artwork load...";
                 // InvalidateRect(m_hWnd, NULL, TRUE);
                 
-                // Use configurable stream delay instead of hardcoded 3 seconds
-                int delay_ms = cfg_stream_delay > 0 ? cfg_stream_delay * 1000 : 100;  // Minimum 100ms for responsiveness
-                SetTimer(m_hWnd, 3, delay_ms, NULL);  // Timer ID 3, configurable delay
+                // Use minimal delay for responsiveness
+                SetTimer(m_hWnd, 3, 100, NULL);  // Timer ID 3, minimal delay
             } else {
                 // No track playing during initialization
                 
@@ -1695,8 +1690,8 @@ public:
         
         bool content_changed = (current_content != m_last_update_content);
         
-        // Use configurable debounce time based on stream delay preference  
-        int debounce_time = cfg_stream_delay > 0 ? 1000 : 50; // Minimal debounce when no delay configured
+        // Use minimal debounce time for responsiveness  
+        int debounce_time = 50; // Minimal debounce for responsiveness
         bool enough_time_passed = (current_time - m_last_update_timestamp) > debounce_time;
         
         // Detect transition from empty metadata (ads) to populated metadata (music resumes)
@@ -1833,11 +1828,10 @@ public:
                 clear_artwork();
             }
             
-            // For new internet radio streams, wait before checking metadata (regardless of clearing)
+            // For new internet radio streams, use minimal delay before checking metadata
             if (is_new_stream) {
-                // Schedule delayed metadata check for new streams
-                SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Timer ID 9 for new stream delay
-                m_new_stream_delay_active = true;  // Set flag to prevent override
+                // Schedule minimal delay for new streams
+                SetTimer(m_hWnd, 9, 100, NULL);  // Timer ID 9 with minimal delay
                 
                 // Update tracking variables before returning
                 m_last_update_track = track;
@@ -1894,23 +1888,14 @@ public:
                 }
                 m_last_search_timestamp = 0;
                 
-                // Use appropriate delay based on stream connection type
+                // Use minimal delay for all stream types
                 m_current_track = track;
                 if (is_new_stream_in_content_changed) {
-                    // New stream connection: Use full configurable stream delay
-                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
-                    m_new_stream_delay_active = true;  // Set flag to prevent override
+                    // New stream connection: Use short delay
+                    SetTimer(m_hWnd, 9, 500, NULL);
                 } else {
-                    // Check if Timer 9 is already running for a new stream delay - don't override it
-                    if (!m_new_stream_delay_active) {
-                        // Normal track change: Use short delay for responsiveness (or immediate if stream delay is 0)
-                        if (cfg_stream_delay > 0) {
-                            SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for responsiveness
-                        } else {
-                            // No delay configured - search immediately
-                            load_artwork_for_track(track);
-                        }
-                    }
+                    // Normal track change: Use minimal delay for responsiveness
+                    SetTimer(m_hWnd, 9, 100, NULL);
                 }
                 
                 // Update tracking variables before returning
@@ -1942,15 +1927,12 @@ public:
                 }
                 m_last_search_timestamp = 0;
                 
-                // For stream resumes (like restarting foobar2000), use full stream delay
+                // For stream resumes (like restarting foobar2000), use short delay
                 // This handles both ad break recoveries and stream reconnections properly
                 m_current_track = track;
                 
-                // Only set timer if not already active for new stream delay
-                if (!m_new_stream_delay_active) {
-                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Use full configurable delay
-                    m_new_stream_delay_active = true;  // Set flag to prevent override
-                }
+                // Set timer with minimal delay
+                SetTimer(m_hWnd, 9, 500, NULL);  // Use short delay for stream resumes
                 
                 // Update tracking variables before returning
                 m_last_update_track = track;
@@ -1983,24 +1965,15 @@ public:
                 is_new_stream_connection = true;  // First track is internet stream
             }
             
-            // Use nuanced delay approach for internet streams
+            // Use minimal delay for internet streams
             if (is_internet_stream) {
                 
                 if (is_new_stream_connection) {
-                    // Initial stream connection: Use full configurable stream delay
-                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
-                    m_new_stream_delay_active = true;  // Set flag to prevent override
+                    // Initial stream connection: Use short delay
+                    SetTimer(m_hWnd, 9, 500, NULL);
                 } else {
-                    // Normal track changes within stream: Use short delay for responsiveness
-                    // Only set if new stream delay is not already active
-                    if (!m_new_stream_delay_active) {
-                        if (cfg_stream_delay > 0) {
-                            SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for responsiveness
-                        } else {
-                            // No delay configured - search immediately
-                            load_artwork_for_track(track);
-                        }
-                    }
+                    // Normal track changes within stream: Use minimal delay
+                    SetTimer(m_hWnd, 9, 100, NULL);
                 }
                 
                 // Update tracking variables before returning
@@ -2011,50 +1984,6 @@ public:
             }
         }
         
-        // FINAL CHECK: Apply stream delay to ALL internet streams regardless of execution path
-        if (track.is_valid()) {
-            pfc::string8 path = track->get_path();
-            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
-            
-            if (is_internet_stream) {
-                // This should not happen if our earlier logic is correct, but this is a safety net
-                // Check if this is a new stream connection for nuanced delay
-                bool is_final_new_stream = false;
-                if (m_last_update_track.is_valid()) {
-                    pfc::string8 old_path = m_last_update_track->get_path();
-                    bool old_is_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
-                    
-                    if (!old_is_internet_stream && is_internet_stream) {
-                        is_final_new_stream = true;  // Local file -> Internet stream
-                    } else if (is_internet_stream && (path != old_path)) {
-                        is_final_new_stream = true;  // Different internet stream
-                    }
-                } else if (is_internet_stream) {
-                    is_final_new_stream = true;  // First track is internet stream
-                }
-                
-                if (is_final_new_stream) {
-                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);  // Full delay for new streams
-                    m_new_stream_delay_active = true;  // Set flag to prevent override
-                } else {
-                    // Only set short delay if new stream delay is not already active
-                    if (!m_new_stream_delay_active) {
-                        if (cfg_stream_delay > 0) {
-                            SetTimer(m_hWnd, 9, 500, NULL);  // Short delay for responsiveness
-                        } else {
-                            // No delay configured - search immediately
-                            load_artwork_for_track(track);
-                        }
-                    }
-                }
-                
-                // Update tracking variables before returning
-                m_last_update_track = track;
-                m_last_update_content = current_content;
-                m_last_update_timestamp = current_time;
-                return;  // Never allow immediate searches for internet streams
-            }
-        }
         
         // Pass the already-extracted metadata to avoid duplicate extraction (LOCAL FILES ONLY)
         load_artwork_for_track_with_metadata(track, current_artist, current_title);
@@ -2078,8 +2007,8 @@ public:
         // Smart debouncing - only update if content actually changed
         DWORD current_time = GetTickCount();
         bool content_changed = (current_content != m_last_update_content);
-        // Use configurable debounce time based on stream delay preference
-        int debounce_time = cfg_stream_delay > 0 ? cfg_stream_delay * 1000 : 100; // Minimal debounce when no delay configured
+        // Use minimal debounce time for responsiveness
+        int debounce_time = 100; // Minimal debounce for responsiveness
         bool enough_time_passed = (current_time - m_last_update_timestamp) > debounce_time;
         
         
@@ -2130,9 +2059,8 @@ public:
                 }
                 
                 if (looks_like_station_name) {
-                    // Schedule delayed metadata check to wait for real track metadata
-                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
-                    m_new_stream_delay_active = true;
+                    // Schedule brief delay to wait for real track metadata
+                    SetTimer(m_hWnd, 9, 1000, NULL);
                     
                     // Update tracking variables
                     m_last_update_track = track;
@@ -2143,7 +2071,7 @@ public:
             }
         }
         
-        // For internet radio streams, only apply delay on initial connection
+        // For internet radio streams, use minimal delay
         if (track.is_valid()) {
             pfc::string8 path = track->get_path();
             bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
@@ -2159,9 +2087,8 @@ public:
                     m_pending_timer_artist = artist;
                     m_pending_timer_title = title;
                     
-                    // Use stream delay for initial connection
-                    SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
-                    m_new_stream_delay_active = true;
+                    // Use minimal delay for initial connection
+                    SetTimer(m_hWnd, 9, 500, NULL);
                     m_playback_stopped = false;  // Clear the stopped flag
                 } else {
                     // For track changes within the same stream, search immediately
@@ -2513,7 +2440,6 @@ LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPa
             
             try {
                 if (pThis) {
-                    pThis->m_new_stream_delay_active = false;
                     
                     static_api_ptr_t<playback_control> pc;
                     metadb_handle_ptr current_track;
@@ -2839,9 +2765,8 @@ void artwork_ui_element::load_artwork_for_track(metadb_handle_ptr track) {
         
         if (looks_like_station_name) {
             
-            // Schedule delayed metadata check to wait for real track metadata
-            SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
-            m_new_stream_delay_active = true;  // Set flag to prevent override
+            // Schedule brief delay to wait for real track metadata
+            SetTimer(m_hWnd, 9, 1000, NULL);
             return;
         }
     }
@@ -5060,31 +4985,26 @@ public:
                 bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                 
                 if (is_internet_stream) {
-                    // Handle stream delay for internet streams
-                    if (cfg_stream_delay > 0) {
-                        // Apply stream delay - set timers on all DUI elements
-                        for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
-                            auto* element = g_artwork_ui_elements[i];
-                            if (element && element->m_hWnd) {
-                                // Kill any existing timer and start new stream delay timer
-                                KillTimer(element->m_hWnd, 9);  // Use timer ID 9 like CUI
-                                SetTimer(element->m_hWnd, 9, cfg_stream_delay * 1000, NULL);
-                                
-                                // Store track for delayed processing
-                                element->m_current_track = p_track;
-                                
-                                // Clear pending metadata since this is a new track (metadata will come later via dynamic info)
-                                element->m_pending_timer_artist = "";
-                                element->m_pending_timer_title = "";
-                                
-                                // Mark that stream delay is active
-                                element->m_new_stream_delay_active = true;
-                            }
+                    // Handle internet streams with minimal delay
+                    for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
+                        auto* element = g_artwork_ui_elements[i];
+                        if (element && element->m_hWnd) {
+                            // Kill any existing timer and start new timer with minimal delay
+                            KillTimer(element->m_hWnd, 9);  // Use timer ID 9 like CUI
+                            SetTimer(element->m_hWnd, 9, 500, NULL);
+                            
+                            // Store track for delayed processing
+                            element->m_current_track = p_track;
+                            
+                            // Clear pending metadata since this is a new track (metadata will come later via dynamic info)
+                            element->m_pending_timer_artist = "";
+                            element->m_pending_timer_title = "";
                         }
-                    } else {
-                        // No delay configured, start API search immediately (station logos are now fallbacks only)
-                        for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
-                            auto* element = g_artwork_ui_elements[i];
+                    }
+                } else {
+                    // For local files, start API search immediately
+                    for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
+                        auto* element = g_artwork_ui_elements[i];
                             if (element && element->m_hWnd) {
                                 // Start API search immediately for internet streams with no delay
                                 pfc::string8 artist, title;
@@ -5232,16 +5152,8 @@ public:
                                     element->m_last_search_artist = artist;
                                     element->m_last_search_title = title;
                                     
-                                    // Check if stream delay is still active - respect the delay
-                                    if (element->m_new_stream_delay_active) {
-                                        // Stream delay is active - store metadata for timer to use later
-                                        element->m_pending_timer_artist = artist;
-                                        element->m_pending_timer_title = title;
-                                        // Don't start search immediately - wait for timer
-                                    } else {
-                                        // No stream delay active - start search immediately
-                                        element->search_next_api_in_priority(artist, title, 0);
-                                    }
+                                    // Start search immediately since delay has been removed
+                                    element->search_next_api_in_priority(artist, title, 0);
                                     
                                     // Update content AFTER successful search trigger
                                     element->m_last_update_content = fresh_content;
@@ -5263,37 +5175,31 @@ public:
                             // Don't show metadata message - causes white screen
                             // element->m_status_text = "Dynamic metadata received - no artist/title";
                             
-                            // For stations with no/invalid metadata, check if we should wait for stream delay
+                            // For stations with no/invalid metadata, load station logo as fallback
                             if (current_track.is_valid()) {
                                 pfc::string8 path = current_track->get_path();
                                 bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
                                 
                                 if (is_internet_stream) {
-                                    // Check if stream delay is still active - respect the delay even for station logos
-                                    if (element->m_new_stream_delay_active) {
-                                        // Stream delay is active - don't load station logo immediately
-                                        // The timer will handle fallback logic when it expires
-                                    } else {
-                                        // No stream delay active - load station logo as immediate fallback
-                                        HBITMAP logo_bitmap = load_station_logo(current_track);
-                                        if (logo_bitmap) {
-                                        // Clean up any existing bitmap
-                                        if (element->m_artwork_bitmap) {
-                                            DeleteObject(element->m_artwork_bitmap);
-                                        }
-                                        
-                                        element->m_artwork_bitmap = logo_bitmap;
-                                        // Don't show station logo status - not needed
-                                        // element->m_status_text = "Station logo loaded (no metadata)";
-                                        
-                                        // Mark that artwork has been found
-                                        {
-                                            std::lock_guard<std::mutex> lock(element->m_artwork_found_mutex);
-                                            element->m_artwork_found = true;
-                                        }
-                                        
-                                        // Don't notify event system for station logos (no OSD needed)
-                                        }
+                                    // Load station logo as immediate fallback for internet streams
+                                    HBITMAP logo_bitmap = load_station_logo(current_track);
+                                    if (logo_bitmap) {
+                                    // Clean up any existing bitmap
+                                    if (element->m_artwork_bitmap) {
+                                        DeleteObject(element->m_artwork_bitmap);
+                                    }
+                                    
+                                    element->m_artwork_bitmap = logo_bitmap;
+                                    // Don't show station logo status - not needed
+                                    // element->m_status_text = "Station logo loaded (no metadata)";
+                                    
+                                    // Mark that artwork has been found
+                                    {
+                                        std::lock_guard<std::mutex> lock(element->m_artwork_found_mutex);
+                                        element->m_artwork_found = true;
+                                    }
+                                    
+                                    // Don't notify event system for station logos (no OSD needed)
                                     }
                                 }
                             }
@@ -5405,8 +5311,8 @@ void artwork_ui_element::start_priority_search(const pfc::string8& artist, const
             
             if (looks_like_station_name) {
                 
-                // Schedule delayed metadata check to wait for real track metadata
-                SetTimer(m_hWnd, 9, cfg_stream_delay * 1000, NULL);
+                // Schedule brief delay to wait for real track metadata
+                SetTimer(m_hWnd, 9, 1000, NULL);
                 return;
             }
         }
