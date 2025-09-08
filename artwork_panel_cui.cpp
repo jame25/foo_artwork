@@ -224,6 +224,9 @@ public:
     // IArtworkEventListener implementation
     void on_artwork_event(const ArtworkEvent& event) override;
 
+    const char* bool_cast(const bool b) {
+        return b ? "true" : "false";
+    }
 private:
     // Window state (managed by container_uie_window_v3)
     HWND m_hWnd;
@@ -553,11 +556,6 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             // Delay timer fired - now do the delayed search
             KillTimer(m_hWnd, 101);
             
-            // CHECK: Only trigger API search if we don't already have tagged artwork  
-            if (m_artwork_loaded && !m_artwork_source.empty() && m_artwork_source == "Local artwork") {
-                break;
-            }
-            
             // Use stored metadata for delayed search
             if (!m_delayed_search_title.empty()) {
                 
@@ -614,13 +612,18 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             if (source_ptr) {
                 delete source_ptr;
             }
+       
+            // PRIORITY CHECK: Don't let API results override tagged artwork, only overide when radio
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
             
-            // PRIORITY CHECK: Don't let API results override tagged artwork
-            // if (m_artwork_loaded && !m_artwork_source.empty() && 
-            //    m_artwork_source == "Local artwork" && artwork_source != "Local artwork") {
-            //    break;
-            // }
-            
+            if (pc->get_now_playing(current_track) && current_track.is_valid()) {
+                if (m_artwork_loaded && !m_artwork_source.empty() &&
+                    m_artwork_source == "Local artwork" && artwork_source != "Local artwork" && is_stream_with_possible_artwork(current_track)) {
+                    break;
+                }
+            }
+
             // Now it's safe to call UI functions since we're on the main thread
             if (bitmap && copy_bitmap_from_main_component(bitmap)) {
                 // Update the member variable with the correct source
@@ -2345,7 +2348,8 @@ bool CUIArtworkPanel::is_stream_with_possible_artwork(metadb_handle_ptr track) {
         
         // YouTube videos (can have embedded thumbnails)
         if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") || 
-            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com")) {
+            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com") ||
+            strstr(path_str, "rutube.ru")) {
             return true;
         }
         
