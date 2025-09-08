@@ -17,7 +17,6 @@
 #pragma comment(lib, "gdiplus.lib")
 
 // External configuration variables
-extern cfg_int cfg_stream_delay;
 extern cfg_bool cfg_enable_custom_logos;
 extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
@@ -175,7 +174,7 @@ private:
     void load_noart_image();  // Load noart image for "use noart image" option
     void paint_osd(HDC hdc);
     
-    // Stream delay functions
+    // Timer functions
     bool is_internet_stream(metadb_handle_ptr track);
     bool is_stream_with_possible_artwork(metadb_handle_ptr track);
     bool is_youtube_stream(metadb_handle_ptr track);
@@ -198,7 +197,7 @@ private:
     metadb_handle_ptr m_current_track;
     bool m_artwork_loading;
     
-    // Stream delay metadata storage
+    // Delayed search metadata storage
     std::string m_delayed_artist;
     std::string m_delayed_title;
     bool m_has_delayed_metadata;
@@ -512,7 +511,7 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
         bHandled = TRUE;
         return 0;
     } else if (wParam == 101) {
-        // Timer for delayed artwork search on radio streams (stream delay)
+        // Timer for delayed artwork search on radio streams
         KillTimer(101);
         start_delayed_search();
         bHandled = TRUE;
@@ -637,7 +636,7 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
             
         //Don't search yet,wait for the first on_dynamic_info_track to get called
         //Fixes wrong first image with radio
-        //Don't use stream delay - there are no benefits with stream delay - we should remove it
+        // Use minimal delay for internet streams
         
         }
     }
@@ -810,20 +809,14 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
             // FIXED: Removed premature station logo check - station logos should be fallbacks only
             // API searches have priority according to README.md fallback chain
             
-            // STREAM DELAY HANDLING: Check if stream delay timer is active
+            // For internet streams, start search with minimal delay
             if (m_current_track.is_valid() && is_internet_stream(m_current_track)) {
-                // Check if stream delay is configured and timer is running
-                if (cfg_stream_delay > 0) {
-                    // Store metadata for delayed search - don't start search immediately
-                    m_has_delayed_metadata = true;
-                    m_delayed_artist = cleaned_artist;
-                    m_delayed_title = cleaned_track;
-                    // Set Timer 101 to fire after configured delay
-                    SetTimer(101, cfg_stream_delay * 1000);
-                } else {
-                    // No stream delay - start search immediately
-                    trigger_main_component_search_with_metadata(cleaned_artist, cleaned_track);
-                }
+                // Store metadata for delayed search - use minimal delay
+                m_has_delayed_metadata = true;
+                m_delayed_artist = cleaned_artist;
+                m_delayed_title = cleaned_track;
+                // Set Timer 101 to fire after minimal delay
+                SetTimer(101, 500);
             }
             // For local files, do nothing - local artwork will be handled elsewhere
         }
@@ -909,7 +902,7 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
                             
                             // Kill any fallback timers that might interfere with API search
                             KillTimer(100); // Metadata arrival timer
-                            KillTimer(101); // Stream delay timer
+                            KillTimer(101); // Delay timer
                             
                             // Trigger API search instead of using WebP artwork
                             trigger_main_component_search_with_metadata(cleaned_artist, cleaned_title);
@@ -930,7 +923,7 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
             
             // IMPORTANT: Kill all fallback timers since we found tagged artwork
             KillTimer(100); // Metadata arrival timer
-            KillTimer(101); // Stream delay timer
+            KillTimer(101); // Delay timer
             
             // Show OSD animation for Default UI (only for online sources, not local files)
             if (source != "Local file" && !source.empty() && source != "Cache") {
