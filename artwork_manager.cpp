@@ -1219,100 +1219,106 @@ bool artwork_manager::parse_discogs_json(const char* artist, const char* track, 
 
 void artwork_manager::search_musicbrainz_api_async(const char* artist, const char* track, artwork_callback callback) {
     // MusicBrainz does not require authentication but uses a two-step process:
-    // 1. Search for release ID
+    // 1. Search for release ID's
     // 2. Get cover art from Cover Art Archive
-   
+    // 
     
-    // Try searching for recordings (tracks) first, which is more appropriate for individual tracks
-    pfc::string8 search_query = "artist:\"";
-    search_query << artist << "\" AND recording:\"" << track << "\"";
-    
+    // Build search query
+    pfc::string8 search_query;
+    search_query << "artist:\"" << artist << "\" AND recording:\"" << track << "\"";
+
     pfc::string8 url = "http://musicbrainz.org/ws/2/recording/?query=";
     url << url_encode(search_query);
-    url << "&fmt=json&limit=5&inc=releases";  // Include releases to get release IDs
+    url << "&fmt=json&limit=5&inc=releases";  // include releases for release IDs
 
     // Copy parameters to avoid lambda capture issues
     pfc::string8 artist_str = artist;
     pfc::string8 track_str = track;
-    
-    // Make async HTTP request to get release ID
-    async_io_manager::instance().http_get_async(url, [callback, artist_str, track_str](bool success, const pfc::string8& response, const pfc::string8& error) {
+
+    async_io_manager::instance().http_get_async(url, [callback](bool success, const pfc::string8& response, const pfc::string8& error) {
         if (!success) {
             artwork_result result;
             result.success = false;
             result.error_message = "MusicBrainz API request failed: ";
-            result.error_message << error;
             callback(result);
             return;
         }
-        
-        
-        // Parse JSON response to extract release ID
-        pfc::string8 release_id;
-        if (!parse_musicbrainz_json(response, release_id)) {
+
+        // Parse JSON response to collect release IDs
+        std::vector<pfc::string8> release_ids;
+        if (!parse_musicbrainz_json(response, release_ids) || release_ids.empty()) {
             artwork_result result;
             result.success = false;
-            result.error_message = "No release found in MusicBrainz response";
+            callback(result);
+            result.error_message = "No valid release IDs found in MusicBrainz response";
             callback(result);
             return;
         }
-        
-        
-        // Now get artwork from Cover Art Archive
-        pfc::string8 coverart_url = "http://coverartarchive.org/release/";
-        coverart_url << release_id << "/front";
-        
-        // Download the artwork image (Cover Art Archive redirects to actual image)
-        async_io_manager::instance().http_get_binary_async(coverart_url, [callback, coverart_url](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
-            artwork_result result;
-            if (success && data.get_size() > 0) {
-                // Check if this is a valid image or just a small error response
-                bool is_valid_image = is_valid_image_data(data.get_ptr(), data.get_size());
-                pfc::string8 mime_type = detect_mime_type(data.get_ptr(), data.get_size());
-                
 
-                
-                if (is_valid_image && data.get_size() > 512) {  // Reject very small files that might be error pages
-                    result.success = true;
-                    result.data = data;
-                    result.mime_type = mime_type;
-                    result.source = "MusicBrainz";  // Set source for OSD display
-                } else {
-                    result.success = false;
-                    result.error_message = "Downloaded data is not a valid image or too small";
-                }
-            } else {
+        // Recursive lambda to try each release ID until success
+        std::shared_ptr<std::function<void(size_t)>> try_release =
+            std::make_shared<std::function<void(size_t)>>();
+
+        *try_release = [release_ids, callback, try_release](size_t index) {
+            if (index >= release_ids.size()) {
+                // Exhausted all release IDs
+                artwork_result result;
                 result.success = false;
-                result.error_message = "Failed to download MusicBrainz artwork: ";
-                result.error_message << error;
+                result.error_message = "No valid artwork found for any release ID";
+                callback(result);
+                return;
             }
-            callback(result);
+
+            pfc::string8 coverart_url = "http://coverartarchive.org/release/";
+            coverart_url << release_ids[index] << "/front";
+
+            async_io_manager::instance().http_get_binary_async(coverart_url,
+                [callback, try_release, index, release_ids, coverart_url](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+                    if (success && data.get_size() > 0) {
+                        bool is_valid_image = is_valid_image_data(data.get_ptr(), data.get_size());
+                        pfc::string8 mime_type = detect_mime_type(data.get_ptr(), data.get_size());
+
+                        if (is_valid_image && data.get_size() > 512) {
+                            artwork_result result;
+                            result.success = true;
+                            result.data = data;
+                            result.mime_type = mime_type;
+                            result.source = "MusicBrainz";
+                            callback(result);
+                            return;
+                        }
+                    }
+                    // Try next release ID
+                    (*try_release)(index + 1);
+                });
+            };
+
+        // Start with the first release
+        (*try_release)(0);
         });
-    });
 }
 
-bool artwork_manager::parse_musicbrainz_json(const pfc::string8& json_in, pfc::string8& release_id) {
 
-    //using nlohmann/json
+bool artwork_manager::parse_musicbrainz_json(const pfc::string8& json_in, std::vector<pfc::string8>& release_ids) {
+    try {
+        std::string json_data(json_in.c_str());
+        json data = json::parse(json_data);
 
-    std::string json_data;
-    json_data += json_in;
+        if (!data.contains("recordings") || data["count"].get<int>() == 0)
+            return false;
 
-    json data = json::parse(json_data);
-
-    //No data return
-    if (data["count"] == 0) return false;
-
-    // root
-    json s = data["recordings"];
-
-    for (auto& rec : s) {
-        for (auto& rel : rec["releases"]) {
-            if (rel.contains("id")) {          
-                release_id = rel["id"].get<std::string>().c_str();   
-                return true;
+        for (const auto& rec : data["recordings"]) {
+            if (!rec.contains("releases")) continue;
+            for (const auto& rel : rec["releases"]) {
+                if (rel.contains("id") && rel["id"].is_string()) {
+                    release_ids.push_back(rel["id"].get<std::string>().c_str());
+                }
             }
         }
+        return !release_ids.empty();
     }
-    return false;
+    catch (const std::exception& e) {
+        console::info("MusicBrainz JSON parse error: %s");
+        return false;
+    }
 }
