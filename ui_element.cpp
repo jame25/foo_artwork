@@ -226,6 +226,8 @@ private:
     std::wstring m_infobar_album;
     std::wstring m_infobar_station;	
     std::wstring m_infobar_result;
+    Gdiplus::Bitmap* m_infobar_image = nullptr;
+    Gdiplus::Bitmap* m_infobar_bitmap = nullptr;
 
     // Stream dynamic info metadata storage
     void clear_dinfo();
@@ -865,7 +867,7 @@ void artwork_ui_element::start_artwork_search() {
             // Not an internet stream - no API search triggered
         }
         // For local files, do nothing - local artwork will be handled elsewhere
-    } catch (const std::exception& e) {
+    } catch (...) {
         // Handle any initialization errors silently
         m_artwork_loading = false;
     }
@@ -1112,6 +1114,11 @@ void artwork_ui_element::clear_infobar() {
     m_infobar_album.clear();
     m_infobar_station.clear();
     m_infobar_result.clear();
+   
+    if (m_infobar_bitmap) {
+        delete m_infobar_bitmap;
+        m_infobar_bitmap = nullptr;
+    }
 }
 
 void artwork_ui_element::clear_dinfo() {
@@ -1270,9 +1277,26 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                     Gdiplus::Rect dest_rect3(0, client_height, client_width, infobar_height);
                     graphics.FillRectangle(&solidBrush, dest_rect3);
 
-                    Gdiplus::Bitmap*  m_infobar_image = load_station_logo_gdiplus(m_current_track);
+                   
+                    auto m_infobar_image_fallback = load_generic_noart_logo_gdiplus();
 
-                    if (m_infobar_image) {
+                    if (load_station_logo_gdiplus(m_current_track)) {
+                        m_infobar_image = load_station_logo_gdiplus(m_current_track);
+                    }
+                    
+
+                    if (m_infobar_bitmap) {
+                        Gdiplus::Rect dest_rect2(10, client_height + 10, infobar_height - 20, infobar_height - 20);
+                        graphics.DrawImage(m_infobar_bitmap, dest_rect2);
+                    }
+                    else if (m_infobar_image) {
+                        Gdiplus::Rect dest_rect2(10, client_height + 10, infobar_height - 20, infobar_height - 20);
+                        graphics.DrawImage(m_infobar_image, dest_rect2);
+                        delete m_infobar_image;
+                        m_infobar_image = nullptr;
+                    }
+                    else if (m_infobar_image_fallback) {
+                        m_infobar_image = m_infobar_image_fallback.release();
                         Gdiplus::Rect dest_rect2(10, client_height + 10, infobar_height - 20, infobar_height - 20);
                         graphics.DrawImage(m_infobar_image, dest_rect2);
                         delete m_infobar_image;
@@ -1360,13 +1384,14 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
     
     // Create GDI+ Image from stream
     m_artwork_image = Gdiplus::Image::FromStream(stream);
+
     stream->Release();
-    
+
     if (!m_artwork_image || m_artwork_image->GetLastStatus() != Gdiplus::Ok) {
         cleanup_gdiplus_image();
         return false;
     }
-    
+
     // Debug: Check pixel format to see if alpha channel is present
     if (m_artwork_image) {
         Gdiplus::Bitmap* bitmap = dynamic_cast<Gdiplus::Bitmap*>(m_artwork_image);
@@ -1381,6 +1406,47 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
             } else if (format == PixelFormat24bppRGB) {
                 // 24-bit RGB
             }
+        }
+    }
+
+    
+    // infobar bitmap from local logo
+    // clone it once on playback start
+    static_api_ptr_t<playback_control> pc;
+    m_was_playing = pc->is_playing();
+
+    if (!m_infobar_bitmap && m_was_playing && is_internet_stream(m_current_track)) {
+        
+        // Create IStream from memory2
+        
+        HGLOBAL hGlobal2 = GlobalAlloc(GMEM_MOVEABLE, size);
+        if (!hGlobal2) {
+            return false;
+        }
+
+        void* pData2 = GlobalLock(hGlobal2);
+        if (!pData2) {
+            GlobalFree(hGlobal2);
+            return false;
+        }
+
+        memcpy(pData2, data, size);
+        GlobalUnlock(hGlobal2);
+
+        IStream* stream2 = nullptr;
+        if (CreateStreamOnHGlobal(hGlobal2, TRUE, &stream2) != S_OK) {
+            GlobalFree(hGlobal2);
+            return false;
+        }
+        //infobar
+        m_infobar_bitmap = Gdiplus::Bitmap::FromStream(stream2);
+
+
+        stream->Release();
+
+        if (!m_infobar_bitmap || m_infobar_bitmap->GetLastStatus() != Gdiplus::Ok) {
+            delete m_infobar_bitmap;
+            m_infobar_bitmap = nullptr;
         }
     }
     
