@@ -205,6 +205,7 @@ private:
     //Metadata infobar
 
     void clear_infobar();
+    void cleanup_gdiplus_infobar_image();
 
     std::wstring stringToWstring(const std::string& str) {
         if (str.empty()) {
@@ -609,6 +610,10 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
         m_infobar_title = stringToWstring(title);
         m_infobar_album = stringToWstring(album);
         m_infobar_station = stringToWstring(station);
+
+        //clear infobar logo
+        cleanup_gdiplus_infobar_image();
+
     }
     catch (...) {
         // Handle any errors silently
@@ -1116,8 +1121,7 @@ void artwork_ui_element::clear_infobar() {
     m_infobar_result.clear();
    
     if (m_infobar_bitmap) {
-        delete m_infobar_bitmap;
-        m_infobar_bitmap = nullptr;
+        cleanup_gdiplus_infobar_image();
     }
 }
 
@@ -1222,6 +1226,7 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
             Gdiplus::Graphics graphics(mem_dc);
             graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
             graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+
             
             // Calculate aspect ratio preserving rectangle
             UINT img_width = m_artwork_image->GetWidth();
@@ -1273,10 +1278,10 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                 
                 if (cfg_infobar) {
                     
-                    SolidBrush solidBrush(Color(20,80,80,80)); 
+                    SolidBrush solidBrush(Color(20, 80, 80, 80));
                     Gdiplus::Rect dest_rect3(0, client_height, client_width, infobar_height);
                     graphics.FillRectangle(&solidBrush, dest_rect3);
-
+                
                    
                     auto m_infobar_image_fallback = load_generic_noart_logo_gdiplus();
 
@@ -1308,6 +1313,7 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                     // Get contrasting text color using DUI callback
                     COLORREF text_color = GetSysColor(COLOR_WINDOWTEXT); // Default fallback
 
+
                     if (m_callback.is_valid()) {
                         t_ui_color callback_text_color;
                         if (m_callback->query_color(ui_color_text, callback_text_color)) {
@@ -1318,16 +1324,18 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                         }
                     }
 
+                    
                     FontFamily fontFamily(L"Segoe UI");
-                    Font font(&fontFamily, 16, FontStyleRegular, UnitPixel);
-                    Font font2(&fontFamily, 14, FontStyleItalic, UnitPixel);
+                    Font font(&fontFamily, 14, FontStyleRegular, UnitPixel);
                     SolidBrush brush(Color(255, GetRValue(text_color), GetGValue(text_color), GetBValue(text_color)));
+
+                    graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
 
                     graphics.DrawString(m_infobar_artist.c_str(), -1, &font, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height/2)), &brush);
                     graphics.DrawString(m_infobar_title.c_str(), -1, &font, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height * 2 - infobar_text_height / 2)), &brush);
                     graphics.DrawString(m_infobar_album.c_str(), -1, &font, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height *3 - infobar_text_height/2)), &brush);
                     graphics.DrawString(m_infobar_station.c_str(), -1, &font, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height *4)), &brush);
-                    graphics.DrawString(m_infobar_result.c_str(), -1, &font2, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height *5)), &brush);
+                    graphics.DrawString(m_infobar_result.c_str(), -1, &font, PointF(static_cast<float>(infobar_height), static_cast<float>(client_height + infobar_text_height *5)), &brush);
                 }
 
                 
@@ -1360,6 +1368,7 @@ void artwork_ui_element::draw_placeholder(HDC hdc, const RECT& rect) {
 bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size) {
     
     cleanup_gdiplus_image();
+    
     
     // Create IStream from memory
     HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, size);
@@ -1415,7 +1424,7 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
     static_api_ptr_t<playback_control> pc;
     m_was_playing = pc->is_playing();
 
-    if (!m_infobar_bitmap && m_was_playing && is_internet_stream(m_current_track)) {
+    if (!m_infobar_bitmap && cfg_infobar && m_was_playing && is_internet_stream(m_current_track)) {
         
         // Create IStream from memory2
         
@@ -1453,6 +1462,12 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
     return true;
 }
 
+void artwork_ui_element::cleanup_gdiplus_infobar_image() {
+    if (m_infobar_bitmap) {
+        delete m_infobar_bitmap;
+        m_infobar_bitmap = nullptr;
+    }
+}
 
 void artwork_ui_element::cleanup_gdiplus_image() {
     if (m_artwork_image) {
