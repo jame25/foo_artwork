@@ -2372,9 +2372,21 @@ bool CUIArtworkPanel::is_stream_with_possible_artwork(metadb_handle_ptr track) {
         }
         
         // Audio formats that commonly have embedded artwork
-        // For .mp3, only consider it to have artwork if it's from known platforms or likely downloadable files
-        if (strstr(path_str, ".m4a") || strstr(path_str, ".aac")) {
+        // For .mp3 and .aac, only consider them to have artwork if they're from known platforms or likely downloadable files
+        if (strstr(path_str, ".m4a")) {
             return true;
+        }
+
+        // For .aac, be more selective - exclude internet radio streams
+        if (strstr(path_str, ".aac")) {
+            // Allow .aac from known platforms that provide artwork
+            if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") ||
+                strstr(path_str, "googlevideo.com") || strstr(path_str, "soundcloud.com") ||
+                strstr(path_str, "bandcamp.com") || strstr(path_str, "spotify.com")) {
+                return true;
+            }
+            // Exclude streaming radio URLs (they don't have embedded artwork)
+            return false;
         }
 
         // For .mp3, be more selective - exclude internet radio streams
