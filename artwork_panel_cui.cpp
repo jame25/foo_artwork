@@ -934,7 +934,7 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
         
         // Check if this stream can have embedded artwork (like YouTube videos)
         bool can_have_embedded_artwork = !is_internet_stream || is_stream_with_possible_artwork(p_track);
-        
+
         if (can_have_embedded_artwork) {
             // For local files and streams that can have embedded artwork (YouTube videos),
             // try to load tagged artwork first
@@ -942,7 +942,8 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
             m_artwork_loaded = false;
             
             // Use the artwork manager directly to try tagged artwork first
-            artwork_manager::get_artwork_async(p_track, [this, p_track](const artwork_manager::artwork_result& result) {
+            try {
+                artwork_manager::get_artwork_async(p_track, [this, p_track](const artwork_manager::artwork_result& result) {
                 // Check if tagged artwork succeeded for YouTube streams
                 if (result.success && result.data.get_size() > 0 && is_youtube_stream(p_track)) {
                     // Detect the image format
@@ -977,10 +978,29 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
                         // If we can't do API search, fall through to WebP loading attempt (will likely fail)
                     }
                 }
-                
-                // Either not a YouTube stream, not WebP format, no metadata, or other result
-                // This will be handled by the event system via on_artwork_event
+
+                // Handle the result - load artwork directly instead of using events
+                if (result.success && result.data.get_size() > 0) {
+                    // Convert pfc::array_t to album_art_data::ptr and load it
+                    try {
+                        auto art_data = album_art_data_impl::g_create(result.data.get_ptr(), result.data.get_size());
+                        if (art_data.is_valid()) {
+                            // Update source info and load artwork
+                            m_artwork_source = result.source.c_str();
+                            load_artwork_from_data(art_data);
+                            // Trigger repaint on main thread
+                            if (m_hWnd) {
+                                InvalidateRect(m_hWnd, NULL, FALSE);
+                            }
+                        }
+                    } catch (...) {
+                        // Silently handle conversion errors
+                    }
+                }
             });
+            } catch (...) {
+                // Silently handle any exceptions from artwork manager
+            }
         } else {
             // For internet radio streams that cannot have embedded artwork,
             // skip tagged artwork search to avoid cached results from previous searches
@@ -988,8 +1008,10 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
             m_artwork_loaded = false;
         }
         
-        // Also call the compatibility function for logging
-        trigger_main_component_local_search(p_track);
+        // For internet streams, call the original compatibility function
+        if (is_internet_stream) {
+            trigger_main_component_local_search(p_track);
+        }
         
         // For internet streams, ALSO set up metadata timers for fallback
         if (is_internet_stream) {
@@ -1898,12 +1920,11 @@ void CUIArtworkPanel::cleanup_gdiplus() {
 
 void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
     if (!m_hWnd) return;
-    
-    
+
     // THREAD SAFETY: This event handler can be called from background threads
     // We must NOT directly call UI functions like InvalidateRect or copy_bitmap_from_main_component
     // Instead, post a message to the main thread to handle the update
-    
+
     switch (event.type) {
         case ArtworkEventType::ARTWORK_LOADED:
             if (event.bitmap && event.bitmap != m_last_event_bitmap) {
