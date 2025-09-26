@@ -1119,10 +1119,7 @@ void artwork_ui_element::clear_infobar() {
     m_infobar_album.clear();
     m_infobar_station.clear();
     m_infobar_result.clear();
-   
-    if (m_infobar_bitmap) {
-        cleanup_gdiplus_infobar_image();
-    }
+    cleanup_gdiplus_infobar_image();
 }
 
 void artwork_ui_element::clear_dinfo() {
