@@ -1280,7 +1280,8 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                     graphics.FillRectangle(&solidBrush, dest_rect3);
                 
                    
-                    auto m_infobar_image_fallback = load_generic_noart_logo_gdiplus();
+                    auto m_infobar_image_fallback = load_noart_logo_gdiplus(m_current_track);
+                    auto m_infobar_image_fallback2 = load_generic_noart_logo_gdiplus();
 
                     if (load_station_logo_gdiplus(m_current_track)) {
                         m_infobar_image = load_station_logo_gdiplus(m_current_track);
@@ -1304,7 +1305,13 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
                         delete m_infobar_image;
                         m_infobar_image = nullptr;
                     }
-
+                    else if (m_infobar_image_fallback2) {
+                        m_infobar_image = m_infobar_image_fallback2.release();
+                        Gdiplus::Rect dest_rect2(10, client_height + 10, infobar_height - 20, infobar_height - 20);
+                        graphics.DrawImage(m_infobar_image, dest_rect2);
+                        delete m_infobar_image;
+                        m_infobar_image = nullptr;
+                    }
 
                     
                     // Get contrasting text color using DUI callback
@@ -1365,7 +1372,7 @@ void artwork_ui_element::draw_placeholder(HDC hdc, const RECT& rect) {
 bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size) {
     
     cleanup_gdiplus_image();
-    
+    cleanup_gdiplus_infobar_image();
     
     // Create IStream from memory
     HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, size);
