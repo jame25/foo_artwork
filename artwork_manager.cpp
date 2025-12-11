@@ -62,6 +62,8 @@ extern cfg_string cfg_discogs_key;
 extern cfg_string cfg_discogs_consumer_key;
 extern cfg_string cfg_discogs_consumer_secret;
 extern cfg_string cfg_lastfm_key;
+extern cfg_int cfg_http_timeout;
+extern cfg_int cfg_retry_count;
 
 // Static member initialization
 std::atomic<bool> artwork_manager::initialized_(false);
@@ -190,11 +192,8 @@ void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_ha
 }
 
 void artwork_manager::check_cache_async_metadata(const pfc::string8& cache_key, const pfc::string8& artist, const pfc::string8& track, artwork_callback callback) {
-    // TEMPORARY FIX: Skip cache entirely and go directly to APIs
-    search_apis_async_metadata(artist, track, cache_key, callback);
-    
-    /* ORIGINAL CACHE CODE - TEMPORARILY DISABLED
-    async_io_manager::instance().cache_get_async(cache_key, 
+    // Check cache first, then fall back to API search on miss
+    async_io_manager::instance().cache_get_async(cache_key,
         [cache_key, artist, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             if (success && data.get_size() > 0) {
                 // Cache hit - validate and return
@@ -204,7 +203,6 @@ void artwork_manager::check_cache_async_metadata(const pfc::string8& cache_key, 
                 search_apis_async_metadata(artist, track, cache_key, callback);
             }
         });
-    */
 }
 
 void artwork_manager::search_apis_async_metadata(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback) {
