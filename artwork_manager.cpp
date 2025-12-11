@@ -10,6 +10,44 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
+// Case-insensitive string comparison helper for matching artist/track names
+static bool strings_equal_ignore_case(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Helper to strip "The " prefix from artist names for fuzzy matching
+static std::string strip_the_prefix(const std::string& s) {
+    if (s.size() > 4) {
+        // Check for "The " prefix (case-insensitive)
+        if ((s[0] == 'T' || s[0] == 't') &&
+            (s[1] == 'H' || s[1] == 'h') &&
+            (s[2] == 'E' || s[2] == 'e') &&
+            s[3] == ' ') {
+            return s.substr(4);
+        }
+    }
+    return s;
+}
+
+// Fuzzy artist comparison: case-insensitive and ignores "The " prefix differences
+static bool artists_match(const std::string& a, const std::string& b) {
+    // First try exact case-insensitive match
+    if (strings_equal_ignore_case(a, b)) return true;
+
+    // Try matching after stripping "The " prefix from both
+    std::string a_stripped = strip_the_prefix(a);
+    std::string b_stripped = strip_the_prefix(b);
+
+    return strings_equal_ignore_case(a_stripped, b_stripped);
+}
+
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shlwapi.lib")
 
@@ -865,13 +903,19 @@ bool artwork_manager::parse_itunes_json(const char* artist, const char* track, c
     // root
     json s = data["results"];
 
+    // Convert input artist/track to std::string for comparison
+    std::string artist_str(artist);
+    std::string track_str(track);
+
     // Try multiple artwork URL fields in order of preference
- 
-    //search for exact same artist track values first
+
+    //search for exact same artist track values first (case-insensitive)
     for (const auto& item : s)
     {
-        
-        if (item["trackName"].get<std::string>() == track && item["artistName"].get<std::string>() == artist) {
+        std::string result_track = item["trackName"].get<std::string>();
+        std::string result_artist = item["artistName"].get<std::string>();
+
+        if (strings_equal_ignore_case(result_track, track_str) && artists_match(result_artist, artist_str)) {
 
             if (item.contains("artworkUrl600")) {
                 artwork_url = item["artworkUrl600"].get<std::string>().c_str();
@@ -931,9 +975,15 @@ bool artwork_manager::parse_itunes_json(const char* artist, const char* track, c
         }
     }
 
-    //No same artist title - get first found
+    //No exact artist+title match - find first result matching artist (case-insensitive)
     for (const auto& item : s)
     {
+            // Only consider results from the same artist to avoid "Best Of" compilations
+            std::string result_artist = item["artistName"].get<std::string>();
+            if (!artists_match(result_artist, artist_str)) {
+                continue; // Skip results from different artists
+            }
+
             if (item.contains("artworkUrl600")) {
                 artwork_url = item["artworkUrl600"].get<std::string>().c_str();
                 // Upgrade resolution to none for original quality
@@ -1018,10 +1068,17 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track ,c
     //select root
     json s = data["data"];
 
-   //search for exact same artist track values first
+    // Convert input artist/track to std::string for comparison
+    std::string artist_str(artist);
+    std::string track_str(track);
+
+   //search for exact same artist track values first (case-insensitive)
    for (const auto& item : s.items())
    {
-       if (item.value()["title"].get<std::string>() == track && item.value()["artist"]["name"].get<std::string>() == artist) {
+       std::string result_title = item.value()["title"].get<std::string>();
+       std::string result_artist = item.value()["artist"]["name"].get<std::string>();
+
+       if (strings_equal_ignore_case(result_title, track_str) && artists_match(result_artist, artist_str)) {
 
            //search cover_xl
            if (item.value()["album"]["cover_xl"].get<std::string>().c_str()) {
@@ -1072,9 +1129,15 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track ,c
        }
    }
 
-   //No same artist title - get first found
+   //No exact artist+title match - find first result matching artist (case-insensitive)
    for (const auto& item : s.items())
    {
+           // Only consider results from the same artist to avoid "Best Of" compilations
+           std::string result_artist = item.value()["artist"]["name"].get<std::string>();
+           if (!artists_match(result_artist, artist_str)) {
+               continue; // Skip results from different artists
+           }
+
            //search cover_xl
            if (item.value()["album"]["cover_xl"].get<std::string>().c_str()) {
                artwork_url = item.value()["album"]["cover_xl"].get<std::string>().c_str();
@@ -1121,9 +1184,10 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track ,c
                artwork_url = unescaped_url;
                return true;
            }
-
-           return false;
    }
+
+   // No results found matching the artist
+   return false;
 }
 
 bool artwork_manager::parse_lastfm_json(const pfc::string8& json_in, pfc::string8& artwork_url) {
@@ -1180,7 +1244,10 @@ bool artwork_manager::parse_discogs_json(const char* artist, const char* track, 
     // root
     json s = data["results"];
 
-    //search for exact same artist - track value first
+    // Convert input artist to std::string for comparison
+    std::string artist_str(artist);
+
+    //search for exact same artist - track value first (case-insensitive)
     std::string artist_title;
     artist_title += artist;
     artist_title += " - ";
@@ -1188,7 +1255,8 @@ bool artwork_manager::parse_discogs_json(const char* artist, const char* track, 
 
     for (const auto& item : s.items())
     {
-        if (item.value()["title"].get<std::string>() == artist_title) {
+        std::string result_title = item.value()["title"].get<std::string>();
+        if (strings_equal_ignore_case(result_title, artist_title)) {
             if (item.value()["cover_image"].get<std::string>().c_str()) {
                 artwork_url = item.value()["cover_image"].get<std::string>().c_str();
                 return true;
@@ -1200,9 +1268,34 @@ bool artwork_manager::parse_discogs_json(const char* artist, const char* track, 
         }
     }
 
-    //No same artist title - get first found
+    //No exact artist+title match - find first result matching artist (case-insensitive)
+    // Discogs format is "Artist - Album/Track", so check if title starts with artist
     for (const auto& item : s.items())
     {
+        std::string result_title = item.value()["title"].get<std::string>();
+
+        // Check if title starts with artist name (case-insensitive)
+        // Discogs format: "Artist - Album" or "Artist - Track"
+        // Also handle "The " prefix differences
+        bool artist_matches = false;
+        std::string artist_stripped = strip_the_prefix(artist_str);
+        std::string title_stripped = strip_the_prefix(result_title);
+
+        // Try matching with original artist
+        if (result_title.size() >= artist_str.size()) {
+            artist_matches = strings_equal_ignore_case(
+                result_title.substr(0, artist_str.size()), artist_str);
+        }
+        // Try matching after stripping "The " from both
+        if (!artist_matches && title_stripped.size() >= artist_stripped.size()) {
+            artist_matches = strings_equal_ignore_case(
+                title_stripped.substr(0, artist_stripped.size()), artist_stripped);
+        }
+
+        if (!artist_matches) {
+            continue; // Skip results from different artists
+        }
+
         if (item.value()["cover_image"].get<std::string>().c_str()) {
             artwork_url = item.value()["cover_image"].get<std::string>().c_str();
             return true;
@@ -1235,7 +1328,7 @@ void artwork_manager::search_musicbrainz_api_async(const char* artist, const cha
     pfc::string8 artist_str = artist;
     pfc::string8 track_str = track;
 
-    async_io_manager::instance().http_get_async(url, [callback](bool success, const pfc::string8& response, const pfc::string8& error) {
+    async_io_manager::instance().http_get_async(url, [callback, artist_str](bool success, const pfc::string8& response, const pfc::string8& error) {
         if (!success) {
             artwork_result result;
             result.success = false;
@@ -1244,9 +1337,9 @@ void artwork_manager::search_musicbrainz_api_async(const char* artist, const cha
             return;
         }
 
-        // Parse JSON response to collect release IDs
+        // Parse JSON response to collect release IDs (filter by artist)
         std::vector<pfc::string8> release_ids;
-        if (!parse_musicbrainz_json(response, release_ids) || release_ids.empty()) {
+        if (!parse_musicbrainz_json(response, release_ids, artist_str.c_str()) || release_ids.empty()) {
             artwork_result result;
             result.success = false;
             callback(result);
@@ -1299,7 +1392,7 @@ void artwork_manager::search_musicbrainz_api_async(const char* artist, const cha
 }
 
 
-bool artwork_manager::parse_musicbrainz_json(const pfc::string8& json_in, std::vector<pfc::string8>& release_ids) {
+bool artwork_manager::parse_musicbrainz_json(const pfc::string8& json_in, std::vector<pfc::string8>& release_ids, const char* artist) {
     try {
         std::string json_data(json_in.c_str());
         json data = json::parse(json_data);
@@ -1307,7 +1400,34 @@ bool artwork_manager::parse_musicbrainz_json(const pfc::string8& json_in, std::v
         if (!data.contains("recordings") || data["count"].get<int>() == 0)
             return false;
 
+        std::string artist_str(artist);
+
         for (const auto& rec : data["recordings"]) {
+            // Check if recording's artist-credit matches the requested artist (case-insensitive)
+            bool artist_matches = false;
+            if (rec.contains("artist-credit")) {
+                for (const auto& ac : rec["artist-credit"]) {
+                    if (ac.contains("name") && ac["name"].is_string()) {
+                        std::string credit_name = ac["name"].get<std::string>();
+                        if (artists_match(credit_name, artist_str)) {
+                            artist_matches = true;
+                            break;
+                        }
+                    }
+                    // Also check nested artist object
+                    if (ac.contains("artist") && ac["artist"].contains("name")) {
+                        std::string nested_name = ac["artist"]["name"].get<std::string>();
+                        if (artists_match(nested_name, artist_str)) {
+                            artist_matches = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Skip recordings from different artists to avoid "Best Of" compilations
+            if (!artist_matches) continue;
+
             if (!rec.contains("releases")) continue;
             for (const auto& rel : rec["releases"]) {
                 if (rel.contains("id") && rel["id"].is_string()) {
