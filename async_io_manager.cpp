@@ -10,6 +10,38 @@
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "winhttp.lib")
 
+// External configuration variables for network settings
+extern cfg_int cfg_http_timeout;
+extern cfg_int cfg_retry_count;
+
+// MusicBrainz rate limiter - enforces 1 request per second
+static std::mutex g_musicbrainz_rate_mutex;
+static std::chrono::steady_clock::time_point g_last_musicbrainz_request = std::chrono::steady_clock::now() - std::chrono::seconds(2);
+
+static void enforce_musicbrainz_rate_limit() {
+    std::lock_guard<std::mutex> lock(g_musicbrainz_rate_mutex);
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_last_musicbrainz_request);
+
+    // MusicBrainz requires minimum 1 second between requests
+    if (elapsed.count() < 1000) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000 - elapsed.count()));
+    }
+    g_last_musicbrainz_request = std::chrono::steady_clock::now();
+}
+
+// Helper to check if an error is retryable (network issues, timeouts, server errors)
+static bool is_retryable_error(const pfc::string8& error) {
+    // Retryable: connection failures, timeouts, 5xx server errors
+    if (error.find_first("connect") != pfc_infinite) return true;
+    if (error.find_first("timeout") != pfc_infinite) return true;
+    if (error.find_first("503") != pfc_infinite) return true;  // Service Unavailable
+    if (error.find_first("502") != pfc_infinite) return true;  // Bad Gateway
+    if (error.find_first("504") != pfc_infinite) return true;  // Gateway Timeout
+    if (error.find_first("429") != pfc_infinite) return true;  // Too Many Requests
+    return false;
+}
+
 // Static member definitions
 HWND async_io_manager::main_thread_dispatcher::message_window = nullptr;
 std::queue<async_io_manager::main_thread_callback> async_io_manager::main_thread_dispatcher::callback_queue;
@@ -732,17 +764,16 @@ LRESULT CALLBACK async_io_manager::main_thread_dispatcher::window_proc(HWND hwnd
     return DefWindowProc(hwnd, msg, wparam, lparam);
 }
 
-// HTTP Operations Implementation
-void async_io_manager::perform_http_get(const pfc::string8& url, http_request_callback callback) {
-    ASSERT_BACKGROUND_THREAD();
-    
-    bool success = false;
-    pfc::string8 response;
-    pfc::string8 error_message;
-    
+// Internal HTTP GET implementation (single attempt)
+// Returns: true on success, false on failure
+// On failure, error_message contains the error description
+static bool perform_http_get_internal(const pfc::string8& url, pfc::string8& response, pfc::string8& error_message, int timeout_seconds) {
+    response.reset();
+    error_message.reset();
+
     // Convert URL to wide string
     pfc::stringcvt::string_wide_from_utf8 wide_url(url);
-    
+
     // Parse URL
     URL_COMPONENTS urlComp = {};
     urlComp.dwStructSize = sizeof(urlComp);
@@ -750,15 +781,12 @@ void async_io_manager::perform_http_get(const pfc::string8& url, http_request_ca
     urlComp.dwHostNameLength = -1;
     urlComp.dwUrlPathLength = -1;
     urlComp.dwExtraInfoLength = -1;
-    
+
     if (!WinHttpCrackUrl(wide_url, 0, 0, &urlComp)) {
         error_message = "Failed to parse URL";
-        post_to_main_thread([callback, success, response, error_message]() {
-            callback(success, response, error_message);
-        });
-        return;
+        return false;
     }
-    
+
     // Initialize WinHTTP
     HINTERNET hSession = WinHttpOpen(L"foobar2000-artwork/1.0",
                                      WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -766,33 +794,28 @@ void async_io_manager::perform_http_get(const pfc::string8& url, http_request_ca
                                      WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) {
         error_message = "Failed to initialize WinHTTP";
-        post_to_main_thread([callback, success, response, error_message]() {
-            callback(success, response, error_message);
-        });
-        return;
+        return false;
     }
-    
-    // Set timeouts to prevent blocking
-    WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
-    
+
+    // Set timeouts using user-configurable value (in milliseconds)
+    int timeout_ms = timeout_seconds * 1000;
+    WinHttpSetTimeouts(hSession, timeout_ms, timeout_ms, timeout_ms, timeout_ms * 2);
+
     // Connect to server
     std::wstring hostname(urlComp.lpszHostName, urlComp.dwHostNameLength);
     HINTERNET hConnect = WinHttpConnect(hSession, hostname.c_str(), urlComp.nPort, 0);
     if (!hConnect) {
         WinHttpCloseHandle(hSession);
         error_message = "Failed to connect to server";
-        post_to_main_thread([callback, success, response, error_message]() {
-            callback(success, response, error_message);
-        });
-        return;
+        return false;
     }
-    
+
     // Create request
     std::wstring object(urlComp.lpszUrlPath, urlComp.dwUrlPathLength);
     if (urlComp.lpszExtraInfo) {
         object += std::wstring(urlComp.lpszExtraInfo, urlComp.dwExtraInfoLength);
     }
-    
+
     DWORD flags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", object.c_str(),
                                           NULL, WINHTTP_NO_REFERER,
@@ -801,84 +824,139 @@ void async_io_manager::perform_http_get(const pfc::string8& url, http_request_ca
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         error_message = "Failed to create request";
-        post_to_main_thread([callback, success, response, error_message]() {
-            callback(success, response, error_message);
-        });
-        return;
+        return false;
     }
-    
+
     // Send request
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        error_message = "Failed to send request";
-        post_to_main_thread([callback, success, response, error_message]() {
-            callback(success, response, error_message);
-        });
-        return;
+        error_message = "Failed to send request (timeout or connection error)";
+        return false;
     }
-    
+
     // Receive response
     if (!WinHttpReceiveResponse(hRequest, NULL)) {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        error_message = "Failed to receive response";
-        post_to_main_thread([callback, success, response, error_message]() {
-            callback(success, response, error_message);
-        });
-        return;
+        error_message = "Failed to receive response (timeout)";
+        return false;
     }
-    
+
+    // Check HTTP status code
+    DWORD statusCode = 0;
+    DWORD statusCodeSize = sizeof(statusCode);
+    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                       WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX);
+
+    if (statusCode >= 500) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        error_message = "Server error (";
+        error_message << (int)statusCode << ")";
+        return false;
+    }
+
+    if (statusCode == 429) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        error_message = "Rate limited (429)";
+        return false;
+    }
+
     // Read response data
     DWORD dwSize = 0;
     pfc::string8 temp_response;
-    
+
     do {
         dwSize = 0;
         if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
             break;
         }
-        
+
         if (dwSize == 0) break;
-        
+
         pfc::array_t<char> buffer;
         buffer.set_size(dwSize + 1);
-        
+
         DWORD dwDownloaded = 0;
         if (!WinHttpReadData(hRequest, buffer.get_ptr(), dwSize, &dwDownloaded)) {
             break;
         }
-        
+
         buffer[dwDownloaded] = 0;
         temp_response << buffer.get_ptr();
-        
+
     } while (dwSize > 0);
-    
+
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
-    
-    success = true;
+
     response = temp_response;
-    
+    return true;
+}
+
+// HTTP Operations Implementation with retry logic
+void async_io_manager::perform_http_get(const pfc::string8& url, http_request_callback callback) {
+    ASSERT_BACKGROUND_THREAD();
+
+    // Check if this is a MusicBrainz request and enforce rate limiting
+    if (url.find_first("musicbrainz.org") != pfc_infinite) {
+        enforce_musicbrainz_rate_limit();
+    }
+
+    bool success = false;
+    pfc::string8 response;
+    pfc::string8 error_message;
+
+    int timeout_seconds = cfg_http_timeout.get_value();
+    int max_retries = cfg_retry_count.get_value();
+
+    // Retry loop with exponential backoff
+    for (int attempt = 0; attempt <= max_retries; attempt++) {
+        if (attempt > 0) {
+            // Exponential backoff: 1s, 2s, 4s, ...
+            int delay_ms = 1000 * (1 << (attempt - 1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        }
+
+        success = perform_http_get_internal(url, response, error_message, timeout_seconds);
+
+        if (success) {
+            break;  // Success, no need to retry
+        }
+
+        // Check if error is retryable
+        if (!is_retryable_error(error_message)) {
+            break;  // Non-retryable error, don't retry
+        }
+
+        // Log retry attempt
+        if (attempt < max_retries) {
+            console::printf("foo_artwork: HTTP request failed (attempt %d/%d), retrying: %s",
+                           attempt + 1, max_retries + 1, error_message.c_str());
+        }
+    }
+
     post_to_main_thread([callback, success, response, error_message]() {
         callback(success, response, error_message);
     });
 }
 
-void async_io_manager::perform_http_get_binary(const pfc::string8& url, file_read_callback callback) {
-    ASSERT_BACKGROUND_THREAD();
-    
-    bool success = false;
-    pfc::array_t<t_uint8> data;
-    pfc::string8 error_message;
-    
+// Internal binary HTTP GET implementation (single attempt)
+static bool perform_http_get_binary_internal(const pfc::string8& url, pfc::array_t<t_uint8>& data, pfc::string8& error_message, int timeout_seconds) {
+    data.set_size(0);
+    error_message.reset();
+
     // Convert URL to wide string
     pfc::stringcvt::string_wide_from_utf8 wide_url(url);
-    
+
     // Parse URL
     URL_COMPONENTS urlComp = {};
     urlComp.dwStructSize = sizeof(urlComp);
@@ -886,15 +964,12 @@ void async_io_manager::perform_http_get_binary(const pfc::string8& url, file_rea
     urlComp.dwHostNameLength = -1;
     urlComp.dwUrlPathLength = -1;
     urlComp.dwExtraInfoLength = -1;
-    
+
     if (!WinHttpCrackUrl(wide_url, 0, 0, &urlComp)) {
         error_message = "Failed to parse URL";
-        post_to_main_thread([callback, success, data, error_message]() {
-            callback(success, data, error_message);
-        });
-        return;
+        return false;
     }
-    
+
     // Initialize WinHTTP
     HINTERNET hSession = WinHttpOpen(L"foobar2000-artwork/1.0",
                                      WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -902,33 +977,28 @@ void async_io_manager::perform_http_get_binary(const pfc::string8& url, file_rea
                                      WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) {
         error_message = "Failed to initialize WinHTTP";
-        post_to_main_thread([callback, success, data, error_message]() {
-            callback(success, data, error_message);
-        });
-        return;
+        return false;
     }
-    
-    // Set timeouts
-    WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
-    
+
+    // Set timeouts using user-configurable value
+    int timeout_ms = timeout_seconds * 1000;
+    WinHttpSetTimeouts(hSession, timeout_ms, timeout_ms, timeout_ms, timeout_ms * 2);
+
     // Connect to server
     std::wstring hostname(urlComp.lpszHostName, urlComp.dwHostNameLength);
     HINTERNET hConnect = WinHttpConnect(hSession, hostname.c_str(), urlComp.nPort, 0);
     if (!hConnect) {
         WinHttpCloseHandle(hSession);
         error_message = "Failed to connect to server";
-        post_to_main_thread([callback, success, data, error_message]() {
-            callback(success, data, error_message);
-        });
-        return;
+        return false;
     }
-    
+
     // Create request
     std::wstring object(urlComp.lpszUrlPath, urlComp.dwUrlPathLength);
     if (urlComp.lpszExtraInfo) {
         object += std::wstring(urlComp.lpszExtraInfo, urlComp.dwExtraInfoLength);
     }
-    
+
     DWORD flags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", object.c_str(),
                                           NULL, WINHTTP_NO_REFERER,
@@ -937,71 +1007,136 @@ void async_io_manager::perform_http_get_binary(const pfc::string8& url, file_rea
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         error_message = "Failed to create request";
-        post_to_main_thread([callback, success, data, error_message]() {
-            callback(success, data, error_message);
-        });
-        return;
+        return false;
     }
-    
+
     // Send request
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        error_message = "Failed to send request";
-        post_to_main_thread([callback, success, data, error_message]() {
-            callback(success, data, error_message);
-        });
-        return;
+        error_message = "Failed to send request (timeout or connection error)";
+        return false;
     }
-    
+
     // Receive response
     if (!WinHttpReceiveResponse(hRequest, NULL)) {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        error_message = "Failed to receive response";
-        post_to_main_thread([callback, success, data, error_message]() {
-            callback(success, data, error_message);
-        });
-        return;
+        error_message = "Failed to receive response (timeout)";
+        return false;
     }
-    
+
+    // Check HTTP status code
+    DWORD statusCode = 0;
+    DWORD statusCodeSize = sizeof(statusCode);
+    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                       WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX);
+
+    if (statusCode >= 500) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        error_message = "Server error (";
+        error_message << (int)statusCode << ")";
+        return false;
+    }
+
+    if (statusCode == 429) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        error_message = "Rate limited (429)";
+        return false;
+    }
+
+    if (statusCode == 404) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        error_message = "Not found (404)";
+        return false;
+    }
+
     // Read binary data
     DWORD dwSize = 0;
-    std::vector<t_uint8> temp_data;
-    
+    pfc::array_t<t_uint8> temp_data;
+
     do {
         dwSize = 0;
         if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
             break;
         }
-        
+
         if (dwSize == 0) break;
-        
-        size_t old_size = temp_data.size();
-        temp_data.resize(old_size + dwSize);
-        
+
+        size_t current_size = temp_data.get_size();
+        temp_data.set_size(current_size + dwSize);
+
         DWORD dwDownloaded = 0;
-        if (!WinHttpReadData(hRequest, &temp_data[old_size], dwSize, &dwDownloaded)) {
+        if (!WinHttpReadData(hRequest, temp_data.get_ptr() + current_size, dwSize, &dwDownloaded)) {
             break;
         }
-        
-        temp_data.resize(old_size + dwDownloaded);
-        
+
+        // Adjust size if less data was read
+        if (dwDownloaded < dwSize) {
+            temp_data.set_size(current_size + dwDownloaded);
+        }
+
     } while (dwSize > 0);
-    
+
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
-    
-    success = true;
-    data.set_size(temp_data.size());
-    if (temp_data.size() > 0) {
-        memcpy(data.get_ptr(), temp_data.data(), temp_data.size());
+
+    data = temp_data;
+    return true;
+}
+
+void async_io_manager::perform_http_get_binary(const pfc::string8& url, file_read_callback callback) {
+    ASSERT_BACKGROUND_THREAD();
+
+    // Check if this is a MusicBrainz/CoverArtArchive request and enforce rate limiting
+    if (url.find_first("musicbrainz.org") != pfc_infinite ||
+        url.find_first("coverartarchive.org") != pfc_infinite) {
+        enforce_musicbrainz_rate_limit();
     }
-    
+
+    bool success = false;
+    pfc::array_t<t_uint8> data;
+    pfc::string8 error_message;
+
+    int timeout_seconds = cfg_http_timeout.get_value();
+    int max_retries = cfg_retry_count.get_value();
+
+    // Retry loop with exponential backoff
+    for (int attempt = 0; attempt <= max_retries; attempt++) {
+        if (attempt > 0) {
+            // Exponential backoff: 1s, 2s, 4s, ...
+            int delay_ms = 1000 * (1 << (attempt - 1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        }
+
+        success = perform_http_get_binary_internal(url, data, error_message, timeout_seconds);
+
+        if (success) {
+            break;  // Success, no need to retry
+        }
+
+        // Check if error is retryable
+        if (!is_retryable_error(error_message)) {
+            break;  // Non-retryable error, don't retry
+        }
+
+        // Log retry attempt
+        if (attempt < max_retries) {
+            console::printf("foo_artwork: Binary HTTP request failed (attempt %d/%d), retrying: %s",
+                           attempt + 1, max_retries + 1, error_message.c_str());
+        }
+    }
+
     post_to_main_thread([callback, success, data, error_message]() {
         callback(success, data, error_message);
     });
