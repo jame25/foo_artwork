@@ -15,6 +15,8 @@ extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
 extern cfg_bool cfg_infobar;
 extern cfg_bool cfg_use_noart_image;
+extern cfg_int cfg_http_timeout;
+extern cfg_int cfg_retry_count;
 
 // Reference to current artwork source for logging
 extern pfc::string8 g_current_artwork_source;
@@ -494,14 +496,22 @@ bool artwork_advanced_preferences::has_changed() {
     // Check if Clear panel when not playing checkbox changed
     bool clear_panel_changed = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED) != cfg_clear_panel_when_not_playing;
 
-    // Check if Clear panel when not playing checkbox changed
+    // Check if infobar checkbox changed
     bool infobar_changed = (IsDlgButtonChecked(m_hwnd, IDC_INFOBAR) == BST_CHECKED) != cfg_infobar;
-
 
     // Check if Use noart image checkbox changed
     bool use_noart_changed = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED) != cfg_use_noart_image;
 
-    return enable_logos_changed || folder_changed || clear_panel_changed || use_noart_changed;
+    // Check if HTTP timeout changed
+    int current_timeout = GetDlgItemInt(m_hwnd, IDC_HTTP_TIMEOUT, NULL, FALSE);
+    bool timeout_changed = current_timeout != cfg_http_timeout;
+
+    // Check if retry count changed
+    int current_retry = GetDlgItemInt(m_hwnd, IDC_RETRY_COUNT, NULL, FALSE);
+    bool retry_changed = current_retry != cfg_retry_count;
+
+    return enable_logos_changed || folder_changed || clear_panel_changed || use_noart_changed ||
+           infobar_changed || timeout_changed || retry_changed;
 }
 
 void artwork_advanced_preferences::apply_settings() {
@@ -518,11 +528,23 @@ void artwork_advanced_preferences::apply_settings() {
     // Apply Clear panel when not playing setting
     cfg_clear_panel_when_not_playing = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED);
 
-    // Apply Clear panel when not playing setting
+    // Apply infobar setting
     cfg_infobar = (IsDlgButtonChecked(m_hwnd, IDC_INFOBAR) == BST_CHECKED);
 
     // Apply Use noart image setting
     cfg_use_noart_image = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED);
+
+    // Apply HTTP timeout setting (clamp to valid range 5-120 seconds)
+    int timeout = GetDlgItemInt(m_hwnd, IDC_HTTP_TIMEOUT, NULL, FALSE);
+    if (timeout < 5) timeout = 5;
+    if (timeout > 120) timeout = 120;
+    cfg_http_timeout = timeout;
+
+    // Apply retry count setting (clamp to valid range 0-5)
+    int retry = GetDlgItemInt(m_hwnd, IDC_RETRY_COUNT, NULL, FALSE);
+    if (retry < 0) retry = 0;
+    if (retry > 5) retry = 5;
+    cfg_retry_count = retry;
 
     // Update timers for all UI elements when setting changes
     update_all_clear_panel_timers();
@@ -537,6 +559,8 @@ void artwork_advanced_preferences::reset_settings() {
     cfg_clear_panel_when_not_playing = false;  // Default disabled
     cfg_infobar = false;  // Default disabled
     cfg_use_noart_image = false;  // Default disabled
+    cfg_http_timeout = 15;  // Default 15 seconds
+    cfg_retry_count = 2;  // Default 2 retries
 
     update_controls();
 }
@@ -553,11 +577,17 @@ void artwork_advanced_preferences::update_controls() {
     // Update Clear panel when not playing checkbox
     CheckDlgButton(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING, cfg_clear_panel_when_not_playing ? BST_CHECKED : BST_UNCHECKED);
 
-    // Update Clear panel when not playing checkbox
+    // Update infobar checkbox
     CheckDlgButton(m_hwnd, IDC_INFOBAR, cfg_infobar ? BST_CHECKED : BST_UNCHECKED);
 
     // Update Use noart image checkbox
     CheckDlgButton(m_hwnd, IDC_USE_NOART_IMAGE, cfg_use_noart_image ? BST_CHECKED : BST_UNCHECKED);
+
+    // Update HTTP timeout field
+    SetDlgItemInt(m_hwnd, IDC_HTTP_TIMEOUT, cfg_http_timeout, FALSE);
+
+    // Update retry count field
+    SetDlgItemInt(m_hwnd, IDC_RETRY_COUNT, cfg_retry_count, FALSE);
 
     // Enable/disable noart image checkbox based on clear panel checkbox state
     EnableWindow(GetDlgItem(m_hwnd, IDC_USE_NOART_IMAGE), cfg_clear_panel_when_not_playing ? TRUE : FALSE);
@@ -644,6 +674,18 @@ INT_PTR CALLBACK artwork_advanced_preferences::AdvancedConfigProc(HWND hwnd, UIN
             case IDC_BROWSE_LOGOS_FOLDER:
                 if (HIWORD(wp) == BN_CLICKED) {
                     pThis->browse_for_folder();
+                }
+                break;
+
+            case IDC_HTTP_TIMEOUT:
+                if (HIWORD(wp) == EN_CHANGE) {
+                    pThis->on_changed();
+                }
+                break;
+
+            case IDC_RETRY_COUNT:
+                if (HIWORD(wp) == EN_CHANGE) {
+                    pThis->on_changed();
                 }
                 break;
             }
