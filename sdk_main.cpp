@@ -64,6 +64,8 @@ static constexpr GUID guid_cfg_logos_folder = { 0x1234568a, 0x1234, 0x1234, { 0x
 static constexpr GUID guid_cfg_clear_panel_when_not_playing = { 0x1234568b, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfb } };
 static constexpr GUID guid_cfg_use_noart_image = { 0x1234568c, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfc } };
 static constexpr GUID guid_cfg_infobar = { 0x59b0b41b, 0x2d12, 0x4965, { 0xaa, 0x4a, 0xb5, 0x80, 0x5, 0x55, 0x2e, 0xf7 } };
+static constexpr GUID guid_cfg_http_timeout = { 0x1234568d, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfd } };
+static constexpr GUID guid_cfg_retry_count = { 0x1234568e, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
 
 
 // Configuration variables with default values
@@ -102,6 +104,10 @@ cfg_bool cfg_clear_panel_when_not_playing(guid_cfg_clear_panel_when_not_playing,
 cfg_bool cfg_use_noart_image(guid_cfg_use_noart_image, false);  // Use noart image when clearing panel (default disabled)
 
 cfg_bool cfg_infobar(guid_cfg_infobar, false);  // DUI infobar (default disabled)
+
+// Network settings
+cfg_int cfg_http_timeout(guid_cfg_http_timeout, 15);  // HTTP timeout in seconds (default 15)
+cfg_int cfg_retry_count(guid_cfg_retry_count, 2);  // Number of retries for failed requests (default 2)
 
 
 //=============================================================================
@@ -285,7 +291,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.32",
+    "1.5.33",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -302,7 +308,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.32",
+    "1.5.33",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
