@@ -26,6 +26,11 @@
 #define IDC_CLEAR_PANEL_WHEN_NOT_PLAYING 1022
 #define IDC_USE_NOART_IMAGE             1023
 #define IDC_INFOBAR 1024
+#define IDC_HTTP_TIMEOUT                1025
+#define IDC_RETRY_COUNT                 1026
+#define IDC_STATIC_TIMEOUT              1027
+#define IDC_STATIC_RETRY                1028
+#define IDC_STATIC_SECONDS              1029
 
 // Next default values for new objects
 // 
@@ -33,7 +38,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        103
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1025
+#define _APS_NEXT_CONTROL_VALUE         1030
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
