@@ -10,6 +10,77 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
+// Normalize string for fuzzy matching: removes punctuation, normalizes "AND"/"&", lowercases
+static std::string normalize_for_matching(const std::string& s) {
+    std::string result;
+    result.reserve(s.size());
+
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+
+        // Skip punctuation (periods, commas, apostrophes, etc.)
+        if (c == '.' || c == ',' || c == '\'' || c == '!' || c == '?' || c == '-') {
+            continue;
+        }
+
+        // Convert to lowercase
+        result += std::tolower(static_cast<unsigned char>(c));
+    }
+
+    // Normalize " and " to " & " for consistent comparison
+    // Process the result to handle "and" vs "&"
+    std::string normalized;
+    normalized.reserve(result.size());
+
+    for (size_t i = 0; i < result.size(); ++i) {
+        // Check for " and " pattern (with spaces)
+        if (i + 4 < result.size() &&
+            result[i] == ' ' &&
+            result[i+1] == 'a' &&
+            result[i+2] == 'n' &&
+            result[i+3] == 'd' &&
+            result[i+4] == ' ') {
+            normalized += ' ';  // Replace " and " with single space (remove the word entirely)
+            i += 4;  // Skip past " and " (loop will add 1 more)
+            continue;
+        }
+
+        // Check for " & " pattern
+        if (i + 2 < result.size() &&
+            result[i] == ' ' &&
+            result[i+1] == '&' &&
+            result[i+2] == ' ') {
+            normalized += ' ';  // Replace " & " with single space
+            i += 2;  // Skip past " & "
+            continue;
+        }
+
+        normalized += result[i];
+    }
+
+    // Collapse multiple spaces into one
+    result.clear();
+    bool last_was_space = false;
+    for (char c : normalized) {
+        if (c == ' ') {
+            if (!last_was_space) {
+                result += c;
+                last_was_space = true;
+            }
+        } else {
+            result += c;
+            last_was_space = false;
+        }
+    }
+
+    // Trim leading/trailing spaces
+    size_t start = result.find_first_not_of(' ');
+    if (start == std::string::npos) return "";
+    size_t end = result.find_last_not_of(' ');
+
+    return result.substr(start, end - start + 1);
+}
+
 // Case-insensitive string comparison helper for matching artist/track names
 static bool strings_equal_ignore_case(const std::string& a, const std::string& b) {
     if (a.size() != b.size()) return false;
@@ -20,6 +91,20 @@ static bool strings_equal_ignore_case(const std::string& a, const std::string& b
         }
     }
     return true;
+}
+
+// Fuzzy string comparison that normalizes before comparing
+static bool strings_match_fuzzy(const std::string& a, const std::string& b) {
+    // First try exact case-insensitive match (fast path)
+    if (a.size() == b.size() && strings_equal_ignore_case(a, b)) {
+        return true;
+    }
+
+    // Normalize both strings and compare
+    std::string norm_a = normalize_for_matching(a);
+    std::string norm_b = normalize_for_matching(b);
+
+    return norm_a == norm_b;
 }
 
 // Helper to strip "The " prefix from artist names for fuzzy matching
@@ -36,16 +121,22 @@ static std::string strip_the_prefix(const std::string& s) {
     return s;
 }
 
-// Fuzzy artist comparison: case-insensitive and ignores "The " prefix differences
+// Fuzzy artist comparison: handles case, punctuation, "The " prefix, and "AND"/"&" differences
 static bool artists_match(const std::string& a, const std::string& b) {
-    // First try exact case-insensitive match
+    // First try exact case-insensitive match (fast path)
     if (strings_equal_ignore_case(a, b)) return true;
+
+    // Try fuzzy match (handles punctuation like "T. Rex" vs "T Rex", and "AND" vs "&")
+    if (strings_match_fuzzy(a, b)) return true;
 
     // Try matching after stripping "The " prefix from both
     std::string a_stripped = strip_the_prefix(a);
     std::string b_stripped = strip_the_prefix(b);
 
-    return strings_equal_ignore_case(a_stripped, b_stripped);
+    if (strings_equal_ignore_case(a_stripped, b_stripped)) return true;
+
+    // Try fuzzy match on stripped versions too
+    return strings_match_fuzzy(a_stripped, b_stripped);
 }
 
 #pragma comment(lib, "winhttp.lib")
@@ -913,7 +1004,7 @@ bool artwork_manager::parse_itunes_json(const char* artist, const char* track, c
         std::string result_track = item["trackName"].get<std::string>();
         std::string result_artist = item["artistName"].get<std::string>();
 
-        if (strings_equal_ignore_case(result_track, track_str) && artists_match(result_artist, artist_str)) {
+        if (strings_match_fuzzy(result_track, track_str) && artists_match(result_artist, artist_str)) {
 
             if (item.contains("artworkUrl600")) {
                 artwork_url = item["artworkUrl600"].get<std::string>().c_str();
@@ -1070,13 +1161,13 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track ,c
     std::string artist_str(artist);
     std::string track_str(track);
 
-   //search for exact same artist track values first (case-insensitive)
+   //search for exact same artist track values first (fuzzy matching for punctuation/case/AND-& differences)
    for (const auto& item : s.items())
    {
        std::string result_title = item.value()["title"].get<std::string>();
        std::string result_artist = item.value()["artist"]["name"].get<std::string>();
 
-       if (strings_equal_ignore_case(result_title, track_str) && artists_match(result_artist, artist_str)) {
+       if (strings_match_fuzzy(result_title, track_str) && artists_match(result_artist, artist_str)) {
 
            //search cover_xl
            if (item.value()["album"]["cover_xl"].get<std::string>().c_str()) {
@@ -1254,7 +1345,7 @@ bool artwork_manager::parse_discogs_json(const char* artist, const char* track, 
     for (const auto& item : s.items())
     {
         std::string result_title = item.value()["title"].get<std::string>();
-        if (strings_equal_ignore_case(result_title, artist_title)) {
+        if (strings_match_fuzzy(result_title, artist_title)) {
             if (item.value()["cover_image"].get<std::string>().c_str()) {
                 artwork_url = item.value()["cover_image"].get<std::string>().c_str();
                 return true;
