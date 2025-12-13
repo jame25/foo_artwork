@@ -10,13 +10,89 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
-// Normalize string for fuzzy matching: removes punctuation, normalizes "AND"/"&", lowercases
-static std::string normalize_for_matching(const std::string& s) {
+// Normalize diacritics/accented characters to ASCII equivalents (UTF-8 aware)
+static std::string normalize_diacritics(const std::string& s) {
     std::string result;
     result.reserve(s.size());
 
     for (size_t i = 0; i < s.size(); ++i) {
-        char c = s[i];
+        unsigned char c = static_cast<unsigned char>(s[i]);
+
+        // Check for UTF-8 two-byte sequences starting with 0xC3 (Latin-1 Supplement)
+        if (c == 0xC3 && i + 1 < s.size()) {
+            unsigned char next = static_cast<unsigned char>(s[i + 1]);
+            char replacement = 0;
+
+            // Uppercase variants (0xC3 0x80-0x9F)
+            if (next >= 0x80 && next <= 0x85) replacement = 'A';       // À Á Â Ã Ä Å
+            else if (next == 0x86) { result += "AE"; i++; continue; }  // Æ
+            else if (next == 0x87) replacement = 'C';                  // Ç
+            else if (next >= 0x88 && next <= 0x8B) replacement = 'E';  // È É Ê Ë
+            else if (next >= 0x8C && next <= 0x8F) replacement = 'I';  // Ì Í Î Ï
+            else if (next == 0x90) replacement = 'D';                  // Ð
+            else if (next == 0x91) replacement = 'N';                  // Ñ
+            else if (next >= 0x92 && next <= 0x96) replacement = 'O';  // Ò Ó Ô Õ Ö
+            else if (next == 0x98) replacement = 'O';                  // Ø
+            else if (next >= 0x99 && next <= 0x9C) replacement = 'U';  // Ù Ú Û Ü
+            else if (next == 0x9D) replacement = 'Y';                  // Ý
+            // Lowercase variants (0xC3 0xA0-0xBF)
+            else if (next >= 0xA0 && next <= 0xA5) replacement = 'a';  // à á â ã ä å
+            else if (next == 0xA6) { result += "ae"; i++; continue; }  // æ
+            else if (next == 0xA7) replacement = 'c';                  // ç
+            else if (next >= 0xA8 && next <= 0xAB) replacement = 'e';  // è é ê ë
+            else if (next >= 0xAC && next <= 0xAF) replacement = 'i';  // ì í î ï
+            else if (next == 0xB0) replacement = 'd';                  // ð
+            else if (next == 0xB1) replacement = 'n';                  // ñ
+            else if (next >= 0xB2 && next <= 0xB6) replacement = 'o';  // ò ó ô õ ö
+            else if (next == 0xB8) replacement = 'o';                  // ø
+            else if (next >= 0xB9 && next <= 0xBC) replacement = 'u';  // ù ú û ü
+            else if (next == 0xBD || next == 0xBF) replacement = 'y';  // ý ÿ
+            else if (next == 0x9F) { result += "ss"; i++; continue; }  // ß (German eszett)
+
+            if (replacement) {
+                result += replacement;
+                i++;  // Skip the second byte
+                continue;
+            }
+        }
+
+        // Check for UTF-8 two-byte sequences starting with 0xC5 (Latin Extended-A)
+        if (c == 0xC5 && i + 1 < s.size()) {
+            unsigned char next = static_cast<unsigned char>(s[i + 1]);
+            char replacement = 0;
+
+            if (next == 0x92 || next == 0x93) {  // Œ œ
+                result += (next == 0x92) ? "OE" : "oe";
+                i++;
+                continue;
+            }
+            else if (next == 0xA0 || next == 0xA1) replacement = (next == 0xA0) ? 'S' : 's';  // Š š
+            else if (next == 0xBD || next == 0xBE) replacement = (next == 0xBD) ? 'Z' : 'z';  // Ž ž
+
+            if (replacement) {
+                result += replacement;
+                i++;
+                continue;
+            }
+        }
+
+        // Pass through other characters unchanged
+        result += s[i];
+    }
+
+    return result;
+}
+
+// Normalize string for fuzzy matching: removes diacritics, punctuation, normalizes "AND"/"&", lowercases
+static std::string normalize_for_matching(const std::string& s) {
+    // First normalize diacritics (ö→o, é→e, etc.)
+    std::string diacritic_normalized = normalize_diacritics(s);
+
+    std::string result;
+    result.reserve(diacritic_normalized.size());
+
+    for (size_t i = 0; i < diacritic_normalized.size(); ++i) {
+        char c = diacritic_normalized[i];
 
         // Skip punctuation (periods, commas, apostrophes, etc.)
         if (c == '.' || c == ',' || c == '\'' || c == '!' || c == '?' || c == '-') {
