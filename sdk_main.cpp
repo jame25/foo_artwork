@@ -66,6 +66,7 @@ static constexpr GUID guid_cfg_use_noart_image = { 0x1234568c, 0x1234, 0x1234, {
 static constexpr GUID guid_cfg_infobar = { 0x59b0b41b, 0x2d12, 0x4965, { 0xaa, 0x4a, 0xb5, 0x80, 0x5, 0x55, 0x2e, 0xf7 } };
 static constexpr GUID guid_cfg_http_timeout = { 0x1234568d, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfd } };
 static constexpr GUID guid_cfg_retry_count = { 0x1234568e, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
+static constexpr GUID guid_cfg_enable_disk_cache = { 0x1234568f, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xff } };
 
 
 // Configuration variables with default values
@@ -108,6 +109,9 @@ cfg_bool cfg_infobar(guid_cfg_infobar, false);  // DUI infobar (default disabled
 // Network settings
 cfg_int cfg_http_timeout(guid_cfg_http_timeout, 15);  // HTTP timeout in seconds (default 15)
 cfg_int cfg_retry_count(guid_cfg_retry_count, 2);  // Number of retries for failed requests (default 2)
+
+// Disk cache setting
+cfg_bool cfg_enable_disk_cache(guid_cfg_enable_disk_cache, true);  // Enable disk caching (default enabled)
 
 
 //=============================================================================
@@ -291,7 +295,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.34",
+    "1.5.35",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -308,7 +312,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.34",
+    "1.5.35",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -7917,4 +7921,3 @@ bool is_safe_internet_stream(metadb_handle_ptr track) {
 //=============================================================================
 
 // CUI implementation is now in artwork_panel_cui.cpp
-
