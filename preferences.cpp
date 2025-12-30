@@ -17,6 +17,7 @@ extern cfg_bool cfg_infobar;
 extern cfg_bool cfg_use_noart_image;
 extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
+extern cfg_bool cfg_enable_disk_cache;
 
 // Reference to current artwork source for logging
 extern pfc::string8 g_current_artwork_source;
@@ -177,6 +178,12 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_4), CB_SETCURSEL, cfg_search_order_4, 0);  // 4th choice
         SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_5), CB_SETCURSEL, cfg_search_order_5, 0);  // 5th choice
 
+        // Initialize disk cache combobox
+        HWND hDiskCache = GetDlgItem(hwnd, IDC_ENABLE_DISK_CACHE);
+        SendMessage(hDiskCache, CB_RESETCONTENT, 0, 0);
+        SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Enabled"));
+        SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Disabled"));
+        SendMessage(hDiskCache, CB_SETCURSEL, cfg_enable_disk_cache ? 0 : 1, 0);
 
         p_this->update_controls();
         p_this->m_has_changes = false;
@@ -207,7 +214,8 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
             LOWORD(wp) == IDC_PRIORITY_2 ||
             LOWORD(wp) == IDC_PRIORITY_3 ||
             LOWORD(wp) == IDC_PRIORITY_4 ||
-            LOWORD(wp) == IDC_PRIORITY_5)) {
+            LOWORD(wp) == IDC_PRIORITY_5 ||
+            LOWORD(wp) == IDC_ENABLE_DISK_CACHE)) {
             p_this->on_changed();
         }
         else if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_SHOW_SOURCE) {
@@ -279,9 +287,13 @@ bool artwork_preferences::has_changed() {
     bool order4_changed = current_order_4 != cfg_search_order_4;
     bool order5_changed = current_order_5 != cfg_search_order_5;
 
+    // Check disk cache combobox (0 = Enabled, 1 = Disabled)
+    int disk_cache_selection = SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_GETCURSEL, 0, 0);
+    bool disk_cache_changed = (disk_cache_selection == 0) != cfg_enable_disk_cache;
+
     return itunes_changed || discogs_changed || lastfm_changed || deezer_changed || musicbrainz_changed ||
         discogs_key_changed || discogs_consumer_key_changed ||
-        discogs_consumer_secret_changed || lastfm_key_changed ||
+        discogs_consumer_secret_changed || lastfm_key_changed || disk_cache_changed ||
         order1_changed || order2_changed || order3_changed || order4_changed || order5_changed;
 }
 
@@ -315,6 +327,9 @@ void artwork_preferences::apply_settings() {
         cfg_search_order_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);  // 4th choice
         cfg_search_order_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);  // 5th choice
 
+        // Apply disk cache setting (0 = Enabled, 1 = Disabled)
+        int disk_cache_selection = SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_GETCURSEL, 0, 0);
+        cfg_enable_disk_cache = (disk_cache_selection == 0);
     }
 }
 
@@ -359,6 +374,9 @@ void artwork_preferences::reset_settings() {
         cfg_search_order_4 = 3;  // 4th choice: MusicBrainz
         cfg_search_order_5 = 4;  // 5th choice: Discogs
 
+        // Reset disk cache to enabled (select index 0)
+        SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_SETCURSEL, 0, 0);
+        cfg_enable_disk_cache = true;
 
         update_controls();
     }
