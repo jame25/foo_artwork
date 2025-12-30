@@ -231,6 +231,7 @@ extern cfg_string cfg_discogs_consumer_secret;
 extern cfg_string cfg_lastfm_key;
 extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
+extern cfg_bool cfg_enable_disk_cache;
 
 // Static member initialization
 std::atomic<bool> artwork_manager::initialized_(false);
@@ -384,8 +385,10 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
     
     find_local_artwork_async(track, [cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
-            // Local artwork found - cache it and return
-            async_io_manager::instance().cache_set_async(cache_key, result.data);
+            // Local artwork found - cache it (if disk cache enabled) and return
+            if (cfg_enable_disk_cache) {
+                async_io_manager::instance().cache_set_async(cache_key, result.data);
+            }
             callback(result);
         } else {
             // Local search failed - continue to API search
@@ -458,8 +461,8 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         }
         
         if (result.success) {
-            // Cache the result if cache_key is not empty (empty means internet stream)
-            if (!cache_key.is_empty()) {
+            // Cache the result if cache_key is not empty (empty means internet stream) and disk cache is enabled
+            if (cfg_enable_disk_cache && !cache_key.is_empty()) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
             }
             callback(result);
