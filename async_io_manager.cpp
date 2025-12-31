@@ -72,7 +72,23 @@ void async_io_manager::initialize(size_t thread_count) {
     cache_ = std::make_unique<async_cache>();
     
     // Initialize cache directory
-    pfc::string8 cache_dir = core_api::get_profile_path();
+    // core_api::get_profile_path() returns a file:// URL, need to convert to Windows path
+    pfc::string8 profile_url = core_api::get_profile_path();
+    pfc::string8 cache_dir;
+    
+    if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+        // Remove "file://" prefix and convert to Windows path
+        cache_dir = profile_url.c_str() + 7; // Skip "file://"
+        // Replace forward slashes with backslashes for Windows
+        for (size_t i = 0; i < cache_dir.length(); i++) {
+            if (cache_dir[i] == '/') {
+                cache_dir.set_char(i, '\\');
+            }
+        }
+    } else {
+        cache_dir = profile_url;
+    }
+    
     cache_dir << "\\foo_artwork_cache\\";
     cache_->initialize(cache_dir);
     
