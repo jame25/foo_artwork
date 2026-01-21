@@ -18,6 +18,7 @@ extern cfg_bool cfg_use_noart_image;
 extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
 extern cfg_bool cfg_enable_disk_cache;
+extern cfg_string cfg_cache_folder;
 
 // Reference to current artwork source for logging
 extern pfc::string8 g_current_artwork_source;
@@ -63,6 +64,7 @@ private:
     void reset_settings();
     void update_controls();
     void toggle_osd();
+    void browse_for_cache_folder();
 };
 
 
@@ -184,6 +186,9 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Enabled"));
         SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Disabled"));
         SendMessage(hDiskCache, CB_SETCURSEL, cfg_enable_disk_cache ? 0 : 1, 0);
+        
+        // Enable/disable browse cache folder button based on disk cache enabled state
+        EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_CACHE_FOLDER), cfg_enable_disk_cache ? TRUE : FALSE);
 
         p_this->update_controls();
         p_this->m_has_changes = false;
@@ -214,12 +219,20 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
             LOWORD(wp) == IDC_PRIORITY_2 ||
             LOWORD(wp) == IDC_PRIORITY_3 ||
             LOWORD(wp) == IDC_PRIORITY_4 ||
-            LOWORD(wp) == IDC_PRIORITY_5 ||
-            LOWORD(wp) == IDC_ENABLE_DISK_CACHE)) {
+            LOWORD(wp) == IDC_PRIORITY_5)) {
             p_this->on_changed();
+        }
+        else if (HIWORD(wp) == CBN_SELCHANGE && LOWORD(wp) == IDC_ENABLE_DISK_CACHE) {
+            p_this->on_changed();
+            // Enable/disable browse button based on disk cache enabled state
+            int sel = SendMessage(GetDlgItem(hwnd, IDC_ENABLE_DISK_CACHE), CB_GETCURSEL, 0, 0);
+            EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_CACHE_FOLDER), sel == 0);
         }
         else if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_SHOW_SOURCE) {
             p_this->toggle_osd();
+        }
+        else if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_BROWSE_CACHE_FOLDER) {
+            p_this->browse_for_cache_folder();
         }
         break;
 
@@ -390,6 +403,16 @@ void artwork_preferences::toggle_osd() {
 
     // Update button text immediately
     update_controls();
+}
+
+void artwork_preferences::browse_for_cache_folder() {
+    if (!m_hwnd) return;
+    
+    pfc::string8 folder_path;
+    if (uBrowseForFolder(m_hwnd, "Select Artwork Cache Folder", folder_path)) {
+        cfg_cache_folder = folder_path;
+        on_changed();
+    }
 }
 
 //=============================================================================
