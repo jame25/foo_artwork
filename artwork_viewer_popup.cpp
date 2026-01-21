@@ -85,10 +85,16 @@ void ArtworkViewerPopup::ShowPopup(HWND parent_hwnd) {
         window_width = (int)(window_width * scale);
     }
     
-    // Ensure minimum size
-    if (window_width < 400) window_width = 400;
-    if (window_height < 300) window_height = 300;
-    
+    // Ensure minimum size (6 inches based on system DPI)
+    HDC hdc = ::GetDC(NULL);
+    int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+    ::ReleaseDC(NULL, hdc);
+    int min_width = (int)(6.0 * dpiX);
+    int min_height = (int)(6.0 * dpiY);
+    if (window_width < min_width) window_width = min_width;
+    if (window_height < min_height) window_height = min_height;
+
     // Create the window
     HWND hwnd = Create(parent_hwnd, CWindow::rcDefault, L"Artwork Viewer", 
         WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0);
@@ -261,6 +267,26 @@ LRESULT ArtworkViewerPopup::OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL
     return 0;
 }
 
+LRESULT ArtworkViewerPopup::OnGetMinMaxInfo(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    MINMAXINFO* pMinMaxInfo = (MINMAXINFO*)lParam;
+
+    // Get the DPI for proper scaling (6 inches minimum)
+    HDC hdc = ::GetDC(NULL);
+    int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+    ::ReleaseDC(NULL, hdc);
+
+    // Calculate 6 inches in pixels based on system DPI
+    int minWidthPixels = (int)(6.0 * dpiX);
+    int minHeightPixels = (int)(6.0 * dpiY);
+
+    pMinMaxInfo->ptMinTrackSize.x = minWidthPixels;
+    pMinMaxInfo->ptMinTrackSize.y = minHeightPixels;
+
+    bHandled = TRUE;
+    return 0;
+}
+
 LRESULT ArtworkViewerPopup::OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
     bHandled = TRUE;
     return TRUE; // We handle all drawing in OnPaint
@@ -372,18 +398,61 @@ LRESULT ArtworkViewerPopup::OnClose(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
 
 void ArtworkViewerPopup::PaintArtwork(HDC hdc) {
     if (!m_artwork_image) return;
-    
+
     Graphics graphics(hdc);
     graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
     graphics.SetSmoothingMode(SmoothingModeHighQuality);
     graphics.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-    
-    // Draw the image in the calculated rectangle
-    Rect dest_rect(m_image_rect.left, m_image_rect.top, 
-                  m_image_rect.right - m_image_rect.left, 
-                  m_image_rect.bottom - m_image_rect.top);
-    
-    graphics.DrawImage(m_artwork_image.get(), dest_rect);
+
+    UINT img_width = m_artwork_image->GetWidth();
+    UINT img_height = m_artwork_image->GetHeight();
+
+    // Calculate available space for clipping
+    int available_width = m_client_rect.right - m_client_rect.left;
+    int available_height = m_client_rect.bottom - m_client_rect.top - CONTROL_HEIGHT - (CONTROL_MARGIN * 2);
+
+    if (m_fit_to_window) {
+        // Fit mode: scale entire image to fit the destination rectangle
+        Rect dest_rect(m_image_rect.left, m_image_rect.top,
+                      m_image_rect.right - m_image_rect.left,
+                      m_image_rect.bottom - m_image_rect.top);
+        graphics.DrawImage(m_artwork_image.get(), dest_rect);
+    } else {
+        // Original size mode: crop the image if it's larger than the available area
+        // m_image_rect may have negative left/top if image is larger than window
+
+        // Calculate the visible destination rectangle (clipped to available area)
+        int dest_left = (m_image_rect.left < 0) ? 0 : m_image_rect.left;
+        int dest_top = (m_image_rect.top < 0) ? 0 : m_image_rect.top;
+        int dest_right = (m_image_rect.right > available_width) ? available_width : m_image_rect.right;
+        int dest_bottom = (m_image_rect.bottom > available_height) ? available_height : m_image_rect.bottom;
+
+        int dest_width = dest_right - dest_left;
+        int dest_height = dest_bottom - dest_top;
+
+        if (dest_width <= 0 || dest_height <= 0) return;
+
+        // Calculate the corresponding source rectangle (portion of image to draw)
+        // This is the offset into the source image based on how much was clipped
+        int src_left = dest_left - m_image_rect.left;
+        int src_top = dest_top - m_image_rect.top;
+        int src_width = dest_width;   // 1:1 scale, so same dimensions
+        int src_height = dest_height;
+
+        // Ensure source rectangle is within image bounds
+        if (src_left < 0) src_left = 0;
+        if (src_top < 0) src_top = 0;
+        if (src_left + src_width > (int)img_width) src_width = img_width - src_left;
+        if (src_top + src_height > (int)img_height) src_height = img_height - src_top;
+
+        if (src_width <= 0 || src_height <= 0) return;
+
+        // Draw the visible portion of the image at 1:1 scale (no stretching)
+        Rect dest_rect(dest_left, dest_top, src_width, src_height);
+        graphics.DrawImage(m_artwork_image.get(), dest_rect,
+                          src_left, src_top, src_width, src_height,
+                          UnitPixel);
+    }
 }
 
 void ArtworkViewerPopup::PaintUI(HDC hdc) {
@@ -393,23 +462,23 @@ void ArtworkViewerPopup::PaintUI(HDC hdc) {
 
 void ArtworkViewerPopup::CalculateImageRect() {
     if (!m_artwork_image) return;
-    
+
     UINT img_width = m_artwork_image->GetWidth();
     UINT img_height = m_artwork_image->GetHeight();
-    
+
     // Calculate available space (excluding control area at bottom)
     int available_width = m_client_rect.right - m_client_rect.left;
     int available_height = m_client_rect.bottom - m_client_rect.top - CONTROL_HEIGHT - (CONTROL_MARGIN * 2);
-    
+
     if (available_width <= 0 || available_height <= 0) return;
-    
+
     int draw_width, draw_height, draw_x, draw_y;
-    
+
     if (m_fit_to_window) {
         // Fit to window (maintain aspect ratio)
         double img_aspect = (double)img_width / img_height;
         double available_aspect = (double)available_width / available_height;
-        
+
         if (img_aspect > available_aspect) {
             // Image is wider than available space
             draw_width = available_width;
@@ -419,27 +488,21 @@ void ArtworkViewerPopup::CalculateImageRect() {
             draw_width = (int)(available_height * img_aspect);
             draw_height = available_height;
         }
-        
+
         draw_x = (available_width - draw_width) / 2;
         draw_y = (available_height - draw_height) / 2;
     } else {
-        // Show in original size (centered)
+        // Show in original size (centered, cropped if larger than window)
+        // The image maintains its original dimensions - we calculate the
+        // centered position which may be negative if image is larger than window.
+        // PaintArtwork() will handle cropping via source/dest rectangles.
         draw_width = img_width;
         draw_height = img_height;
-        draw_x = (available_width - draw_width) / 2;
-        draw_y = (available_height - draw_height) / 2;
-        
-        // Clamp to available space
-        if (draw_width > available_width) {
-            draw_x = 0;
-            draw_width = available_width;
-        }
-        if (draw_height > available_height) {
-            draw_y = 0;
-            draw_height = available_height;
-        }
+        draw_x = (available_width - (int)img_width) / 2;
+        draw_y = (available_height - (int)img_height) / 2;
+        // Note: draw_x and draw_y may be negative - this is intentional for cropping
     }
-    
+
     SetRect(&m_image_rect, draw_x, draw_y, draw_x + draw_width, draw_y + draw_height);
 }
 
@@ -710,10 +773,16 @@ bool ArtworkViewerPopup::GetSavedWindowRect(RECT& rect, bool& was_maximized) {
         return false; // Position is invalid
     }
     
-    // Ensure minimum size
-    if (width < 400) width = 400;
-    if (height < 300) height = 300;
-    
+    // Ensure minimum size (6 inches based on system DPI)
+    HDC hdc = ::GetDC(NULL);
+    int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+    ::ReleaseDC(NULL, hdc);
+    int min_width = (int)(6.0 * dpiX);
+    int min_height = (int)(6.0 * dpiY);
+    if (width < min_width) width = min_width;
+    if (height < min_height) height = min_height;
+
     // For multi-monitor setups, we don't need to force the window onto the primary monitor
     // Just ensure it's not completely off the virtual desktop (which we already checked above)
     // Windows will handle moving the window to a visible area if needed
