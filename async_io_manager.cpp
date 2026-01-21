@@ -13,6 +13,7 @@
 // External configuration variables for network settings
 extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
+extern cfg_string cfg_cache_folder;
 
 // MusicBrainz rate limiter - enforces 1 request per second
 static std::mutex g_musicbrainz_rate_mutex;
@@ -40,6 +41,20 @@ static bool is_retryable_error(const pfc::string8& error) {
     if (error.find_first("504") != pfc_infinite) return true;  // Gateway Timeout
     if (error.find_first("429") != pfc_infinite) return true;  // Too Many Requests
     return false;
+}
+
+// Helper to convert UTF-8 pfc::string8 to wide string for Unicode Windows APIs
+static std::wstring utf8_to_wide(const pfc::string8& utf8_str) {
+    if (utf8_str.is_empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, nullptr, 0);
+    if (len <= 0) return L"";
+    std::wstring result(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, &result[0], len);
+    // Remove null terminator from string length
+    if (!result.empty() && result.back() == L'\0') {
+        result.pop_back();
+    }
+    return result;
 }
 
 // Static member definitions
@@ -72,24 +87,36 @@ void async_io_manager::initialize(size_t thread_count) {
     cache_ = std::make_unique<async_cache>();
     
     // Initialize cache directory
-    // core_api::get_profile_path() returns a file:// URL, need to convert to Windows path
-    pfc::string8 profile_url = core_api::get_profile_path();
+    // Check if custom cache folder is configured, otherwise use default profile path
     pfc::string8 cache_dir;
     
-    if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
-        // Remove "file://" prefix and convert to Windows path
-        cache_dir = profile_url.c_str() + 7; // Skip "file://"
-        // Replace forward slashes with backslashes for Windows
-        for (size_t i = 0; i < cache_dir.length(); i++) {
-            if (cache_dir[i] == '/') {
-                cache_dir.set_char(i, '\\');
-            }
+    if (!cfg_cache_folder.is_empty()) {
+        // Use custom cache folder path
+        cache_dir = cfg_cache_folder.get_ptr();
+        // Ensure trailing backslash
+        if (!cache_dir.is_empty() && cache_dir[cache_dir.length() - 1] != '\\') {
+            cache_dir << "\\";
         }
     } else {
-        cache_dir = profile_url;
+        // Use default: profile path + foo_artwork_data\_cache
+        // core_api::get_profile_path() returns a file:// URL, need to convert to Windows path
+        pfc::string8 profile_url = core_api::get_profile_path();
+        
+        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+            // Remove "file://" prefix and convert to Windows path
+            cache_dir = profile_url.c_str() + 7; // Skip "file://"
+            // Replace forward slashes with backslashes for Windows
+            for (size_t i = 0; i < cache_dir.length(); i++) {
+                if (cache_dir[i] == '/') {
+                    cache_dir.set_char(i, '\\');
+                }
+            }
+        } else {
+            cache_dir = profile_url;
+        }
+        
+        cache_dir << "\\foo_artwork_data\\_cache\\";
     }
-    
-    cache_dir << "\\foo_artwork_cache\\";
     cache_->initialize(cache_dir);
     
     // Setup I/O completion port
@@ -362,9 +389,10 @@ void async_io_manager::perform_overlapped_read(const pfc::string8& file_path, fi
     context->file_path = file_path;
     context->is_write_operation = false;
     
-    // Open file for overlapped I/O
-    context->file_handle = CreateFileA(
-        file_path.get_ptr(),
+    // Open file for overlapped I/O (use Wide API for Unicode path support)
+    std::wstring wide_path = utf8_to_wide(file_path);
+    context->file_handle = CreateFileW(
+        wide_path.c_str(),
         GENERIC_READ,
         FILE_SHARE_READ,
         nullptr,
@@ -441,17 +469,19 @@ void async_io_manager::perform_overlapped_write(const pfc::string8& file_path, c
     context->buffer = data;
     context->is_write_operation = true;
     
-    // Create directory if needed
+    // Create directory if needed (use Wide API for Unicode path support)
     pfc::string8 directory = file_path;
     t_size pos = directory.find_last('\\');
     if (pos != pfc_infinite) {
         directory.truncate(pos);
-        SHCreateDirectoryExA(nullptr, directory.get_ptr(), nullptr);
+        std::wstring wide_dir = utf8_to_wide(directory);
+        SHCreateDirectoryExW(nullptr, wide_dir.c_str(), nullptr);
     }
     
-    // Open file for overlapped I/O
-    context->file_handle = CreateFileA(
-        file_path.get_ptr(),
+    // Open file for overlapped I/O (use Wide API for Unicode path support)
+    std::wstring wide_file_path = utf8_to_wide(file_path);
+    context->file_handle = CreateFileW(
+        wide_file_path.c_str(),
         GENERIC_WRITE,
         0,
         nullptr,
@@ -506,8 +536,10 @@ void async_io_manager::perform_directory_scan(const pfc::string8& directory, con
     pfc::string8 search_pattern = directory;
     search_pattern << "\\" << pattern;
     
-    WIN32_FIND_DATAA find_data;
-    HANDLE find_handle = FindFirstFileA(search_pattern.get_ptr(), &find_data);
+    // Use Wide API for Unicode path support
+    std::wstring wide_pattern = utf8_to_wide(search_pattern);
+    WIN32_FIND_DATAW find_data;
+    HANDLE find_handle = FindFirstFileW(wide_pattern.c_str(), &find_data);
     
     if (find_handle == INVALID_HANDLE_VALUE) {
         post_to_main_thread([callback]() {
@@ -522,8 +554,10 @@ void async_io_manager::perform_directory_scan(const pfc::string8& directory, con
     
     do {
         if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            // Convert wide filename back to UTF-8
+            pfc::stringcvt::string_utf8_from_wide utf8_filename(find_data.cFileName);
             pfc::string8 full_path = directory;
-            full_path << "\\" << find_data.cFileName;
+            full_path << "\\" << utf8_filename.get_ptr();
             files.push_back(full_path);
         }
         
@@ -532,7 +566,7 @@ void async_io_manager::perform_directory_scan(const pfc::string8& directory, con
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         
-    } while (FindNextFileA(find_handle, &find_data) && !shutdown_requested_);
+    } while (FindNextFileW(find_handle, &find_data) && !shutdown_requested_);
     
     FindClose(find_handle);
     
@@ -560,8 +594,9 @@ async_io_manager::async_cache::~async_cache() {
 void async_io_manager::async_cache::initialize(const pfc::string8& cache_dir) {
     cache_directory = cache_dir;
     
-    // Create cache directory
-    SHCreateDirectoryExA(nullptr, cache_directory.get_ptr(), nullptr);
+    // Create cache directory (use Wide API for Unicode path support)
+    std::wstring wide_cache_dir = utf8_to_wide(cache_directory);
+    SHCreateDirectoryExW(nullptr, wide_cache_dir.c_str(), nullptr);
     
     // Start write-behind thread
     write_thread = std::thread([this]() {
@@ -684,8 +719,9 @@ void async_io_manager::async_cache::flush_all() {
         write_queue.pop();
         
         pfc::string8 file_path = get_cache_file_path(item.first);
-        // Synchronous write for shutdown
-        HANDLE file = CreateFileA(file_path.get_ptr(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        // Synchronous write for shutdown (use Wide API for Unicode path support)
+        std::wstring wide_file_path = utf8_to_wide(file_path);
+        HANDLE file = CreateFileW(wide_file_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file != INVALID_HANDLE_VALUE) {
             DWORD written;
             WriteFile(file, item.second.get_ptr(), static_cast<DWORD>(item.second.get_size()), &written, nullptr);
