@@ -67,6 +67,7 @@ static constexpr GUID guid_cfg_infobar = { 0x59b0b41b, 0x2d12, 0x4965, { 0xaa, 0
 static constexpr GUID guid_cfg_http_timeout = { 0x1234568d, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfd } };
 static constexpr GUID guid_cfg_retry_count = { 0x1234568e, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
 static constexpr GUID guid_cfg_enable_disk_cache = { 0x1234568f, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xff } };
+static constexpr GUID guid_cfg_cache_folder = { 0x12345691, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x00 } };
 
 
 // Configuration variables with default values
@@ -112,6 +113,7 @@ cfg_int cfg_retry_count(guid_cfg_retry_count, 2);  // Number of retries for fail
 
 // Disk cache setting
 cfg_bool cfg_enable_disk_cache(guid_cfg_enable_disk_cache, true);  // Enable disk caching (default enabled)
+cfg_string cfg_cache_folder(guid_cfg_cache_folder, "");  // Custom cache folder path (empty = use default)
 
 
 //=============================================================================
@@ -295,7 +297,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.35",
+    "1.5.37",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -312,7 +314,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.35",
+    "1.5.37",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -336,42 +338,73 @@ static pfc::list_t<artwork_ui_element*> g_artwork_ui_elements;
 
 // Note: g_current_artwork_source already declared above
 
-// Function to create AppData directory structure for logos
+// Helper to convert UTF-8 pfc::string8 to wide string for Unicode Windows APIs
+static std::wstring utf8_to_wide(const pfc::string8& utf8_str) {
+    if (utf8_str.is_empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, nullptr, 0);
+    if (len <= 0) return L"";
+    std::wstring result(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, &result[0], len);
+    // Remove null terminator from string length
+    if (!result.empty() && result.back() == L'\0') {
+        result.pop_back();
+    }
+    return result;
+}
+
+// Helper to check if file exists using Wide API for Unicode path support
+static BOOL path_file_exists_utf8(const pfc::string8& utf8_path) {
+    std::wstring wide_path = utf8_to_wide(utf8_path);
+    return PathFileExistsW(wide_path.c_str());
+}
+
+// Function to create AppData directory structure for logos and cache
 void create_appdata_directories() {
     try {
         // Get foobar2000 profile path (returns file:// URL)
         pfc::string8 profile_url = core_api::get_profile_path();
-        
-        // Convert file:// URL to filesystem path
+
+        // Convert file:// URL to native Windows path using SDK function
         pfc::string8 profile_path;
-        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
-            // Remove "file://" prefix and convert to Windows path
-            profile_path = profile_url.c_str() + 7; // Skip "file://"
-            // Replace forward slashes with backslashes for Windows
-            for (size_t i = 0; i < profile_path.length(); i++) {
-                if (profile_path[i] == '/') {
-                    profile_path.set_char(i, '\\');
+        if (!foobar2000_io::extract_native_path(profile_url.c_str(), profile_path)) {
+            // Fallback: manual conversion if SDK function fails
+            if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+                const char* path_start = profile_url.c_str() + 7; // Skip "file://"
+                // Skip leading slash if present (file:///C:/... -> C:/...)
+                if (*path_start == '/') path_start++;
+                profile_path = path_start;
+                // Replace forward slashes with backslashes for Windows
+                for (size_t i = 0; i < profile_path.length(); i++) {
+                    if (profile_path[i] == '/') {
+                        profile_path.set_char(i, '\\');
+                    }
                 }
+            } else {
+                profile_path = profile_url;
             }
-        } else {
-            profile_path = profile_url;
         }
-        
-        // Create foo_artwork_data directory
-        pfc::string8 artwork_data_dir = profile_path + "\\foo_artwork_data\\";
-        
-        // Create logos subdirectory
-        pfc::string8 logos_dir = artwork_data_dir + "logos\\";
-        
-        // Create directories (SHCreateDirectoryEx creates parent directories if needed)
-        HRESULT hr1 = SHCreateDirectoryExA(NULL, artwork_data_dir.get_ptr(), NULL);
-        HRESULT hr2 = SHCreateDirectoryExA(NULL, logos_dir.get_ptr(), NULL);
-        
-        // Directory creation completed silently
-        // (Console messages removed to reduce noise)
-        
-    } catch (const std::exception& e) {
+
+        // Build directory paths
+        pfc::string8 artwork_data_dir = profile_path;
+        artwork_data_dir << "\\foo_artwork_data\\";
+
+        pfc::string8 logos_dir = artwork_data_dir;
+        logos_dir << "logos\\";
+
+        pfc::string8 cache_dir = artwork_data_dir;
+        cache_dir << "_cache\\";
+
+        // Create directories (use Wide API for Unicode path support)
+        std::wstring wide_artwork_dir = utf8_to_wide(artwork_data_dir);
+        std::wstring wide_logos_dir = utf8_to_wide(logos_dir);
+        std::wstring wide_cache_dir = utf8_to_wide(cache_dir);
+
+        SHCreateDirectoryExW(NULL, wide_artwork_dir.c_str(), NULL);
+        SHCreateDirectoryExW(NULL, wide_logos_dir.c_str(), NULL);
+        SHCreateDirectoryExW(NULL, wide_cache_dir.c_str(), NULL);
+
     } catch (...) {
+        // Silently ignore errors - directories may already exist
     }
 }
 
@@ -616,7 +649,7 @@ HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8
                 continue; // Skip if path is too long
             }
             
-            if (PathFileExistsA(logo_path.get_ptr())) {
+            if (path_file_exists_utf8(logo_path.get_ptr())) {
                 // Use Win32 API to load image instead of GDI+ to avoid crashes
                 std::wstring wide_path;
                 wide_path.resize(logo_path.length() + 1);
@@ -745,7 +778,7 @@ Gdiplus::Bitmap* try_load_station_logo_gdiplus(const pfc::string8& identifier, c
         // Try PNG first (most likely to have alpha)
         pfc::string8 png_path = logos_dir + identifier + ".png";
         
-        if (PathFileExistsA(png_path.get_ptr())) {
+        if (path_file_exists_utf8(png_path.get_ptr())) {
             
             // Convert to wide string for GDI+
             std::wstring wide_path;
@@ -767,7 +800,7 @@ Gdiplus::Bitmap* try_load_station_logo_gdiplus(const pfc::string8& identifier, c
         for (const char* ext : extensions) {
             pfc::string8 logo_path = logos_dir + identifier + ext;
             
-            if (PathFileExistsA(logo_path.get_ptr())) {
+            if (path_file_exists_utf8(logo_path.get_ptr())) {
                 
                 // Convert to wide string
                 std::wstring wide_path;
@@ -859,7 +892,7 @@ std::unique_ptr<Gdiplus::Bitmap> try_load_noart_logo_gdiplus(const pfc::string8&
         for (const char* ext : extensions) {
             pfc::string8 noart_path = logos_dir + identifier + "-noart" + ext;
             
-            if (PathFileExistsA(noart_path.get_ptr())) {
+            if (path_file_exists_utf8(noart_path.get_ptr())) {
                 // Convert to wide string for GDI+
                 std::wstring wide_path;
                 wide_path.resize(noart_path.length() + 1);
@@ -972,7 +1005,7 @@ std::unique_ptr<Gdiplus::Bitmap> load_generic_noart_logo_gdiplus() {
         for (const char* ext : extensions) {
             pfc::string8 noart_path = logos_dir + "noart" + ext;
             
-            if (PathFileExistsA(noart_path.get_ptr())) {
+            if (path_file_exists_utf8(noart_path.get_ptr())) {
                 // Convert to wide string for GDI+
                 std::wstring wide_path;
                 wide_path.resize(noart_path.length() + 1);
@@ -1074,7 +1107,7 @@ HBITMAP load_noart_logo(metadb_handle_ptr track) {
             for (const char* ext : extensions) {
                 pfc::string8 noart_path = logos_dir + full_path + "-noart" + ext;
                 
-                if (PathFileExistsA(noart_path.get_ptr())) {
+                if (path_file_exists_utf8(noart_path.get_ptr())) {
                     std::wstring wide_path;
                     wide_path.resize(noart_path.length() + 1);
                     MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
@@ -1094,7 +1127,7 @@ HBITMAP load_noart_logo(metadb_handle_ptr track) {
             for (const char* ext : extensions) {
                 pfc::string8 noart_path = logos_dir + domain + "-noart" + ext;
                 
-                if (PathFileExistsA(noart_path.get_ptr())) {
+                if (path_file_exists_utf8(noart_path.get_ptr())) {
                     std::wstring wide_path;
                     wide_path.resize(noart_path.length() + 1);
                     MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
@@ -1145,7 +1178,7 @@ HBITMAP load_noart_logo(const pfc::string8& domain) {
         for (const char* ext : extensions) {
             pfc::string8 noart_path = logos_dir + domain + "-noart" + ext;
             
-            if (PathFileExistsA(noart_path.get_ptr())) {
+            if (path_file_exists_utf8(noart_path.get_ptr())) {
                 // Load the image file
                 std::wstring wide_path;
                 wide_path.resize(noart_path.length() + 1);
@@ -1192,7 +1225,7 @@ HBITMAP load_generic_noart_logo(metadb_handle_ptr track) {
                 for (const char* ext : extensions) {
                     pfc::string8 noart_path = logos_dir + full_path + "-noart" + ext;
                     
-                    if (PathFileExistsA(noart_path.get_ptr())) {
+                    if (path_file_exists_utf8(noart_path.get_ptr())) {
                         std::wstring wide_path;
                         wide_path.resize(noart_path.length() + 1);
                         MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
@@ -1212,7 +1245,7 @@ HBITMAP load_generic_noart_logo(metadb_handle_ptr track) {
                 for (const char* ext : extensions) {
                     pfc::string8 noart_path = logos_dir + domain + "-noart" + ext;
                     
-                    if (PathFileExistsA(noart_path.get_ptr())) {
+                    if (path_file_exists_utf8(noart_path.get_ptr())) {
                         std::wstring wide_path;
                         wide_path.resize(noart_path.length() + 1);
                         MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
@@ -1231,7 +1264,7 @@ HBITMAP load_generic_noart_logo(metadb_handle_ptr track) {
         for (const char* ext : extensions) {
             pfc::string8 noart_path = logos_dir + "noart" + ext;
             
-            if (PathFileExistsA(noart_path.get_ptr())) {
+            if (path_file_exists_utf8(noart_path.get_ptr())) {
                 std::wstring wide_path;
                 wide_path.resize(noart_path.length() + 1);
                 MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
@@ -1279,7 +1312,7 @@ HBITMAP load_generic_noart_logo() {
         for (const char* ext : extensions) {
             pfc::string8 noart_path = logos_dir + "noart" + ext;
             
-            if (PathFileExistsA(noart_path.get_ptr())) {
+            if (path_file_exists_utf8(noart_path.get_ptr())) {
                 // Load the image file
                 std::wstring wide_path;
                 wide_path.resize(noart_path.length() + 1);
@@ -1306,15 +1339,13 @@ private:
     
 public:
     void on_init() override {
-        // Debug: Initialization notification
-        
         // Initialize GDI+
         GdiplusStartupInput gdiplusStartupInput;
         GdiplusStartup(&m_gdiplusToken, &gdiplusStartupInput, NULL);
-        
-        // Create AppData directory structure for logos
+
+        // Create data directories (foo_artwork_data, logos, _cache)
         create_appdata_directories();
-        
+
         // Initialize artwork component
         artwork_manager::initialize();
     }
@@ -1322,11 +1353,14 @@ public:
     void on_quit() override {
         // Clean up artwork component
         artwork_manager::shutdown();
-        
+
         // Shutdown GDI+
         GdiplusShutdown(m_gdiplusToken);
     }
 };
+
+// Register the initquit factory immediately after class definition
+static initquit_factory_t<artwork_init> g_artwork_init_factory;
 
 // Helper function to get API search order based on priority configuration
 std::vector<ApiType> get_api_search_order() {
@@ -6036,8 +6070,8 @@ public:
 } g_ui_element_debug;
 
 // Service factory registrations
-static initquit_factory_t<artwork_init> g_artwork_init_factory;
 static play_callback_static_factory_t<artwork_play_callback> g_play_callback_factory;
+
 // DISABLED: DUI element has dependency issues - CUI panel handles both DUI and CUI
 // static service_factory_single_t<artwork_ui_element_factory> g_ui_element_factory;
 
