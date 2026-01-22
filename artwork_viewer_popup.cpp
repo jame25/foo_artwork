@@ -34,15 +34,21 @@ ArtworkViewerPopup::ArtworkViewerPopup(Gdiplus::Image* artwork_image, const std:
     , m_save_button(NULL)
     , m_info_label(NULL)
     , m_parent_hwnd(NULL)
+    , m_pan_offset_x(0)
+    , m_pan_offset_y(0)
+    , m_is_dragging(false)
+    , m_drag_start_pan_x(0)
+    , m_drag_start_pan_y(0)
 {
     SetRect(&m_client_rect, 0, 0, 0, 0);
     SetRect(&m_image_rect, 0, 0, 0, 0);
-    
+    m_drag_start_point = { 0, 0 };
+
     // Clone the artwork image so we own it
     if (artwork_image) {
         m_artwork_image = std::unique_ptr<Gdiplus::Image>(artwork_image->Clone());
     }
-    
+
     // Generate image info string
     m_image_info = GetImageInfo();
 }
@@ -125,6 +131,15 @@ void ArtworkViewerPopup::ShowPopup(HWND parent_hwnd) {
 }
 
 LRESULT ArtworkViewerPopup::OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    // Remove the icon from the titlebar
+    SendMessage(WM_SETICON, ICON_SMALL, (LPARAM)NULL);
+    SendMessage(WM_SETICON, ICON_BIG, (LPARAM)NULL);
+    // Also modify extended style to ensure no icon space is reserved
+    LONG_PTR exStyle = ::GetWindowLongPtr(m_hWnd, GWL_EXSTYLE);
+    ::SetWindowLongPtr(m_hWnd, GWL_EXSTYLE, exStyle | WS_EX_DLGMODALFRAME);
+    // Force the frame to update
+    ::SetWindowPos(m_hWnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
     // Detect if we should use dark mode for title bar
     bool should_use_dark_titlebar = false;
     
@@ -260,6 +275,34 @@ LRESULT ArtworkViewerPopup::OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
 
 LRESULT ArtworkViewerPopup::OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
     GetClientRect(&m_client_rect);
+
+    // Clamp pan offset to valid range after resize
+    if (m_artwork_image && !m_fit_to_window) {
+        int available_width = m_client_rect.right - m_client_rect.left;
+        int available_height = m_client_rect.bottom - m_client_rect.top - CONTROL_HEIGHT - (CONTROL_MARGIN * 2);
+        UINT img_width = m_artwork_image->GetWidth();
+        UINT img_height = m_artwork_image->GetHeight();
+
+        // Calculate valid pan range
+        int max_pan_x = 0, min_pan_x = 0, max_pan_y = 0, min_pan_y = 0;
+        if ((int)img_width > available_width) {
+            int excess = (int)img_width - available_width;
+            max_pan_x = excess / 2;
+            min_pan_x = -excess / 2 - (excess % 2);
+        }
+        if ((int)img_height > available_height) {
+            int excess = (int)img_height - available_height;
+            max_pan_y = excess / 2;
+            min_pan_y = -excess / 2 - (excess % 2);
+        }
+
+        // Clamp current offset
+        if (m_pan_offset_x > max_pan_x) m_pan_offset_x = max_pan_x;
+        if (m_pan_offset_x < min_pan_x) m_pan_offset_x = min_pan_x;
+        if (m_pan_offset_y > max_pan_y) m_pan_offset_y = max_pan_y;
+        if (m_pan_offset_y < min_pan_y) m_pan_offset_y = min_pan_y;
+    }
+
     UpdateLayout();
     CalculateImageRect();
     Invalidate();
@@ -312,9 +355,102 @@ LRESULT ArtworkViewerPopup::OnKeyDown(UINT uMsg, WPARAM wParam, LPARAM lParam, B
 }
 
 LRESULT ArtworkViewerPopup::OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
-    // This is handled by WM_LBUTTONDBLCLK for double-clicks
-    // Single clicks don't need special handling for now
-    bHandled = FALSE; // Let default processing handle it
+    POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+    // Only allow dragging in original size mode when image is larger than window
+    if (!m_fit_to_window && m_artwork_image) {
+        int available_width = m_client_rect.right - m_client_rect.left;
+        int available_height = m_client_rect.bottom - m_client_rect.top - CONTROL_HEIGHT - (CONTROL_MARGIN * 2);
+        UINT img_width = m_artwork_image->GetWidth();
+        UINT img_height = m_artwork_image->GetHeight();
+
+        // Check if image is larger than available space (dragging would be useful)
+        if ((int)img_width > available_width || (int)img_height > available_height) {
+            // Start dragging
+            m_is_dragging = true;
+            m_drag_start_point = pt;
+            m_drag_start_pan_x = m_pan_offset_x;
+            m_drag_start_pan_y = m_pan_offset_y;
+            SetCapture();
+            bHandled = TRUE;
+            return 0;
+        }
+    }
+
+    bHandled = FALSE;
+    return 0;
+}
+
+LRESULT ArtworkViewerPopup::OnLButtonUp(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    if (m_is_dragging) {
+        m_is_dragging = false;
+        ReleaseCapture();
+        bHandled = TRUE;
+        return 0;
+    }
+    bHandled = FALSE;
+    return 0;
+}
+
+LRESULT ArtworkViewerPopup::OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    if (m_is_dragging && m_artwork_image) {
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+        // Calculate delta from drag start
+        int delta_x = pt.x - m_drag_start_point.x;
+        int delta_y = pt.y - m_drag_start_point.y;
+
+        // Update pan offset
+        int new_pan_x = m_drag_start_pan_x + delta_x;
+        int new_pan_y = m_drag_start_pan_y + delta_y;
+
+        // Calculate bounds for panning
+        int available_width = m_client_rect.right - m_client_rect.left;
+        int available_height = m_client_rect.bottom - m_client_rect.top - CONTROL_HEIGHT - (CONTROL_MARGIN * 2);
+        UINT img_width = m_artwork_image->GetWidth();
+        UINT img_height = m_artwork_image->GetHeight();
+
+        // Clamp pan offset so image edge doesn't go past center of view
+        // Allow panning until the opposite edge of the image reaches the window edge
+        int max_pan_x = 0;
+        int min_pan_x = 0;
+        int max_pan_y = 0;
+        int min_pan_y = 0;
+
+        if ((int)img_width > available_width) {
+            // Image is wider than window - allow horizontal panning
+            int excess_width = (int)img_width - available_width;
+            max_pan_x = excess_width / 2;
+            min_pan_x = -excess_width / 2 - (excess_width % 2); // Handle odd excess
+        }
+
+        if ((int)img_height > available_height) {
+            // Image is taller than window - allow vertical panning
+            int excess_height = (int)img_height - available_height;
+            max_pan_y = excess_height / 2;
+            min_pan_y = -excess_height / 2 - (excess_height % 2);
+        }
+
+        // Clamp to bounds
+        if (new_pan_x > max_pan_x) new_pan_x = max_pan_x;
+        if (new_pan_x < min_pan_x) new_pan_x = min_pan_x;
+        if (new_pan_y > max_pan_y) new_pan_y = max_pan_y;
+        if (new_pan_y < min_pan_y) new_pan_y = min_pan_y;
+
+        // Only update if changed
+        if (new_pan_x != m_pan_offset_x || new_pan_y != m_pan_offset_y) {
+            m_pan_offset_x = new_pan_x;
+            m_pan_offset_y = new_pan_y;
+            CalculateImageRect();
+            // Only invalidate the image area, not the controls, to prevent flickering
+            RECT image_area = { 0, 0, m_client_rect.right, m_client_rect.bottom - CONTROL_HEIGHT - CONTROL_MARGIN };
+            InvalidateRect(&image_area, FALSE);
+        }
+
+        bHandled = TRUE;
+        return 0;
+    }
+    bHandled = FALSE;
     return 0;
 }
 
@@ -498,8 +634,8 @@ void ArtworkViewerPopup::CalculateImageRect() {
         // PaintArtwork() will handle cropping via source/dest rectangles.
         draw_width = img_width;
         draw_height = img_height;
-        draw_x = (available_width - (int)img_width) / 2;
-        draw_y = (available_height - (int)img_height) / 2;
+        draw_x = (available_width - (int)img_width) / 2 + m_pan_offset_x;
+        draw_y = (available_height - (int)img_height) / 2 + m_pan_offset_y;
         // Note: draw_x and draw_y may be negative - this is intentional for cropping
     }
 
@@ -532,12 +668,16 @@ void ArtworkViewerPopup::UpdateLayout() {
 
 void ArtworkViewerPopup::ToggleFitMode() {
     m_fit_to_window = !m_fit_to_window;
-    
+
+    // Reset pan offset when switching modes
+    m_pan_offset_x = 0;
+    m_pan_offset_y = 0;
+
     // Update button text
     if (m_fit_button) {
         SetWindowTextA(m_fit_button, m_fit_to_window ? "Show original size" : "Fit to window size");
     }
-    
+
     CalculateImageRect();
     Invalidate();
 }
