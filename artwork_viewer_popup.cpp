@@ -16,6 +16,7 @@ static const GUID guid_artwork_viewer_window_y = { 0x12345602, 0x1234, 0x1234, {
 static const GUID guid_artwork_viewer_window_width = { 0x12345603, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf3 } };
 static const GUID guid_artwork_viewer_window_height = { 0x12345604, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf4 } };
 static const GUID guid_artwork_viewer_window_maximized = { 0x12345605, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf5 } };
+static const GUID guid_artwork_viewer_fit_to_window = { 0x12345606, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf6 } };
 
 // foobar2000 configuration variables for window state persistence
 static cfg_int cfg_viewer_window_x(guid_artwork_viewer_window_x, -1);
@@ -23,13 +24,14 @@ static cfg_int cfg_viewer_window_y(guid_artwork_viewer_window_y, -1);
 static cfg_int cfg_viewer_window_width(guid_artwork_viewer_window_width, 800);
 static cfg_int cfg_viewer_window_height(guid_artwork_viewer_window_height, 600);
 static cfg_bool cfg_viewer_window_maximized(guid_artwork_viewer_window_maximized, false);
+static cfg_bool cfg_viewer_fit_to_window(guid_artwork_viewer_fit_to_window, false);
 
 using namespace Gdiplus;
 
 ArtworkViewerPopup::ArtworkViewerPopup(Gdiplus::Image* artwork_image, const std::string& source_info)
     : m_artwork_image(nullptr)
     , m_source_info(source_info)
-    , m_fit_to_window(false)  // Default to original size when popup opens
+    , m_fit_to_window(cfg_viewer_fit_to_window)  // Restore saved display mode
     , m_fit_button(NULL)
     , m_save_button(NULL)
     , m_info_label(NULL)
@@ -734,8 +736,9 @@ void ArtworkViewerPopup::SaveArtwork() {
 }
 
 void ArtworkViewerPopup::CreateControls() {
-    // Create fit/original size button
-    m_fit_button = CreateWindowA("BUTTON", "Fit to window size",  // Button shows opposite of current mode
+    // Create fit/original size button (text shows the action, opposite of current mode)
+    const char* fit_button_text = m_fit_to_window ? "Show original size" : "Fit to window size";
+    m_fit_button = CreateWindowA("BUTTON", fit_button_text,
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         0, 0, 0, 0, m_hWnd, (HMENU)ID_FIT_BUTTON, GetModuleHandle(NULL), NULL);
     
@@ -884,6 +887,9 @@ void ArtworkViewerPopup::SaveWindowState() {
         cfg_viewer_window_height = rect_to_save.bottom - rect_to_save.top;
         cfg_viewer_window_maximized = is_maximized;
     }
+
+    // Save display mode
+    cfg_viewer_fit_to_window = m_fit_to_window;
 }
 
 bool ArtworkViewerPopup::GetSavedWindowRect(RECT& rect, bool& was_maximized) {
