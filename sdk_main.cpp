@@ -297,7 +297,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.40",
+    "1.5.41",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -314,7 +314,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.40",
+    "1.5.41",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -7948,6 +7948,67 @@ bool is_safe_internet_stream(metadb_handle_ptr track) {
         // If any exception occurs during path checking, assume not a stream
         return false;
     }
+}
+
+//=============================================================================
+// Exported C-style API for external components (e.g., foo_nowbar)
+//=============================================================================
+
+// These functions are exported with C linkage so they can be found via GetProcAddress
+// by other foobar2000 components that want to trigger online artwork searches.
+
+// Callback function type for artwork results
+// Parameters: success (bool), bitmap (HBITMAP - only valid if success is true)
+typedef void (*pfn_artwork_callback)(bool success, HBITMAP bitmap);
+
+// Global callback pointer - set by external components
+static pfn_artwork_callback g_external_artwork_callback = nullptr;
+
+// Internal listener that forwards events to the external callback
+class ExternalArtworkListener : public IArtworkEventListener {
+public:
+    void on_artwork_event(const ArtworkEvent& event) override {
+        if (g_external_artwork_callback) {
+            if (event.type == ArtworkEventType::ARTWORK_LOADED) {
+                g_external_artwork_callback(true, event.bitmap);
+            } else if (event.type == ArtworkEventType::ARTWORK_FAILED) {
+                g_external_artwork_callback(false, nullptr);
+            }
+        }
+    }
+};
+
+static ExternalArtworkListener* g_external_listener = nullptr;
+
+extern "C" __declspec(dllexport) void foo_artwork_set_callback(pfn_artwork_callback callback) {
+    // Unsubscribe old listener if exists
+    if (g_external_listener) {
+        unsubscribe_from_artwork_events(g_external_listener);
+        delete g_external_listener;
+        g_external_listener = nullptr;
+    }
+
+    g_external_artwork_callback = callback;
+
+    // Subscribe new listener if callback is provided
+    if (callback) {
+        g_external_listener = new ExternalArtworkListener();
+        subscribe_to_artwork_events(g_external_listener);
+    }
+}
+
+extern "C" __declspec(dllexport) void foo_artwork_search(const char* artist, const char* title) {
+    if (artist && title) {
+        trigger_main_component_search_with_metadata(std::string(artist), std::string(title));
+    }
+}
+
+extern "C" __declspec(dllexport) HBITMAP foo_artwork_get_bitmap() {
+    return get_main_component_artwork_bitmap();
+}
+
+extern "C" __declspec(dllexport) bool foo_artwork_is_loading() {
+    return g_artwork_loading;
 }
 
 //=============================================================================
