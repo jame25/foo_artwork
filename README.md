@@ -67,8 +67,7 @@ Supported image formats
    - `.jpg` / `.jpeg`
    - `.gif`
    - `.bmp`
-
-Webp format is not supported.
+   - `.webp`
 
 ### Custom Station Logos
 
