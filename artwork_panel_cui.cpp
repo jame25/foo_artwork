@@ -20,6 +20,7 @@
 #include <shlwapi.h>
 #include <exception>
 #include <wincodec.h>
+#include "webp_decoder.h"
 
 // Link WIC library
 #pragma comment(lib, "windowscodecs.lib")
@@ -944,41 +945,6 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
             // Use the artwork manager directly to try tagged artwork first
             try {
                 artwork_manager::get_artwork_async(p_track, [this, p_track](const artwork_manager::artwork_result& result) {
-                // Check if tagged artwork succeeded for YouTube streams
-                if (result.success && result.data.get_size() > 0 && is_youtube_stream(p_track)) {
-                    // Detect the image format
-                    pfc::string8 mime_type = artwork_manager::detect_mime_type(result.data.get_ptr(), result.data.get_size());
-                    if (mime_type == "image/webp") {
-                        // This is WebP format - trigger API search instead of loading
-                        // Check if we have metadata for API search
-                        metadb_info_container::ptr info_container = p_track->get_info_ref();
-                        if (info_container.is_valid()) {
-                            const file_info& info = info_container->info();
-                            
-                            const char* artist_ptr = info.meta_get("ARTIST", 0);
-                            const char* title_ptr = info.meta_get("TITLE", 0);
-                            
-                            if (artist_ptr && title_ptr && strlen(artist_ptr) > 0 && strlen(title_ptr) > 0) {
-                                // We have valid metadata - trigger API search instead of using WebP
-                                pfc::string8 artist = artist_ptr;
-                                pfc::string8 title = title_ptr;
-                                
-                                // Clean metadata for search
-                                std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
-                                std::string cleaned_title = MetadataCleaner::clean_for_search(title.c_str(), true);
-                                
-                                // Validate metadata
-                                if (MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_title.c_str())) {
-                                    // Trigger API search instead of using WebP artwork
-                                    trigger_main_component_search_with_metadata(cleaned_artist, cleaned_title);
-                                    return; // Exit early - API results will come via event system
-                                }
-                            }
-                        }
-                        // If we can't do API search, fall through to WebP loading attempt (will likely fail)
-                    }
-                }
-
                 // Handle the result - load artwork directly instead of using events
                 if (result.success && result.data.get_size() > 0) {
                     // Convert pfc::array_t to album_art_data::ptr and load it
@@ -1256,7 +1222,18 @@ void CUIArtworkPanel::load_artwork_from_data(album_art_data::ptr data) {
         // Create memory stream from artwork data
         const void* artwork_data = data->get_ptr();
         size_t artwork_size = data->get_size();
-        
+
+        // Try WIC-based WebP decoding first
+        if (is_webp_signature((const unsigned char*)artwork_data, artwork_size)) {
+            Gdiplus::Bitmap* webp_bitmap = decode_webp_via_wic((const unsigned char*)artwork_data, artwork_size);
+            if (webp_bitmap) {
+                m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(webp_bitmap);
+                m_artwork_loaded = true;
+                return;
+            }
+            return; // WebP detected but decoding failed
+        }
+
         // Create IStream from memory
         HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, artwork_size);
         if (!hGlobal) {
