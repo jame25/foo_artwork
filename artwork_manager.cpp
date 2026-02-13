@@ -963,7 +963,12 @@ bool artwork_manager::is_valid_image_data(const t_uint8* data, size_t size) {
     
     // BMP
     if (data[0] == 'B' && data[1] == 'M') return true;
-    
+
+    // WebP (RIFF....WEBP)
+    if (size >= 12 &&
+        data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' &&
+        data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P') return true;
+
     return false;
 }
 
@@ -976,7 +981,7 @@ pfc::string8 artwork_manager::detect_mime_type(const t_uint8* data, size_t size)
     // PNG
     if (data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') return "image/png";
     
-    // WebP (RIFF....WEBP) - detect but don't support loading
+    // WebP (RIFF....WEBP)
     if (size >= 12 && 
         data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' &&
         data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P') return "image/webp";
@@ -992,10 +997,11 @@ pfc::string8 artwork_manager::detect_mime_type(const t_uint8* data, size_t size)
 
 bool artwork_manager::is_supported_image_format(const pfc::string8& mime_type) {
     // Supported formats that can be displayed in foobar2000
-    return mime_type == "image/jpeg" || 
-           mime_type == "image/png" || 
-           mime_type == "image/gif" || 
-           mime_type == "image/bmp";
+    return mime_type == "image/jpeg" ||
+           mime_type == "image/png" ||
+           mime_type == "image/gif" ||
+           mime_type == "image/bmp" ||
+           mime_type == "image/webp";
 }
 
 pfc::string8 artwork_manager::get_file_directory(const char* file_path) {
