@@ -1334,6 +1334,19 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
         Gdiplus::Bitmap* webp_bitmap = decode_webp_via_wic(data, size);
         if (webp_bitmap) {
             m_artwork_image = webp_bitmap;
+
+            // Create infobar bitmap clone for WebP (same as GDI+ path below)
+            static_api_ptr_t<playback_control> pc;
+            m_was_playing = pc->is_playing();
+            if (!m_infobar_bitmap && cfg_infobar && m_was_playing && is_internet_stream(m_current_track)) {
+                Gdiplus::Bitmap* infobar_bitmap = decode_webp_via_wic(data, size);
+                if (infobar_bitmap && infobar_bitmap->GetLastStatus() == Gdiplus::Ok) {
+                    m_infobar_bitmap = infobar_bitmap;
+                } else {
+                    delete infobar_bitmap;
+                }
+            }
+
             return true;
         }
         return false; // WebP detected but decoding failed (old Windows etc.)
