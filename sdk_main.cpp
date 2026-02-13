@@ -2,6 +2,7 @@
 #include "artwork_manager.h"
 #include "metadata_cleaner.h"
 #include "preferences.h"
+#include "webp_decoder.h"
 #include <algorithm>
 #include <thread>
 #include <vector>
@@ -297,7 +298,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.41",
+    "1.5.42",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -314,7 +315,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.41",
+    "1.5.42",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -4494,7 +4495,26 @@ bool artwork_ui_element::download_image(const pfc::string8& url, std::vector<BYT
 // Create bitmap from image data
 bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) {
     if (data.empty()) return false;
-    
+
+    // Try WIC-based WebP decoding first
+    if (is_webp_signature(data.data(), data.size())) {
+        Gdiplus::Bitmap* webp_bitmap = decode_webp_via_wic(data.data(), data.size());
+        if (webp_bitmap) {
+            // Convert WebP bitmap to HBITMAP using same pattern as existing code below
+            HBITMAP hBitmap = NULL;
+            if (webp_bitmap->GetHBITMAP(NULL, &hBitmap) == Gdiplus::Ok) {
+                delete webp_bitmap;
+                // Store new bitmap (same logic as existing code after GDI+ decode)
+                HBITMAP old_bitmap = m_artwork_bitmap;
+                m_artwork_bitmap = hBitmap;
+                if (old_bitmap) DeleteObject(old_bitmap);
+                return true;
+            }
+            delete webp_bitmap;
+        }
+        return false;
+    }
+
     // Keep reference to old bitmap to avoid white flash
     HBITMAP old_bitmap = m_artwork_bitmap;
     // DON'T clear m_artwork_bitmap yet - keep old artwork visible until new one is ready
@@ -6374,7 +6394,25 @@ namespace standalone {
         if (data.empty()) {
             return false;
         }
-        
+
+        // Try WIC-based WebP decoding first
+        if (is_webp_signature(data.data(), data.size())) {
+            Gdiplus::Bitmap* webp_bitmap = decode_webp_via_wic(data.data(), data.size());
+            if (webp_bitmap) {
+                HBITMAP hBitmap = NULL;
+                if (webp_bitmap->GetHBITMAP(NULL, &hBitmap) == Gdiplus::Ok) {
+                    delete webp_bitmap;
+                    if (::g_shared_artwork_bitmap) {
+                        DeleteObject(::g_shared_artwork_bitmap);
+                    }
+                    ::g_shared_artwork_bitmap = hBitmap;
+                    return true;
+                }
+                delete webp_bitmap;
+            }
+            return false;
+        }
+
         // Create memory stream from data
         IStream* pStream = NULL;
         HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, data.size());
@@ -7390,7 +7428,25 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
 #endif
             return false;
         }
-        
+
+        // Try WIC-based WebP decoding first
+        if (is_webp_signature(data.data(), data.size())) {
+            Gdiplus::Bitmap* webp_bitmap = decode_webp_via_wic(data.data(), data.size());
+            if (webp_bitmap) {
+                HBITMAP hBitmap = nullptr;
+                if (webp_bitmap->GetHBITMAP(NULL, &hBitmap) == Gdiplus::Ok && hBitmap) {
+                    delete webp_bitmap;
+                    if (::g_shared_artwork_bitmap) {
+                        DeleteObject(::g_shared_artwork_bitmap);
+                    }
+                    ::g_shared_artwork_bitmap = hBitmap;
+                    return true;
+                }
+                delete webp_bitmap;
+            }
+            return false;
+        }
+
         // Create IStream from memory
         IStream* pStream = nullptr;
         HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, data.size());
