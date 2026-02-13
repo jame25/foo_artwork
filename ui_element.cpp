@@ -2,6 +2,7 @@
 #include "artwork_manager.h"
 #include "artwork_viewer_popup.h"
 #include "metadata_cleaner.h"
+#include "webp_decoder.h"
 #include <gdiplus.h>
 #include <atlbase.h>
 #include <atlwin.h>
@@ -882,52 +883,6 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
     m_artwork_loading = false;
     
     if (result.success && result.data.get_size() > 0) {
-        // Check if this is a YouTube stream with WebP artwork
-        if (m_current_track.is_valid() && is_youtube_stream(m_current_track)) {
-            // Detect the image format
-            pfc::string8 mime_type = artwork_manager::detect_mime_type(result.data.get_ptr(), result.data.get_size());
-            if (mime_type == "image/webp") {
-                // This is WebP format - trigger API search instead of loading
-                // Check if we have metadata for API search
-                metadb_info_container::ptr info_container = m_current_track->get_info_ref();
-                if (info_container.is_valid()) {
-                    const file_info& info = info_container->info();
-                    
-                    const char* artist_ptr = info.meta_get("ARTIST", 0);
-                    const char* title_ptr = info.meta_get("TITLE", 0);
-                    
-                    if (artist_ptr && title_ptr && strlen(artist_ptr) > 0 && strlen(title_ptr) > 0) {
-                        // We have valid metadata - trigger API search instead of using WebP
-                        pfc::string8 artist = artist_ptr;
-                        pfc::string8 title = title_ptr;
-                        
-                        // Clean metadata for search
-                        std::string cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
-                        std::string cleaned_title = MetadataCleaner::clean_for_search(title.c_str(), true);
-                        
-                        // Validate metadata
-                        if (MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_title.c_str())) {
-                            // Clear any existing artwork before API search
-                            cleanup_gdiplus_image();
-                            m_artwork_source = "Loading from API...";
-                            m_artwork_loading = true;
-                            
-                            // Kill any fallback timers that might interfere with API search
-                            KillTimer(100); // Metadata arrival timer
-                            KillTimer(101); // Delay timer
-                            
-                            // Trigger API search instead of using WebP artwork
-                            trigger_main_component_search_with_metadata(cleaned_artist, cleaned_title);
-                            
-                            // Completely exit - don't try to load WebP data
-                            return;
-                        }
-                    }
-                }
-                // If we can't do API search, fall through to WebP loading attempt (will likely fail)
-            }
-        }
-        
         if (load_image_from_memory(result.data.get_ptr(), result.data.get_size())) {
             // Store artwork source and show OSD for Default UI
             std::string source = result.source.is_empty() ? "Unknown" : result.source.c_str();
@@ -1373,7 +1328,17 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
     
     cleanup_gdiplus_image();
     cleanup_gdiplus_infobar_image();
-    
+
+    // Try WIC-based WebP decoding first
+    if (is_webp_signature(data, size)) {
+        Gdiplus::Bitmap* webp_bitmap = decode_webp_via_wic(data, size);
+        if (webp_bitmap) {
+            m_artwork_image = webp_bitmap;
+            return true;
+        }
+        return false; // WebP detected but decoding failed (old Windows etc.)
+    }
+
     // Create IStream from memory
     HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, size);
     if (!hGlobal) {
