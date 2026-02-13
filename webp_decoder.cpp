@@ -85,7 +85,7 @@ Gdiplus::Bitmap* decode_webp_via_wic(const unsigned char* data, size_t size) {
 
     // Create GDI+ Bitmap and copy pixels
     try {
-        result = new Gdiplus::Bitmap(width, height, PixelFormat32bppARGB);
+        result = new Gdiplus::Bitmap(width, height, PixelFormat32bppRGB);
     } catch (...) {
         result = nullptr;
     }
@@ -101,8 +101,8 @@ Gdiplus::Bitmap* decode_webp_via_wic(const unsigned char* data, size_t size) {
 
     Gdiplus::BitmapData bmpData;
     Gdiplus::Rect lockRect(0, 0, width, height);
-    if (result->LockBits(&lockRect, Gdiplus::ImageLockModeWrite, PixelFormat32bppARGB, &bmpData) == Gdiplus::Ok) {
-        // WIC outputs BGRA, GDI+ PixelFormat32bppARGB is also BGRA in memory
+    if (result->LockBits(&lockRect, Gdiplus::ImageLockModeWrite, PixelFormat32bppRGB, &bmpData) == Gdiplus::Ok) {
+        // WIC outputs BGRA, GDI+ PixelFormat32bppRGB is also BGRA in memory
         UINT stride = bmpData.Stride;
         UINT wicStride = width * 4;
 
