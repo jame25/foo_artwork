@@ -69,6 +69,7 @@ static constexpr GUID guid_cfg_http_timeout = { 0x1234568d, 0x1234, 0x1234, { 0x
 static constexpr GUID guid_cfg_retry_count = { 0x1234568e, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
 static constexpr GUID guid_cfg_enable_disk_cache = { 0x1234568f, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xff } };
 static constexpr GUID guid_cfg_cache_folder = { 0x12345691, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x00 } };
+static constexpr GUID guid_cfg_skip_local_artwork = { 0x12345692, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x01 } };
 
 
 // Configuration variables with default values
@@ -115,6 +116,9 @@ cfg_int cfg_retry_count(guid_cfg_retry_count, 2);  // Number of retries for fail
 // Disk cache setting
 cfg_bool cfg_enable_disk_cache(guid_cfg_enable_disk_cache, true);  // Enable disk caching (default enabled)
 cfg_string cfg_cache_folder(guid_cfg_cache_folder, "");  // Custom cache folder path (empty = use default)
+
+// Skip local artwork setting
+cfg_bool cfg_skip_local_artwork(guid_cfg_skip_local_artwork, false);  // Always skip local artwork (default disabled)
 
 
 //=============================================================================
@@ -298,7 +302,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.43",
+    "1.5.44",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -315,7 +319,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.43",
+    "1.5.44",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -8072,4 +8076,3 @@ extern "C" __declspec(dllexport) bool foo_artwork_is_loading() {
 //=============================================================================
 
 // CUI implementation is now in artwork_panel_cui.cpp
-
