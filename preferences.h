@@ -23,5 +23,8 @@ extern cfg_uint cfg_cache_size;
 // Priority order configuration
 extern cfg_int cfg_search_order_1, cfg_search_order_2, cfg_search_order_3, cfg_search_order_4, cfg_search_order_5;
 
+// Skip local artwork setting
+extern cfg_bool cfg_skip_local_artwork;
+
 // Function to get API search order based on user preferences
 std::vector<ApiType> get_api_search_order();
