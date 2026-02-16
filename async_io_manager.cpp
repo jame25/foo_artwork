@@ -204,6 +204,12 @@ void async_io_manager::cache_set_async(const pfc::string8& key, const pfc::array
     cache_->set_async(key, data, callback);
 }
 
+void async_io_manager::cache_clear_all() {
+    if (cache_) {
+        cache_->clear_all();
+    }
+}
+
 void async_io_manager::post_to_main_thread(main_thread_callback callback) {
     // Simple approach: use fb2k_async which is a common pattern in foobar2000 components
     fb2k::inMainThread([callback]() {
@@ -710,6 +716,47 @@ pfc::string8 async_io_manager::async_cache::get_cache_file_path(const pfc::strin
     pfc::string8 file_path = cache_directory;
     file_path << key << ".cache";
     return file_path;
+}
+
+void async_io_manager::async_cache::clear_all() {
+    // Clear memory cache
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache_map.remove_all();
+    }
+
+    // Clear pending write queue
+    {
+        std::lock_guard<std::mutex> lock(write_queue_mutex);
+        while (!write_queue.empty()) {
+            write_queue.pop();
+        }
+    }
+
+    // Delete all cache files from disk on a background thread
+    pfc::string8 cache_dir = cache_directory;
+    instance().submit_task([cache_dir]() {
+        std::wstring wide_pattern = utf8_to_wide(cache_dir);
+        wide_pattern += L"*.cache";
+
+        WIN32_FIND_DATAW find_data;
+        HANDLE find_handle = FindFirstFileW(wide_pattern.c_str(), &find_data);
+
+        if (find_handle != INVALID_HANDLE_VALUE) {
+            std::wstring wide_dir = utf8_to_wide(cache_dir);
+            do {
+                if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                    std::wstring full_path = wide_dir + find_data.cFileName;
+                    DeleteFileW(full_path.c_str());
+                }
+            } while (FindNextFileW(find_handle, &find_data));
+            FindClose(find_handle);
+        }
+
+        fb2k::inMainThread([]() {
+            console::print("foo_artwork: Artwork cache cleared.");
+        });
+    });
 }
 
 void async_io_manager::async_cache::flush_all() {
