@@ -38,6 +38,7 @@ public:
     // Cache operations with write-behind buffering
     void cache_get_async(const pfc::string8& key, file_read_callback callback);
     void cache_set_async(const pfc::string8& key, const pfc::array_t<t_uint8>& data, file_write_callback callback = nullptr);
+    void cache_clear_all();
     
     // Thread pool management
     void initialize(size_t thread_count = 4);
@@ -140,6 +141,7 @@ private:
         void initialize(const pfc::string8& cache_dir);
         void get_async(const pfc::string8& key, file_read_callback callback);
         void set_async(const pfc::string8& key, const pfc::array_t<t_uint8>& data, file_write_callback callback = nullptr);
+        void clear_all();
         void flush_all();
         void shutdown();
     };
