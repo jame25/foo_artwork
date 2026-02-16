@@ -324,21 +324,28 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
                               !(strstr(file_path.c_str(), "file://") == file_path.c_str()) || (strstr(file_path.c_str(), "://") && (strstr(file_path.c_str(), ".tags") && (length <= 0))));
     
     if (is_internet_stream) {
-        // For internet streams, skip cache but still check for tagged artwork first
-        // This prevents stale artwork from being returned when track metadata changes
-        find_local_artwork_async(track, [artist, track_name, callback](const artwork_result& result) {
-            if (result.success) {
-                // Tagged artwork found and supported format - use it (don't cache for streams)
-                callback(result);
-            } else {
-                // No tagged artwork or unsupported format - fall back to API search
-                // Don't search for failed metadata
-                // Use empty cache_key to signal "don't cache results"
-                if (artist != "Unknown Artist" && track_name != "Unknown Track") {
-                    search_apis_async(artist, track_name, pfc::string8(""), callback);
-                }
+        if (cfg_skip_local_artwork) {
+            // Skip local artwork entirely, go directly to API search
+            if (artist != "Unknown Artist" && track_name != "Unknown Track") {
+                search_apis_async(artist, track_name, pfc::string8(""), callback);
             }
-        });
+        } else {
+            // For internet streams, skip cache but still check for tagged artwork first
+            // This prevents stale artwork from being returned when track metadata changes
+            find_local_artwork_async(track, [artist, track_name, callback](const artwork_result& result) {
+                if (result.success) {
+                    // Tagged artwork found and supported format - use it (don't cache for streams)
+                    callback(result);
+                } else {
+                    // No tagged artwork or unsupported format - fall back to API search
+                    // Don't search for failed metadata
+                    // Use empty cache_key to signal "don't cache results"
+                    if (artist != "Unknown Artist" && track_name != "Unknown Track") {
+                        search_apis_async(artist, track_name, pfc::string8(""), callback);
+                    }
+                }
+            });
+        }
     } else {
         // For local files, use normal cache -> local -> APIs pipeline
         check_cache_async(cache_key, track, callback);
@@ -379,10 +386,20 @@ void artwork_manager::search_apis_async_metadata(const pfc::string8& artist, con
 }
 
 void artwork_manager::search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
-    
+
+    // If user wants to skip local artwork, go directly to API search
+    if (cfg_skip_local_artwork) {
+        metadb_info_container::ptr info_container = track->get_info_ref();
+        const file_info* info = &info_container->info();
+        pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "Unknown Artist";
+        pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
+        search_apis_async(artist, track_name, cache_key, callback);
+        return;
+    }
+
     // ALWAYS try to find tagged artwork first, regardless of local/internet file type
     // Internet streams (like YouTube videos) can have embedded artwork too
-    
+
     find_local_artwork_async(track, [cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
             // Local artwork found - cache it (if disk cache enabled) and return
