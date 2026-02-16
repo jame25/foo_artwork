@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "resource.h"
+#include "async_io_manager.h"
 #include <commdlg.h>  // For file save dialog
 #include <shlobj.h>   // For folder browser dialog (still needed for directory extraction)
 
@@ -19,6 +20,7 @@ extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
 extern cfg_bool cfg_enable_disk_cache;
 extern cfg_string cfg_cache_folder;
+extern cfg_bool cfg_skip_local_artwork;
 
 // Reference to current artwork source for logging
 extern pfc::string8 g_current_artwork_source;
@@ -185,10 +187,14 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         SendMessage(hDiskCache, CB_RESETCONTENT, 0, 0);
         SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Enabled"));
         SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Disabled"));
+        SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Clear"));
         SendMessage(hDiskCache, CB_SETCURSEL, cfg_enable_disk_cache ? 0 : 1, 0);
         
         // Enable/disable browse cache folder button based on disk cache enabled state
         EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_CACHE_FOLDER), cfg_enable_disk_cache ? TRUE : FALSE);
+
+        // Initialize skip local artwork checkbox
+        CheckDlgButton(hwnd, IDC_SKIP_LOCAL_ARTWORK, cfg_skip_local_artwork ? BST_CHECKED : BST_UNCHECKED);
 
         p_this->update_controls();
         p_this->m_has_changes = false;
@@ -205,7 +211,8 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
             LOWORD(wp) == IDC_ENABLE_DISCOGS ||
             LOWORD(wp) == IDC_ENABLE_LASTFM ||
             LOWORD(wp) == IDC_ENABLE_DEEZER ||
-            LOWORD(wp) == IDC_ENABLE_MUSICBRAINZ)) {
+            LOWORD(wp) == IDC_ENABLE_MUSICBRAINZ ||
+            LOWORD(wp) == IDC_SKIP_LOCAL_ARTWORK)) {
             p_this->update_controls();
             p_this->on_changed();
         }
@@ -300,14 +307,18 @@ bool artwork_preferences::has_changed() {
     bool order4_changed = current_order_4 != cfg_search_order_4;
     bool order5_changed = current_order_5 != cfg_search_order_5;
 
-    // Check disk cache combobox (0 = Enabled, 1 = Disabled)
+    // Check disk cache combobox (0 = Enabled, 1 = Disabled, 2 = Clear)
     int disk_cache_selection = SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_GETCURSEL, 0, 0);
-    bool disk_cache_changed = (disk_cache_selection == 0) != cfg_enable_disk_cache;
+    bool disk_cache_changed = (disk_cache_selection == 2) || ((disk_cache_selection == 0) != cfg_enable_disk_cache);
+
+    // Check skip local artwork checkbox
+    bool skip_local_changed = (IsDlgButtonChecked(m_hwnd, IDC_SKIP_LOCAL_ARTWORK) == BST_CHECKED) != cfg_skip_local_artwork;
 
     return itunes_changed || discogs_changed || lastfm_changed || deezer_changed || musicbrainz_changed ||
         discogs_key_changed || discogs_consumer_key_changed ||
         discogs_consumer_secret_changed || lastfm_key_changed || disk_cache_changed ||
-        order1_changed || order2_changed || order3_changed || order4_changed || order5_changed;
+        order1_changed || order2_changed || order3_changed || order4_changed || order5_changed ||
+        skip_local_changed;
 }
 
 void artwork_preferences::apply_settings() {
@@ -340,9 +351,19 @@ void artwork_preferences::apply_settings() {
         cfg_search_order_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);  // 4th choice
         cfg_search_order_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);  // 5th choice
 
-        // Apply disk cache setting (0 = Enabled, 1 = Disabled)
+        // Apply disk cache setting (0 = Enabled, 1 = Disabled, 2 = Clear)
         int disk_cache_selection = SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_GETCURSEL, 0, 0);
-        cfg_enable_disk_cache = (disk_cache_selection == 0);
+        if (disk_cache_selection == 2) {
+            // Clear all cached artwork files, then revert to previous state
+            async_io_manager::instance().cache_clear_all();
+            SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_SETCURSEL, cfg_enable_disk_cache ? 0 : 1, 0);
+            EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_CACHE_FOLDER), cfg_enable_disk_cache ? TRUE : FALSE);
+        } else {
+            cfg_enable_disk_cache = (disk_cache_selection == 0);
+        }
+
+        // Apply skip local artwork setting
+        cfg_skip_local_artwork = (IsDlgButtonChecked(m_hwnd, IDC_SKIP_LOCAL_ARTWORK) == BST_CHECKED);
     }
 }
 
@@ -390,6 +411,10 @@ void artwork_preferences::reset_settings() {
         // Reset disk cache to enabled (select index 0)
         SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_SETCURSEL, 0, 0);
         cfg_enable_disk_cache = true;
+
+        // Reset skip local artwork to disabled
+        CheckDlgButton(m_hwnd, IDC_SKIP_LOCAL_ARTWORK, BST_UNCHECKED);
+        cfg_skip_local_artwork = false;
 
         update_controls();
     }
