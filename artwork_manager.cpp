@@ -232,6 +232,7 @@ extern cfg_string cfg_lastfm_key;
 extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
 extern cfg_bool cfg_enable_disk_cache;
+extern cfg_bool cfg_single_file_cache;
 
 // Static member initialization
 std::atomic<bool> artwork_manager::initialized_(false);
@@ -289,10 +290,16 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
         pfc::string8 artist_str = artist ? artist : "Unknown Artist";
         pfc::string8 track_str = track ? track : "Unknown Track";
         
-        pfc::string8 cache_key = generate_cache_key(artist_str, track_str);
-        
-        // Start async pipeline: Cache -> APIs (skip local files since we don't have a track)
-        check_cache_async_metadata(cache_key, artist_str, track_str, callback);
+        pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist_str, track_str);
+
+        // In single-file cache mode, skip cache reads (key is always "current" so it would
+        // return the previous track's artwork). Go directly to API search, still write to cache.
+        if (cfg_single_file_cache) {
+            search_apis_async_metadata(artist_str, track_str, cache_key, callback);
+        } else {
+            // Start async pipeline: Cache -> APIs (skip local files since we don't have a track)
+            check_cache_async_metadata(cache_key, artist_str, track_str, callback);
+        }
     } catch (const std::exception& e) {
         artwork_result result;
         result.success = false;
@@ -313,9 +320,8 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
     pfc::string8 file_path = track->get_path();
     
-    pfc::string8 cache_key = generate_cache_key(artist, track_name);
-    
-    
+    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist, track_name);
+
     // CACHE SKIP FOR INTERNET STREAMS: For internet streams, metadata is often wrong initially
     // (belongs to previous track), causing wrong cached artwork to be returned.
     // Skip cache and go directly to local (tagged) artwork search.
@@ -346,6 +352,10 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
                 }
             });
         }
+    } else if (cfg_single_file_cache) {
+        // In single-file cache mode, skip cache reads (key is always "current" so it would
+        // return the previous track's artwork). Go directly to local -> APIs, still write to cache.
+        search_local_async(file_path, cache_key, track, callback);
     } else {
         // For local files, use normal cache -> local -> APIs pipeline
         check_cache_async(cache_key, track, callback);
