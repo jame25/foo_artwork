@@ -19,6 +19,7 @@ extern cfg_bool cfg_use_noart_image;
 extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
 extern cfg_bool cfg_enable_disk_cache;
+extern cfg_bool cfg_single_file_cache;
 extern cfg_string cfg_cache_folder;
 extern cfg_bool cfg_skip_local_artwork;
 
@@ -183,15 +184,18 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         SendMessage(GetDlgItem(hwnd, IDC_PRIORITY_5), CB_SETCURSEL, cfg_search_order_5, 0);  // 5th choice
 
         // Initialize disk cache combobox
+        // 0 = Enabled, 1 = Enabled (Single File), 2 = Disabled, 3 = Clear
         HWND hDiskCache = GetDlgItem(hwnd, IDC_ENABLE_DISK_CACHE);
         SendMessage(hDiskCache, CB_RESETCONTENT, 0, 0);
         SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Enabled"));
+        SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Enabled (Single File)"));
         SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Disabled"));
         SendMessageA(hDiskCache, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Clear"));
-        SendMessage(hDiskCache, CB_SETCURSEL, cfg_enable_disk_cache ? 0 : 1, 0);
-        
+        int cache_sel = cfg_enable_disk_cache ? (cfg_single_file_cache ? 1 : 0) : 2;
+        SendMessage(hDiskCache, CB_SETCURSEL, cache_sel, 0);
+
         // Enable/disable browse cache folder button based on disk cache enabled state
-        EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_CACHE_FOLDER), cfg_enable_disk_cache ? TRUE : FALSE);
+        EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_CACHE_FOLDER), (cache_sel == 0 || cache_sel == 1) ? TRUE : FALSE);
 
         // Initialize skip local artwork checkbox
         CheckDlgButton(hwnd, IDC_SKIP_LOCAL_ARTWORK, cfg_skip_local_artwork ? BST_CHECKED : BST_UNCHECKED);
@@ -232,8 +236,9 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         else if (HIWORD(wp) == CBN_SELCHANGE && LOWORD(wp) == IDC_ENABLE_DISK_CACHE) {
             p_this->on_changed();
             // Enable/disable browse button based on disk cache enabled state
+            // 0 = Enabled, 1 = Enabled (Single File), 2 = Disabled, 3 = Clear
             int sel = SendMessage(GetDlgItem(hwnd, IDC_ENABLE_DISK_CACHE), CB_GETCURSEL, 0, 0);
-            EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_CACHE_FOLDER), sel == 0);
+            EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_CACHE_FOLDER), (sel == 0 || sel == 1));
         }
         else if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_SHOW_SOURCE) {
             p_this->toggle_osd();
@@ -307,9 +312,10 @@ bool artwork_preferences::has_changed() {
     bool order4_changed = current_order_4 != cfg_search_order_4;
     bool order5_changed = current_order_5 != cfg_search_order_5;
 
-    // Check disk cache combobox (0 = Enabled, 1 = Disabled, 2 = Clear)
+    // Check disk cache combobox (0 = Enabled, 1 = Enabled (Single File), 2 = Disabled, 3 = Clear)
     int disk_cache_selection = SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_GETCURSEL, 0, 0);
-    bool disk_cache_changed = (disk_cache_selection == 2) || ((disk_cache_selection == 0) != cfg_enable_disk_cache);
+    int expected_cache_sel = cfg_enable_disk_cache ? (cfg_single_file_cache ? 1 : 0) : 2;
+    bool disk_cache_changed = (disk_cache_selection == 3) || (disk_cache_selection != expected_cache_sel);
 
     // Check skip local artwork checkbox
     bool skip_local_changed = (IsDlgButtonChecked(m_hwnd, IDC_SKIP_LOCAL_ARTWORK) == BST_CHECKED) != cfg_skip_local_artwork;
@@ -351,15 +357,17 @@ void artwork_preferences::apply_settings() {
         cfg_search_order_4 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_4), CB_GETCURSEL, 0, 0);  // 4th choice
         cfg_search_order_5 = SendMessage(GetDlgItem(m_hwnd, IDC_PRIORITY_5), CB_GETCURSEL, 0, 0);  // 5th choice
 
-        // Apply disk cache setting (0 = Enabled, 1 = Disabled, 2 = Clear)
+        // Apply disk cache setting (0 = Enabled, 1 = Enabled (Single File), 2 = Disabled, 3 = Clear)
         int disk_cache_selection = SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_GETCURSEL, 0, 0);
-        if (disk_cache_selection == 2) {
+        if (disk_cache_selection == 3) {
             // Clear all cached artwork files, then revert to previous state
             async_io_manager::instance().cache_clear_all();
-            SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_SETCURSEL, cfg_enable_disk_cache ? 0 : 1, 0);
-            EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_CACHE_FOLDER), cfg_enable_disk_cache ? TRUE : FALSE);
+            int revert_sel = cfg_enable_disk_cache ? (cfg_single_file_cache ? 1 : 0) : 2;
+            SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_SETCURSEL, revert_sel, 0);
+            EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_CACHE_FOLDER), (revert_sel == 0 || revert_sel == 1) ? TRUE : FALSE);
         } else {
-            cfg_enable_disk_cache = (disk_cache_selection == 0);
+            cfg_enable_disk_cache = (disk_cache_selection == 0 || disk_cache_selection == 1);
+            cfg_single_file_cache = (disk_cache_selection == 1);
         }
 
         // Apply skip local artwork setting
@@ -411,6 +419,7 @@ void artwork_preferences::reset_settings() {
         // Reset disk cache to enabled (select index 0)
         SendMessage(GetDlgItem(m_hwnd, IDC_ENABLE_DISK_CACHE), CB_SETCURSEL, 0, 0);
         cfg_enable_disk_cache = true;
+        cfg_single_file_cache = false;
 
         // Reset skip local artwork to disabled
         CheckDlgButton(m_hwnd, IDC_SKIP_LOCAL_ARTWORK, BST_UNCHECKED);
