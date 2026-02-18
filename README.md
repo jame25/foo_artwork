@@ -426,7 +426,7 @@ Your support helps cover development time and enables new features. Thank you! �
 | 平台 | 支付方式 |
 |------|----------|
 | **[Ko-fi](https://ko-fi.com/Jame25)** | 银行卡、PayPal |
-| **[Stripe](https://buy.stripe.com/dRmcN474B8zlfRd2cJ1sQ01)** | 支付宝、微信支付、银行卡、Apple Pay、Google Pay |
+| **[Stripe](https://buy.stripe.com/dRmcN474B8zlfRd2cJ1sQ01)** | 支付宝、银行卡、Apple Pay、Google Pay |
 
 您的支持有助于支付开发时间并实现新功能。谢谢！🙏
 
