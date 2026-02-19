@@ -260,6 +260,8 @@ private:
     bool m_mouse_hovering;
     bool m_hover_over_download;
     RECT m_download_icon_rect;
+    BYTE m_download_fade_alpha;
+    UINT_PTR m_download_fade_timer_id;
 
     // Event-driven artwork system (replaces polling)
     HBITMAP m_last_event_bitmap;
@@ -366,11 +368,11 @@ public:
 // Download icon overlay helper
 //=============================================================================
 
-static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, RECT& out_icon_rect)
+static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, RECT& out_icon_rect, BYTE fade_alpha = 255)
 {
     // Only show when foo_artgrab is loaded
     HMODULE hGrab = GetModuleHandle(L"foo_artgrab.dll");
-    if (!hGrab) {
+    if (!hGrab || fade_alpha == 0) {
         SetRectEmpty(&out_icon_rect);
         return;
     }
@@ -389,8 +391,9 @@ static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, R
     Gdiplus::Graphics g(hdc);
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
 
-    // Semi-transparent rounded-rect background
-    BYTE alpha = hovered ? (BYTE)200 : (BYTE)120;
+    // Semi-transparent rounded-rect background (modulated by fade alpha)
+    BYTE base_alpha = hovered ? (BYTE)200 : (BYTE)120;
+    BYTE alpha = (BYTE)((int)base_alpha * fade_alpha / 255);
     Gdiplus::SolidBrush bgBrush(Gdiplus::Color(alpha, 0, 0, 0));
     int radius = 6;
     {
@@ -414,7 +417,8 @@ static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, R
     float ox = (float)ix;
     float oy = (float)iy + (float)icon_size;  // SVG y is negative, so offset from bottom
 
-    Gdiplus::SolidBrush iconBrush(Gdiplus::Color(230, 255, 255, 255));
+    BYTE icon_alpha = (BYTE)((int)230 * fade_alpha / 255);
+    Gdiplus::SolidBrush iconBrush(Gdiplus::Color(icon_alpha, 255, 255, 255));
 
     // Arrow portion (pointing down)
     {
@@ -476,6 +480,8 @@ CUIArtworkPanel::CUIArtworkPanel()
     , m_osd_visible(false)
     , m_last_event_bitmap(nullptr)
     , m_scaled_gdi_bitmap(NULL)
+    , m_download_fade_alpha(0)
+    , m_download_fade_timer_id(0)
     , m_mouse_hovering(false)
     , m_hover_over_download(false)
     , m_download_icon_rect{}
@@ -583,6 +589,10 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             m_osd_timer_id = 0;
         }
         KillTimer(m_hWnd, 102);  // Stop playback monitoring timer
+        if (m_download_fade_timer_id) {
+            KillTimer(m_hWnd, 1002);
+            m_download_fade_timer_id = 0;
+        }
         // Note: No artwork polling timer to stop - using event-driven system
         
         // Unregister callbacks
@@ -609,19 +619,34 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         // Paint to memory DC first (off-screen)
         paint_artwork(memDC);
         
-        // Draw download icon overlay when hovering (skip for internet streams)
-        if (m_mouse_hovering) {
-            bool is_stream = false;
-            {
+        // Draw download icon overlay when hovering (only when a track is playing, skip streams)
+        if (m_mouse_hovering || m_download_fade_alpha > 0) {
+            bool should_show = false;
+            if (m_mouse_hovering) {
                 static_api_ptr_t<playback_control> pc;
-                metadb_handle_ptr track;
-                if (pc->get_now_playing(track) && track.is_valid()) {
-                    pfc::string8 path = track->get_path();
-                    is_stream = strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://");
+                if (pc->is_playing()) {
+                    bool is_stream = false;
+                    metadb_handle_ptr track;
+                    if (pc->get_now_playing(track) && track.is_valid()) {
+                        pfc::string8 path = track->get_path();
+                        is_stream = strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://");
+                    }
+                    should_show = !is_stream;
                 }
             }
-            if (!is_stream) {
-                draw_download_icon(memDC, client_rect, m_hover_over_download, m_download_icon_rect);
+            if (should_show) {
+                // Fade in: jump to full opacity and stop any fade timer
+                if (m_download_fade_alpha < 255) {
+                    m_download_fade_alpha = 255;
+                    if (m_download_fade_timer_id) {
+                        KillTimer(m_hWnd, 1002);
+                        m_download_fade_timer_id = 0;
+                    }
+                }
+                draw_download_icon(memDC, client_rect, m_hover_over_download, m_download_icon_rect, m_download_fade_alpha);
+            } else if (m_download_fade_alpha > 0) {
+                // Fading out - draw at current fade alpha
+                draw_download_icon(memDC, client_rect, false, m_download_icon_rect, m_download_fade_alpha);
             } else {
                 SetRectEmpty(&m_download_icon_rect);
             }
@@ -656,7 +681,20 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         return 1;
         
     case WM_TIMER:
-        if (wParam == m_osd_timer_id) {
+        if (wParam == 1002) {
+            // Download icon fade-out animation
+            const BYTE fade_step = 20;  // ~200ms total fade at 60fps
+            if (m_download_fade_alpha <= fade_step) {
+                m_download_fade_alpha = 0;
+                KillTimer(wnd, 1002);
+                m_download_fade_timer_id = 0;
+                SetRectEmpty(&m_download_icon_rect);
+            } else {
+                m_download_fade_alpha -= fade_step;
+            }
+            InvalidateRect(wnd, nullptr, FALSE);
+            return 0;
+        } else if (wParam == m_osd_timer_id) {
             update_osd_animation();
         } else if (wParam == 100) {
             // Fallback timer - no Default UI panel detected, handle station logos ourselves
@@ -906,14 +944,13 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
 
     case WM_MOUSELEAVE:
     {
-        RECT old_rect = m_download_icon_rect;
         m_mouse_hovering = false;
         m_hover_over_download = false;
-        SetRectEmpty(&m_download_icon_rect);
-        if (!IsRectEmpty(&old_rect)) {
-            InflateRect(&old_rect, 2, 2);
-            InvalidateRect(wnd, &old_rect, FALSE);
-        } else {
+        // Start fade-out animation if icon was visible
+        if (m_download_fade_alpha > 0 && !m_download_fade_timer_id) {
+            m_download_fade_timer_id = SetTimer(wnd, 1002, 16, NULL);  // ~60 FPS
+        }
+        if (IsRectEmpty(&m_download_icon_rect)) {
             InvalidateRect(wnd, nullptr, FALSE);
         }
         return 0;
