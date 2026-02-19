@@ -6,6 +6,7 @@
 #define NOMINMAX
 
 #include <windows.h>
+#include <windowsx.h>
 #include <shlobj.h>
 
 // Define CUI support for this file since we're not using precompiled headers
@@ -255,6 +256,11 @@ private:
     UINT_PTR m_osd_timer_id;
     bool m_osd_visible;
     
+    // Download icon hover state
+    bool m_mouse_hovering;
+    bool m_hover_over_download;
+    RECT m_download_icon_rect;
+
     // Event-driven artwork system (replaces polling)
     HBITMAP m_last_event_bitmap;
     
@@ -357,6 +363,104 @@ public:
 } g_cui_registration_helper;
 
 //=============================================================================
+// Download icon overlay helper
+//=============================================================================
+
+static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, RECT& out_icon_rect)
+{
+    // Only show when foo_artgrab is loaded
+    HMODULE hGrab = GetModuleHandle(L"foo_artgrab.dll");
+    if (!hGrab) {
+        SetRectEmpty(&out_icon_rect);
+        return;
+    }
+
+    const int icon_size = 24;
+    const int padding = 10;
+    const int bg_pad = 6;
+
+    // Position at bottom-left
+    int ix = client_rect.left + padding;
+    int iy = client_rect.bottom - padding - icon_size;
+
+    // Background pill rect
+    RECT bg = { ix - bg_pad, iy - bg_pad, ix + icon_size + bg_pad, iy + icon_size + bg_pad };
+
+    Gdiplus::Graphics g(hdc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
+    // Semi-transparent rounded-rect background
+    BYTE alpha = hovered ? (BYTE)200 : (BYTE)120;
+    Gdiplus::SolidBrush bgBrush(Gdiplus::Color(alpha, 0, 0, 0));
+    int radius = 6;
+    {
+        Gdiplus::GraphicsPath path;
+        Gdiplus::RectF rf((Gdiplus::REAL)bg.left, (Gdiplus::REAL)bg.top,
+                          (Gdiplus::REAL)(bg.right - bg.left), (Gdiplus::REAL)(bg.bottom - bg.top));
+        float d = (float)radius * 2.0f;
+        path.AddArc(rf.X, rf.Y, d, d, 180, 90);
+        path.AddArc(rf.X + rf.Width - d, rf.Y, d, d, 270, 90);
+        path.AddArc(rf.X + rf.Width - d, rf.Y + rf.Height - d, d, d, 0, 90);
+        path.AddArc(rf.X, rf.Y + rf.Height - d, d, d, 90, 90);
+        path.CloseFigure();
+        g.FillPath(&bgBrush, &path);
+    }
+
+    // Draw the download icon (Material Design download arrow + tray)
+    // SVG path translated from 960x960 viewBox to 24x24
+    // Original: M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200Z
+    //           M240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z
+    float scale = (float)icon_size / 960.0f;
+    float ox = (float)ix;
+    float oy = (float)iy + (float)icon_size;  // SVG y is negative, so offset from bottom
+
+    Gdiplus::SolidBrush iconBrush(Gdiplus::Color(230, 255, 255, 255));
+
+    // Arrow portion (pointing down)
+    {
+        Gdiplus::GraphicsPath arrow;
+        // Convert SVG coords: SVG uses y-up with range -960..0, we map to 0..24
+        // SVG point (sx, sy) -> screen (ox + sx*scale, oy + sy*scale)
+        // where sy is negative in SVG space
+        Gdiplus::PointF pts[] = {
+            { ox + 480*scale, oy + (-320)*scale },  // bottom tip
+            { ox + 280*scale, oy + (-520)*scale },  // left of arrow head
+            { ox + 336*scale, oy + (-578)*scale },  // left after 56,-58
+            { ox + 440*scale, oy + (-474)*scale },  // inner left after 104,104
+            { ox + 440*scale, oy + (-800)*scale },  // top left of shaft
+            { ox + 520*scale, oy + (-800)*scale },  // top right of shaft
+            { ox + 520*scale, oy + (-474)*scale },  // inner right
+            { ox + 624*scale, oy + (-578)*scale },  // right after 104,-104
+            { ox + 680*scale, oy + (-520)*scale },  // right of arrow head
+        };
+        arrow.AddPolygon(pts, 9);
+        g.FillPath(&iconBrush, &arrow);
+    }
+
+    // Tray portion (flat bottom with sides)
+    {
+        Gdiplus::GraphicsPath tray;
+        Gdiplus::PointF pts[] = {
+            { ox + 160*scale, oy + (-240)*scale },  // bottom-left outer (after rounding)
+            { ox + 160*scale, oy + (-360)*scale },  // top-left
+            { ox + 240*scale, oy + (-360)*scale },  // inner top-left
+            { ox + 240*scale, oy + (-280)*scale },  // inner bottom-left
+            { ox + 720*scale, oy + (-280)*scale },  // inner bottom-right
+            { ox + 720*scale, oy + (-360)*scale },  // inner top-right
+            { ox + 800*scale, oy + (-360)*scale },  // top-right
+            { ox + 800*scale, oy + (-240)*scale },  // bottom-right outer
+            { ox + 720*scale, oy + (-160)*scale },  // bottom-right (after curve approx)
+            { ox + 240*scale, oy + (-160)*scale },  // bottom-left (after curve approx)
+        };
+        tray.AddPolygon(pts, 10);
+        g.FillPath(&iconBrush, &tray);
+    }
+
+    // Output hit-test rect
+    out_icon_rect = bg;
+}
+
+//=============================================================================
 // Constructor and Destructor
 //=============================================================================
 
@@ -372,6 +476,9 @@ CUIArtworkPanel::CUIArtworkPanel()
     , m_osd_visible(false)
     , m_last_event_bitmap(nullptr)
     , m_scaled_gdi_bitmap(NULL)
+    , m_mouse_hovering(false)
+    , m_hover_over_download(false)
+    , m_download_icon_rect{}
 {
     // Register for artwork events (replaces polling)
     subscribe_to_artwork_events(this);
@@ -502,23 +609,41 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         // Paint to memory DC first (off-screen)
         paint_artwork(memDC);
         
+        // Draw download icon overlay when hovering (skip for internet streams)
+        if (m_mouse_hovering) {
+            bool is_stream = false;
+            {
+                static_api_ptr_t<playback_control> pc;
+                metadb_handle_ptr track;
+                if (pc->get_now_playing(track) && track.is_valid()) {
+                    pfc::string8 path = track->get_path();
+                    is_stream = strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://");
+                }
+            }
+            if (!is_stream) {
+                draw_download_icon(memDC, client_rect, m_hover_over_download, m_download_icon_rect);
+            } else {
+                SetRectEmpty(&m_download_icon_rect);
+            }
+        }
+
         // Paint OSD if visible
         if (m_osd_visible) {
             paint_osd(memDC);
         }
-        
+
         // Copy the entire off-screen buffer to screen in one operation (flicker-free)
         BitBlt(hdc, 0, 0, client_rect.right, client_rect.bottom, memDC, 0, 0, SRCCOPY);
-        
+
         // Cleanup
         SelectObject(memDC, oldBitmap);
         DeleteObject(memBitmap);
         DeleteDC(memDC);
-        
+
         EndPaint(m_hWnd, &ps);
         return 0;
     }
-    
+
     case WM_SIZE:
         // Resize artwork to fit new window size
         resize_artwork_to_fit();
@@ -758,10 +883,90 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         break;
         
-    case WM_RBUTTONDOWN:
-        // Show/hide OSD on right click
-        m_show_osd = !m_show_osd;
+    case WM_MOUSEMOVE:
+    {
+        if (!m_mouse_hovering) {
+            m_mouse_hovering = true;
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, wnd, 0 };
+            TrackMouseEvent(&tme);
+            InvalidateRect(wnd, nullptr, FALSE);
+        }
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        bool over = !IsRectEmpty(&m_download_icon_rect) &&
+                    PtInRect(&m_download_icon_rect, pt);
+        if (over != m_hover_over_download) {
+            m_hover_over_download = over;
+            InvalidateRect(wnd, &m_download_icon_rect, FALSE);
+        }
+        if (m_hover_over_download) {
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+        }
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+    {
+        RECT old_rect = m_download_icon_rect;
+        m_mouse_hovering = false;
+        m_hover_over_download = false;
+        SetRectEmpty(&m_download_icon_rect);
+        if (!IsRectEmpty(&old_rect))
+            InvalidateRect(wnd, &old_rect, FALSE);
+        else
+            InvalidateRect(wnd, nullptr, FALSE);
+        return 0;
+    }
+
+    case WM_SETCURSOR:
+    {
+        if (LOWORD(lParam) == HTCLIENT && m_hover_over_download) {
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+            return TRUE;
+        }
+        return DefWindowProc(wnd, msg, wParam, lParam);
+    }
+
+    case WM_LBUTTONDOWN:
+    {
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (!IsRectEmpty(&m_download_icon_rect) && PtInRect(&m_download_icon_rect, pt)) {
+            typedef void (*pfn_open)(const char*, const char*, const char*);
+            HMODULE hGrab = GetModuleHandle(L"foo_artgrab.dll");
+            pfn_open pOpen = hGrab ? (pfn_open)GetProcAddress(hGrab, "foo_artgrab_open") : nullptr;
+            if (pOpen) {
+                metadb_handle_ptr track;
+                if (static_api_ptr_t<playback_control>()->get_now_playing(track) && track.is_valid()) {
+                    file_info_impl info;
+                    track->get_info(info);
+                    const char* artist = info.meta_get("artist", 0);
+                    const char* album = info.meta_get("album", 0);
+                    pfc::string8 path = track->get_path();
+                    pOpen(artist ? artist : "", album ? album : "", path.get_ptr());
+                }
+            }
+            return 0;
+        }
         break;
+    }
+
+    case WM_RBUTTONDOWN:
+    {
+        POINT pt;
+        GetCursorPos(&pt);
+
+        HMENU hMenu = CreatePopupMenu();
+        enum { IDM_TOGGLE_OSD = 1 };
+
+        AppendMenuA(hMenu, MF_STRING, IDM_TOGGLE_OSD, m_show_osd ? "Hide OSD" : "Show OSD");
+
+        int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, wnd, nullptr);
+        DestroyMenu(hMenu);
+
+        if (cmd == IDM_TOGGLE_OSD) {
+            m_show_osd = !m_show_osd;
+        }
+        break;
+    }
         
     case WM_LBUTTONDBLCLK:
         // Open artwork viewer popup on double-click
