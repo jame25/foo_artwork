@@ -1,2 +1,11 @@
 EXPORTS
-foobar2000_get_interface
+    foobar2000_get_interface
+    foo_artwork_set_callback
+    foo_artwork_search
+    foo_artwork_get_bitmap
+    foo_artwork_is_loading
+    foo_artwork_get_lastfm_key
+    foo_artwork_get_discogs_key
+    foo_artwork_get_discogs_consumer_key
+    foo_artwork_get_discogs_consumer_secret
+    foo_artwork_is_api_enabled
