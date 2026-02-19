@@ -949,25 +949,6 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         break;
     }
 
-    case WM_RBUTTONDOWN:
-    {
-        POINT pt;
-        GetCursorPos(&pt);
-
-        HMENU hMenu = CreatePopupMenu();
-        enum { IDM_TOGGLE_OSD = 1 };
-
-        AppendMenuA(hMenu, MF_STRING, IDM_TOGGLE_OSD, m_show_osd ? "Hide OSD" : "Show OSD");
-
-        int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, wnd, nullptr);
-        DestroyMenu(hMenu);
-
-        if (cmd == IDM_TOGGLE_OSD) {
-            m_show_osd = !m_show_osd;
-        }
-        break;
-    }
-        
     case WM_LBUTTONDBLCLK:
         // Open artwork viewer popup on double-click
         if (m_artwork_loaded && m_artwork_bitmap) {
