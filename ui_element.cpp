@@ -580,10 +580,12 @@ LRESULT artwork_ui_element::OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam
     m_mouse_hovering = false;
     m_hover_over_download = false;
     SetRectEmpty(&m_download_icon_rect);
-    if (!IsRectEmpty(&old_rect))
+    if (!IsRectEmpty(&old_rect)) {
+        InflateRect(&old_rect, 2, 2);
         InvalidateRect(&old_rect, FALSE);
-    else
+    } else {
         Invalidate(FALSE);
+    }
     bHandled = TRUE;
     return 0;
 }
