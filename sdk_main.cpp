@@ -306,7 +306,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.45",
+    "1.5.46",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -323,7 +323,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.45",
+    "1.5.46",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -8073,6 +8073,29 @@ extern "C" __declspec(dllexport) HBITMAP foo_artwork_get_bitmap() {
 
 extern "C" __declspec(dllexport) bool foo_artwork_is_loading() {
     return g_artwork_loading;
+}
+
+extern "C" __declspec(dllexport) const char* foo_artwork_get_lastfm_key() {
+    return cfg_lastfm_key.get_ptr();
+}
+extern "C" __declspec(dllexport) const char* foo_artwork_get_discogs_key() {
+    return cfg_discogs_key.get_ptr();
+}
+extern "C" __declspec(dllexport) const char* foo_artwork_get_discogs_consumer_key() {
+    return cfg_discogs_consumer_key.get_ptr();
+}
+extern "C" __declspec(dllexport) const char* foo_artwork_get_discogs_consumer_secret() {
+    return cfg_discogs_consumer_secret.get_ptr();
+}
+
+extern "C" __declspec(dllexport) bool foo_artwork_is_api_enabled(const char* api_name) {
+    if (!api_name) return false;
+    if (_stricmp(api_name, "iTunes") == 0)      return cfg_enable_itunes;
+    if (_stricmp(api_name, "Deezer") == 0)       return cfg_enable_deezer;
+    if (_stricmp(api_name, "Last.fm") == 0)      return cfg_enable_lastfm;
+    if (_stricmp(api_name, "MusicBrainz") == 0)  return cfg_enable_musicbrainz;
+    if (_stricmp(api_name, "Discogs") == 0)      return cfg_enable_discogs;
+    return false;
 }
 
 //=============================================================================
