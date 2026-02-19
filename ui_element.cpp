@@ -251,6 +251,8 @@ private:
     bool m_mouse_hovering;
     bool m_hover_over_download;
     RECT m_download_icon_rect;
+    BYTE m_download_fade_alpha;
+    UINT_PTR m_download_fade_timer_id;
 
     // UI state
     RECT m_client_rect;
@@ -323,10 +325,10 @@ private:
 // Download icon overlay helper
 //=============================================================================
 
-static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, RECT& out_icon_rect)
+static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, RECT& out_icon_rect, BYTE fade_alpha = 255)
 {
     HMODULE hGrab = GetModuleHandle(L"foo_artgrab.dll");
-    if (!hGrab) {
+    if (!hGrab || fade_alpha == 0) {
         SetRectEmpty(&out_icon_rect);
         return;
     }
@@ -343,7 +345,8 @@ static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, R
     Gdiplus::Graphics g(hdc);
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
 
-    BYTE alpha = hovered ? (BYTE)200 : (BYTE)120;
+    BYTE base_alpha = hovered ? (BYTE)200 : (BYTE)120;
+    BYTE alpha = (BYTE)((int)base_alpha * fade_alpha / 255);
     Gdiplus::SolidBrush bgBrush(Gdiplus::Color(alpha, 0, 0, 0));
     int radius = 6;
     {
@@ -363,7 +366,8 @@ static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, R
     float ox = (float)ix;
     float oy = (float)iy + (float)icon_size;
 
-    Gdiplus::SolidBrush iconBrush(Gdiplus::Color(230, 255, 255, 255));
+    BYTE icon_alpha = (BYTE)((int)230 * fade_alpha / 255);
+    Gdiplus::SolidBrush iconBrush(Gdiplus::Color(icon_alpha, 255, 255, 255));
 
     // Arrow portion
     {
@@ -410,7 +414,8 @@ artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_in
       m_gdiplus_token(0), m_playback_callback(this),
       m_show_osd(true), m_osd_start_time(0), m_osd_slide_offset(OSD_SLIDE_DISTANCE),
       m_osd_timer_id(0), m_osd_visible(false), m_has_delayed_metadata(false), m_was_playing(false),
-      m_mouse_hovering(false), m_hover_over_download(false), m_download_icon_rect{} {
+      m_mouse_hovering(false), m_hover_over_download(false), m_download_icon_rect{},
+      m_download_fade_alpha(0), m_download_fade_timer_id(0) {
     
     
     // Initialize GDI+
@@ -482,6 +487,10 @@ void artwork_ui_element::notify(const GUID& p_what, t_size p_param1, const void*
 
 
 LRESULT artwork_ui_element::OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    if (m_download_fade_timer_id) {
+        KillTimer(1002);
+        m_download_fade_timer_id = 0;
+    }
     cleanup_gdiplus_image();
     bHandled = TRUE;
     return 0;
@@ -503,15 +512,33 @@ LRESULT artwork_ui_element::OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
     // Paint to memory DC first (off-screen)
     draw_artwork(memDC, client_rect);
     
-    // Draw download icon overlay when hovering (skip for internet streams)
-    if (m_mouse_hovering) {
-        bool is_stream = false;
-        if (m_current_track.is_valid()) {
-            pfc::string8 path = m_current_track->get_path();
-            is_stream = strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://");
+    // Draw download icon overlay when hovering (only when a track is playing, skip streams)
+    if (m_mouse_hovering || m_download_fade_alpha > 0) {
+        bool should_show = false;
+        if (m_mouse_hovering) {
+            static_api_ptr_t<playback_control> pc;
+            if (pc->is_playing()) {
+                bool is_stream = false;
+                if (m_current_track.is_valid()) {
+                    pfc::string8 path = m_current_track->get_path();
+                    is_stream = strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://");
+                }
+                should_show = !is_stream;
+            }
         }
-        if (!is_stream) {
-            draw_download_icon(memDC, client_rect, m_hover_over_download, m_download_icon_rect);
+        if (should_show) {
+            // Fade in: jump to full opacity and stop any fade timer
+            if (m_download_fade_alpha < 255) {
+                m_download_fade_alpha = 255;
+                if (m_download_fade_timer_id) {
+                    KillTimer(m_download_fade_timer_id);
+                    m_download_fade_timer_id = 0;
+                }
+            }
+            draw_download_icon(memDC, client_rect, m_hover_over_download, m_download_icon_rect, m_download_fade_alpha);
+        } else if (m_download_fade_alpha > 0) {
+            // Fading out - draw at current fade alpha
+            draw_download_icon(memDC, client_rect, false, m_download_icon_rect, m_download_fade_alpha);
         } else {
             SetRectEmpty(&m_download_icon_rect);
         }
@@ -576,14 +603,13 @@ LRESULT artwork_ui_element::OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam,
 }
 
 LRESULT artwork_ui_element::OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
-    RECT old_rect = m_download_icon_rect;
     m_mouse_hovering = false;
     m_hover_over_download = false;
-    SetRectEmpty(&m_download_icon_rect);
-    if (!IsRectEmpty(&old_rect)) {
-        InflateRect(&old_rect, 2, 2);
-        InvalidateRect(&old_rect, FALSE);
-    } else {
+    // Start fade-out animation if icon was visible
+    if (m_download_fade_alpha > 0 && !m_download_fade_timer_id) {
+        m_download_fade_timer_id = SetTimer(1002, 16);  // ~60 FPS
+    }
+    if (IsRectEmpty(&m_download_icon_rect)) {
         Invalidate(FALSE);
     }
     bHandled = TRUE;
@@ -660,7 +686,21 @@ LRESULT artwork_ui_element::OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lPa
 }
 
 LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
-    if (wParam == m_osd_timer_id) {
+    if (wParam == 1002) {
+        // Download icon fade-out animation
+        const BYTE fade_step = 20;  // ~200ms total fade at 60fps
+        if (m_download_fade_alpha <= fade_step) {
+            m_download_fade_alpha = 0;
+            KillTimer(1002);
+            m_download_fade_timer_id = 0;
+            SetRectEmpty(&m_download_icon_rect);
+        } else {
+            m_download_fade_alpha -= fade_step;
+        }
+        Invalidate(FALSE);
+        bHandled = TRUE;
+        return 0;
+    } else if (wParam == m_osd_timer_id) {
         // OSD animation timer
         update_osd_animation();
         bHandled = TRUE;
