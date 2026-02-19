@@ -910,10 +910,12 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         m_mouse_hovering = false;
         m_hover_over_download = false;
         SetRectEmpty(&m_download_icon_rect);
-        if (!IsRectEmpty(&old_rect))
+        if (!IsRectEmpty(&old_rect)) {
+            InflateRect(&old_rect, 2, 2);
             InvalidateRect(wnd, &old_rect, FALSE);
-        else
+        } else {
             InvalidateRect(wnd, nullptr, FALSE);
+        }
         return 0;
     }
 
