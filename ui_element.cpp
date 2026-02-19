@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <windowsx.h>
 #include "artwork_manager.h"
 #include "artwork_viewer_popup.h"
 #include "metadata_cleaner.h"
@@ -99,7 +100,10 @@ public:
         MESSAGE_HANDLER(WM_PAINT, OnPaint)
         MESSAGE_HANDLER(WM_SIZE, OnSize)
         MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
-        MESSAGE_HANDLER(WM_CONTEXTMENU, OnContextMenu)
+        MESSAGE_HANDLER(WM_MOUSEMOVE, OnMouseMove)
+        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
+        MESSAGE_HANDLER(WM_SETCURSOR, OnSetCursor)
+        MESSAGE_HANDLER(WM_LBUTTONDOWN, OnLButtonDown)
         MESSAGE_HANDLER(WM_LBUTTONDBLCLK, OnLButtonDblClk)
         MESSAGE_HANDLER(WM_USER_ARTWORK_LOADED, OnArtworkLoaded)
         MESSAGE_HANDLER(WM_TIMER, OnTimer)
@@ -145,7 +149,10 @@ private:
     LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnContextMenu(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+    LRESULT OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+    LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+    LRESULT OnSetCursor(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+    LRESULT OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
@@ -240,6 +247,11 @@ private:
     void reset_m_counter();
     int m_counter = 0;
 
+    // Download icon hover state
+    bool m_mouse_hovering;
+    bool m_hover_over_download;
+    RECT m_download_icon_rect;
+
     // UI state
     RECT m_client_rect;
     
@@ -307,11 +319,98 @@ private:
     playback_callback_impl m_playback_callback;
 };
 
+//=============================================================================
+// Download icon overlay helper
+//=============================================================================
+
+static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, RECT& out_icon_rect)
+{
+    HMODULE hGrab = GetModuleHandle(L"foo_artgrab.dll");
+    if (!hGrab) {
+        SetRectEmpty(&out_icon_rect);
+        return;
+    }
+
+    const int icon_size = 24;
+    const int padding = 10;
+    const int bg_pad = 6;
+
+    int ix = client_rect.left + padding;
+    int iy = client_rect.bottom - padding - icon_size;
+
+    RECT bg = { ix - bg_pad, iy - bg_pad, ix + icon_size + bg_pad, iy + icon_size + bg_pad };
+
+    Gdiplus::Graphics g(hdc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
+    BYTE alpha = hovered ? (BYTE)200 : (BYTE)120;
+    Gdiplus::SolidBrush bgBrush(Gdiplus::Color(alpha, 0, 0, 0));
+    int radius = 6;
+    {
+        Gdiplus::GraphicsPath path;
+        Gdiplus::RectF rf((Gdiplus::REAL)bg.left, (Gdiplus::REAL)bg.top,
+                          (Gdiplus::REAL)(bg.right - bg.left), (Gdiplus::REAL)(bg.bottom - bg.top));
+        float d = (float)radius * 2.0f;
+        path.AddArc(rf.X, rf.Y, d, d, 180, 90);
+        path.AddArc(rf.X + rf.Width - d, rf.Y, d, d, 270, 90);
+        path.AddArc(rf.X + rf.Width - d, rf.Y + rf.Height - d, d, d, 0, 90);
+        path.AddArc(rf.X, rf.Y + rf.Height - d, d, d, 90, 90);
+        path.CloseFigure();
+        g.FillPath(&bgBrush, &path);
+    }
+
+    float scale = (float)icon_size / 960.0f;
+    float ox = (float)ix;
+    float oy = (float)iy + (float)icon_size;
+
+    Gdiplus::SolidBrush iconBrush(Gdiplus::Color(230, 255, 255, 255));
+
+    // Arrow portion
+    {
+        Gdiplus::GraphicsPath arrow;
+        Gdiplus::PointF pts[] = {
+            { ox + 480*scale, oy + (-320)*scale },
+            { ox + 280*scale, oy + (-520)*scale },
+            { ox + 336*scale, oy + (-578)*scale },
+            { ox + 440*scale, oy + (-474)*scale },
+            { ox + 440*scale, oy + (-800)*scale },
+            { ox + 520*scale, oy + (-800)*scale },
+            { ox + 520*scale, oy + (-474)*scale },
+            { ox + 624*scale, oy + (-578)*scale },
+            { ox + 680*scale, oy + (-520)*scale },
+        };
+        arrow.AddPolygon(pts, 9);
+        g.FillPath(&iconBrush, &arrow);
+    }
+
+    // Tray portion
+    {
+        Gdiplus::GraphicsPath tray;
+        Gdiplus::PointF pts[] = {
+            { ox + 160*scale, oy + (-240)*scale },
+            { ox + 160*scale, oy + (-360)*scale },
+            { ox + 240*scale, oy + (-360)*scale },
+            { ox + 240*scale, oy + (-280)*scale },
+            { ox + 720*scale, oy + (-280)*scale },
+            { ox + 720*scale, oy + (-360)*scale },
+            { ox + 800*scale, oy + (-360)*scale },
+            { ox + 800*scale, oy + (-240)*scale },
+            { ox + 720*scale, oy + (-160)*scale },
+            { ox + 240*scale, oy + (-160)*scale },
+        };
+        tray.AddPolygon(pts, 10);
+        g.FillPath(&iconBrush, &tray);
+    }
+
+    out_icon_rect = bg;
+}
+
 artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback)
     : m_callback(callback), m_artwork_image(nullptr), m_artwork_loading(false), 
       m_gdiplus_token(0), m_playback_callback(this),
-      m_show_osd(true), m_osd_start_time(0), m_osd_slide_offset(OSD_SLIDE_DISTANCE), 
-      m_osd_timer_id(0), m_osd_visible(false), m_has_delayed_metadata(false), m_was_playing(false) {
+      m_show_osd(true), m_osd_start_time(0), m_osd_slide_offset(OSD_SLIDE_DISTANCE),
+      m_osd_timer_id(0), m_osd_visible(false), m_has_delayed_metadata(false), m_was_playing(false),
+      m_mouse_hovering(false), m_hover_over_download(false), m_download_icon_rect{} {
     
     
     // Initialize GDI+
@@ -404,19 +503,33 @@ LRESULT artwork_ui_element::OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
     // Paint to memory DC first (off-screen)
     draw_artwork(memDC, client_rect);
     
+    // Draw download icon overlay when hovering (skip for internet streams)
+    if (m_mouse_hovering) {
+        bool is_stream = false;
+        if (m_current_track.is_valid()) {
+            pfc::string8 path = m_current_track->get_path();
+            is_stream = strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://");
+        }
+        if (!is_stream) {
+            draw_download_icon(memDC, client_rect, m_hover_over_download, m_download_icon_rect);
+        } else {
+            SetRectEmpty(&m_download_icon_rect);
+        }
+    }
+
     // Paint OSD overlay on memory DC before copying to screen
     if (m_osd_visible) {
         paint_osd(memDC);
     }
-    
+
     // Copy the entire off-screen buffer to screen in one operation (flicker-free)
     BitBlt(hdc, 0, 0, client_rect.right, client_rect.bottom, memDC, 0, 0, SRCCOPY);
-    
+
     // Cleanup
     SelectObject(memDC, oldBitmap);
     DeleteObject(memBitmap);
     DeleteDC(memDC);
-    
+
     EndPaint(&ps);
     bHandled = TRUE;
     return 0;
@@ -444,9 +557,66 @@ LRESULT artwork_ui_element::OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam
     return TRUE; // We handle all drawing in OnPaint
 }
 
-LRESULT artwork_ui_element::OnContextMenu(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
-    // Could add context menu for artwork options
-    bHandled = FALSE; // Let default handler process
+LRESULT artwork_ui_element::OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    if (!m_mouse_hovering) {
+        m_mouse_hovering = true;
+        TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, m_hWnd, 0 };
+        TrackMouseEvent(&tme);
+        Invalidate(FALSE);
+    }
+    POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+    bool over = !IsRectEmpty(&m_download_icon_rect) &&
+                PtInRect(&m_download_icon_rect, pt);
+    if (over != m_hover_over_download) {
+        m_hover_over_download = over;
+        InvalidateRect(&m_download_icon_rect, FALSE);
+    }
+    bHandled = FALSE;
+    return 0;
+}
+
+LRESULT artwork_ui_element::OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    RECT old_rect = m_download_icon_rect;
+    m_mouse_hovering = false;
+    m_hover_over_download = false;
+    SetRectEmpty(&m_download_icon_rect);
+    if (!IsRectEmpty(&old_rect))
+        InvalidateRect(&old_rect, FALSE);
+    else
+        Invalidate(FALSE);
+    bHandled = TRUE;
+    return 0;
+}
+
+LRESULT artwork_ui_element::OnSetCursor(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    if (LOWORD(lParam) == HTCLIENT && m_hover_over_download) {
+        SetCursor(LoadCursor(NULL, IDC_HAND));
+        bHandled = TRUE;
+        return TRUE;
+    }
+    bHandled = FALSE;
+    return 0;
+}
+
+LRESULT artwork_ui_element::OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+    if (!IsRectEmpty(&m_download_icon_rect) && PtInRect(&m_download_icon_rect, pt)) {
+        typedef void (*pfn_open)(const char*, const char*, const char*);
+        HMODULE hGrab = GetModuleHandle(L"foo_artgrab.dll");
+        pfn_open pOpen = hGrab ? (pfn_open)GetProcAddress(hGrab, "foo_artgrab_open") : nullptr;
+        if (pOpen && m_current_track.is_valid()) {
+            std::string artist, album;
+            int len = WideCharToMultiByte(CP_UTF8, 0, m_infobar_artist.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            if (len > 0) { artist.resize(len - 1); WideCharToMultiByte(CP_UTF8, 0, m_infobar_artist.c_str(), -1, artist.data(), len, nullptr, nullptr); }
+            len = WideCharToMultiByte(CP_UTF8, 0, m_infobar_album.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            if (len > 0) { album.resize(len - 1); WideCharToMultiByte(CP_UTF8, 0, m_infobar_album.c_str(), -1, album.data(), len, nullptr, nullptr); }
+            pfc::string8 file_path = m_current_track->get_path();
+            pOpen(artist.c_str(), album.c_str(), file_path.get_ptr());
+        }
+        bHandled = TRUE;
+        return 0;
+    }
+    bHandled = FALSE;
     return 0;
 }
 
