@@ -63,12 +63,16 @@ private:
     // Helper functions for async operations
     static void validate_and_complete_result(const pfc::array_t<t_uint8>& data, artwork_callback callback);
     
-    // Utility functions
+    // Utility functions (private)
     static bool is_valid_image_data(const t_uint8* data, size_t size);
     static bool is_supported_image_format(const pfc::string8& mime_type);
     static pfc::string8 get_file_directory(const char* file_path);
     static pfc::string8 url_encode(const char* str);
+
+public:
     static pfc::string8 generate_cache_key(const char* artist, const char* track);
+
+private:
     
     // JSON parsing functions
     static bool parse_itunes_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url);
