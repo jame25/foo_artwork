@@ -306,7 +306,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.49",
+    "1.5.50",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -323,7 +323,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.49",
+    "1.5.50",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -7487,9 +7487,10 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
 #endif
         
         // Create GDI+ bitmap from stream
+        // NOTE: GDI+ requires the stream to remain valid while the Bitmap exists.
+        // Release the stream only after we're done with the Bitmap.
         Gdiplus::Bitmap* bitmap = new Gdiplus::Bitmap(pStream);
-        pStream->Release();
-        
+
         if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
             if (bitmap) {
                 delete bitmap;
@@ -7497,12 +7498,13 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
 #ifdef _DEBUG
 #endif
             }
+            pStream->Release();
             return false;
         }
-        
+
 #ifdef _DEBUG
 #endif
-        
+
         // Convert to HBITMAP and store in shared bitmap
         HBITMAP hBitmap = nullptr;
         if (bitmap->GetHBITMAP(NULL, &hBitmap) == Gdiplus::Ok && hBitmap) {
@@ -7510,27 +7512,29 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
             if (g_shared_artwork_bitmap) {
                 DeleteObject(g_shared_artwork_bitmap);
             }
-            
+
             g_shared_artwork_bitmap = hBitmap;
 #ifdef _DEBUG
 #endif
-            
+
             // Notify event system that artwork was loaded successfully
             ArtworkEventManager::get().notify(ArtworkEvent(
-                ArtworkEventType::ARTWORK_LOADED, 
-                hBitmap, 
-                g_current_artwork_source.c_str(), 
-                "", 
+                ArtworkEventType::ARTWORK_LOADED,
+                hBitmap,
+                g_current_artwork_source.c_str(),
+                "",
                 ""
             ));
 #ifdef _DEBUG
 #endif
-            
+
             delete bitmap;
+            pStream->Release();
             return true;
         }
-        
+
         delete bitmap;
+        pStream->Release();
 #ifdef _DEBUG
 #endif
         return false;
