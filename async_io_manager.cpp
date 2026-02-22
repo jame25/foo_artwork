@@ -210,6 +210,12 @@ void async_io_manager::cache_clear_all() {
     }
 }
 
+void async_io_manager::cache_remove(const pfc::string8& key) {
+    if (cache_) {
+        cache_->remove(key);
+    }
+}
+
 void async_io_manager::post_to_main_thread(main_thread_callback callback) {
     // Simple approach: use fb2k_async which is a common pattern in foobar2000 components
     fb2k::inMainThread([callback]() {
@@ -756,6 +762,21 @@ void async_io_manager::async_cache::clear_all() {
         fb2k::inMainThread([]() {
             console::print("foo_artwork: Artwork cache cleared.");
         });
+    });
+}
+
+void async_io_manager::async_cache::remove(const pfc::string8& key) {
+    // Remove from memory cache
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache_map.remove(key);
+    }
+
+    // Delete the .cache file from disk on a background thread
+    pfc::string8 file_path = get_cache_file_path(key);
+    instance().submit_task([file_path]() {
+        std::wstring wide_path = utf8_to_wide(file_path);
+        DeleteFileW(wide_path.c_str());
     });
 }
 
