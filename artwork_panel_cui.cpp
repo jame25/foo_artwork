@@ -236,6 +236,7 @@ private:
     // GDI+ objects for artwork rendering
     std::unique_ptr<Gdiplus::Graphics> m_graphics;
     std::unique_ptr<Gdiplus::Bitmap> m_artwork_bitmap;
+    IStream* m_artwork_stream = nullptr;
     HBITMAP m_scaled_gdi_bitmap; // GDI bitmap for rendering (like Default UI)
     
     // Artwork state
@@ -493,6 +494,7 @@ CUIArtworkPanel::CUIArtworkPanel()
     , m_osd_timer_id(0)
     , m_osd_visible(false)
     , m_last_event_bitmap(nullptr)
+    , m_artwork_stream(nullptr)
     , m_scaled_gdi_bitmap(NULL)
     , m_download_fade_alpha(0)
     , m_download_fade_timer_id(0)
@@ -782,15 +784,22 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             HBITMAP bitmap = (HBITMAP)wParam;
             std::string* source_ptr = (std::string*)lParam;
-            
+
             // Extract the source string from the message
             std::string artwork_source = source_ptr ? *source_ptr : "";
-            
+
             // Clean up the allocated source string
             if (source_ptr) {
                 delete source_ptr;
             }
-       
+
+            // Dedup check and cancel fallback timer (safe on main thread)
+            if (bitmap == m_last_event_bitmap) {
+                break; // Already processed this bitmap
+            }
+            m_last_event_bitmap = bitmap;
+            KillTimer(m_hWnd, 100); // Cancel fallback timer since artwork was found
+
             // PRIORITY CHECK: Don't let API results override tagged artwork, only overide when radio
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
@@ -934,7 +943,11 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             }
         }
         break;
-        
+
+    case WM_USER + 12: // Artwork cleared — reset dedup state on main thread
+        m_last_event_bitmap = nullptr;
+        break;
+
     case WM_MOUSEMOVE:
     {
         if (!m_mouse_hovering) {
@@ -1498,18 +1511,25 @@ void CUIArtworkPanel::load_artwork_from_data(album_art_data::ptr data) {
         }
         
         // Create bitmap from stream
+        // NOTE: GDI+ requires the stream to remain valid for the lifetime of the Bitmap.
         auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(pStream);
-        pStream->Release();
-        
+
         if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
             m_artwork_bitmap = std::move(new_bitmap);
             m_artwork_loaded = true;
             m_current_artwork_source = "Local file"; // Use consistent label for all local sources
-            
+
+            // Release old stream, then keep the new one alive
+            if (m_artwork_stream) {
+                m_artwork_stream->Release();
+            }
+            m_artwork_stream = pStream;
+
             // Resize to fit window
             resize_artwork_to_fit();
-            
+
         } else {
+            pStream->Release();
             // Keep previous artwork visible - don't clear on load failure
         }
     } catch (...) {
@@ -1520,8 +1540,13 @@ void CUIArtworkPanel::load_artwork_from_data(album_art_data::ptr data) {
 void CUIArtworkPanel::load_artwork_from_file(const std::wstring& file_path) {
     try {
         auto new_bitmap = std::make_unique<Gdiplus::Bitmap>(file_path.c_str());
-        
+
         if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
+            // Release old stream before replacing bitmap (file-based bitmaps don't use IStream)
+            if (m_artwork_stream) {
+                m_artwork_stream->Release();
+                m_artwork_stream = nullptr;
+            }
             m_artwork_bitmap = std::move(new_bitmap);
             m_artwork_loaded = true;
             m_current_artwork_path = file_path;
@@ -1540,6 +1565,10 @@ void CUIArtworkPanel::load_artwork_from_file(const std::wstring& file_path) {
 
 void CUIArtworkPanel::clear_artwork() {
     m_artwork_bitmap.reset();
+    if (m_artwork_stream) {
+        m_artwork_stream->Release();
+        m_artwork_stream = nullptr;
+    }
     if (m_scaled_gdi_bitmap) {
         DeleteObject(m_scaled_gdi_bitmap);
         m_scaled_gdi_bitmap = NULL;
@@ -2124,6 +2153,10 @@ void CUIArtworkPanel::initialize_gdiplus() {
 void CUIArtworkPanel::cleanup_gdiplus() {
     m_graphics.reset();
     m_artwork_bitmap.reset();
+    if (m_artwork_stream) {
+        m_artwork_stream->Release();
+        m_artwork_stream = nullptr;
+    }
     if (m_scaled_gdi_bitmap) {
         DeleteObject(m_scaled_gdi_bitmap);
         m_scaled_gdi_bitmap = NULL;
@@ -2143,48 +2176,41 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
 
     switch (event.type) {
         case ArtworkEventType::ARTWORK_LOADED:
-            if (event.bitmap && event.bitmap != m_last_event_bitmap) {
-                
-                // Cancel fallback timer since artwork was found
-                if (m_hWnd) {
-                    KillTimer(m_hWnd, 100);
-                }
-                
-                // Store bitmap handle for comparison (this is thread-safe)
-                m_last_event_bitmap = event.bitmap;
-                
+            if (event.bitmap) {
                 // Pass the source string through the message to avoid race conditions
                 // Allocate a copy of the source string that the main thread will free
                 std::string* source_copy = new std::string(event.source);
-                
-                
+
                 // Post message to main thread to handle the UI update safely
-                // Use WM_USER + 10 for artwork event updates
+                // The main thread handler will do KillTimer, m_last_event_bitmap update, etc.
                 // wParam = bitmap, lParam = source string pointer
-                PostMessage(m_hWnd, WM_USER + 10, (WPARAM)event.bitmap, (LPARAM)source_copy);
+                if (!PostMessage(m_hWnd, WM_USER + 10, (WPARAM)event.bitmap, (LPARAM)source_copy)) {
+                    delete source_copy;
+                }
             }
             break;
-            
+
         case ArtworkEventType::ARTWORK_LOADING:
             // Could show a loading indicator here if desired
             break;
-            
+
         case ArtworkEventType::ARTWORK_FAILED:
             {
-                
                 // THREAD SAFETY: Post message to main thread to handle -noart fallback
                 // Cannot access foobar2000 APIs or UI functions from background thread
                 if (m_hWnd) {
                     PostMessage(m_hWnd, WM_USER + 11, 0, 0); // WM_USER + 11 for -noart fallback
                 }
-                
+
                 // Keep previous artwork visible - don't clear on failure
                 break;
             }
-            
+
         case ArtworkEventType::ARTWORK_CLEARED:
-            m_last_event_bitmap = nullptr;
-            // Keep previous artwork visible - don't clear unless explicitly requested
+            // Post to main thread to clear dedup state
+            if (m_hWnd) {
+                PostMessage(m_hWnd, WM_USER + 12, 0, 0);
+            }
             break;
     }
 }
