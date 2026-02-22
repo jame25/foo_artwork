@@ -42,6 +42,9 @@ extern void trigger_main_component_local_search(metadb_handle_ptr track);
 // External function to get main component artwork bitmap (for priority checking)
 extern HBITMAP get_main_component_artwork_bitmap();
 
+// Global list to track DUI artwork element instances for external refresh
+static pfc::list_t<class artwork_ui_element*> g_dui_artwork_panels;
+
 // Forward declarations for the event system (matching sdk_main.cpp)
 enum class ArtworkEventType {
     ARTWORK_LOADED,     // New artwork loaded successfully
@@ -142,6 +145,9 @@ public:
         return false;
     }
 
+    // Artwork handling (public for external refresh)
+    void on_playback_new_track(metadb_handle_ptr track);
+
 private:
     // Message handlers
     LRESULT OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
@@ -156,9 +162,6 @@ private:
     LRESULT OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-
-    // Artwork handling
-    void on_playback_new_track(metadb_handle_ptr track);
     void on_dynamic_info_track(const file_info& p_info);
     void on_artwork_loaded(const artwork_manager::artwork_result& result);
     void start_artwork_search();
@@ -424,6 +427,7 @@ artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_in
     
     // Subscribe to artwork events for proper API fallback
     subscribe_to_artwork_events(this);
+    g_dui_artwork_panels.add_item(this);
     
     // Start playback monitoring timer if clear panel option is enabled
     // Note: We'll start the timer after window creation
@@ -436,6 +440,7 @@ artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_in
 }
 
 artwork_ui_element::~artwork_ui_element() {
+    g_dui_artwork_panels.remove_item(this);
     // Unsubscribe from artwork events
     unsubscribe_from_artwork_events(this);
     
@@ -443,6 +448,20 @@ artwork_ui_element::~artwork_ui_element() {
     
     if (m_gdiplus_token) {
         Gdiplus::GdiplusShutdown(m_gdiplus_token);
+    }
+}
+
+// Re-trigger artwork lookup on all DUI panels using the now-playing track
+void refresh_all_dui_artwork_panels() {
+    static_api_ptr_t<playback_control> pc;
+    metadb_handle_ptr track;
+    if (!pc->get_now_playing(track) || !track.is_valid()) return;
+
+    for (t_size i = 0; i < g_dui_artwork_panels.get_count(); i++) {
+        artwork_ui_element* panel = g_dui_artwork_panels[i];
+        if (panel && panel->m_hWnd) {
+            panel->on_playback_new_track(track);
+        }
     }
 }
 
