@@ -88,6 +88,18 @@ extern void unsubscribe_from_artwork_events(IArtworkEventListener* listener);
 // Custom message for artwork loading completion
 #define WM_USER_ARTWORK_LOADED (WM_USER + 100)
 
+// Custom message for thread-safe artwork event dispatching
+#define WM_USER_ARTWORK_EVENT (WM_USER + 101)
+
+// Heap-allocated struct for passing artwork event data via PostMessage
+struct ArtworkEventData {
+    ArtworkEventType type;
+    HBITMAP bitmap;
+    std::string source;
+    std::string artist;
+    std::string title;
+};
+
 // For now, we'll create a simplified version without ATL dependencies
 // This creates a basic component that can be extended later
 class artwork_ui_element : public ui_element_instance, public CWindowImpl<artwork_ui_element>, public IArtworkEventListener {
@@ -109,6 +121,7 @@ public:
         MESSAGE_HANDLER(WM_LBUTTONDOWN, OnLButtonDown)
         MESSAGE_HANDLER(WM_LBUTTONDBLCLK, OnLButtonDblClk)
         MESSAGE_HANDLER(WM_USER_ARTWORK_LOADED, OnArtworkLoaded)
+        MESSAGE_HANDLER(WM_USER_ARTWORK_EVENT, OnArtworkEvent)
         MESSAGE_HANDLER(WM_TIMER, OnTimer)
     END_MSG_MAP()
 
@@ -161,6 +174,7 @@ private:
     LRESULT OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+    LRESULT OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
     void on_dynamic_info_track(const file_info& p_info);
     void on_artwork_loaded(const artwork_manager::artwork_result& result);
@@ -205,6 +219,8 @@ private:
     
     // Artwork data
     Gdiplus::Image* m_artwork_image;
+    IStream* m_artwork_stream = nullptr;
+    IStream* m_infobar_stream = nullptr;
     metadb_handle_ptr m_current_track;
     bool m_artwork_loading;
     
@@ -413,8 +429,8 @@ static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, R
 }
 
 artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback)
-    : m_callback(callback), m_artwork_image(nullptr), m_artwork_loading(false), 
-      m_gdiplus_token(0), m_playback_callback(this),
+    : m_callback(callback), m_artwork_image(nullptr), m_artwork_stream(nullptr), m_infobar_stream(nullptr),
+      m_artwork_loading(false), m_gdiplus_token(0), m_playback_callback(this),
       m_show_osd(true), m_osd_start_time(0), m_osd_slide_offset(OSD_SLIDE_DISTANCE),
       m_osd_timer_id(0), m_osd_visible(false), m_has_delayed_metadata(false), m_was_playing(false),
       m_mouse_hovering(false), m_hover_over_download(false), m_download_icon_rect{},
@@ -443,9 +459,10 @@ artwork_ui_element::~artwork_ui_element() {
     g_dui_artwork_panels.remove_item(this);
     // Unsubscribe from artwork events
     unsubscribe_from_artwork_events(this);
-    
+
     cleanup_gdiplus_image();
-    
+    cleanup_gdiplus_infobar_image();
+
     if (m_gdiplus_token) {
         Gdiplus::GdiplusShutdown(m_gdiplus_token);
     }
@@ -1605,14 +1622,21 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
     }
     
     // Create GDI+ Image from stream
+    // NOTE: GDI+ requires the stream to remain valid for the lifetime of the Image.
+    // Store the stream and release it only when the image is cleaned up.
     m_artwork_image = Gdiplus::Image::FromStream(stream);
 
-    stream->Release();
-
     if (!m_artwork_image || m_artwork_image->GetLastStatus() != Gdiplus::Ok) {
+        stream->Release();
         cleanup_gdiplus_image();
         return false;
     }
+
+    // Release old stream if any, then keep the new one alive
+    if (m_artwork_stream) {
+        m_artwork_stream->Release();
+    }
+    m_artwork_stream = stream;
 
     // Debug: Check pixel format to see if alpha channel is present
     if (m_artwork_image) {
@@ -1661,14 +1685,19 @@ bool artwork_ui_element::load_image_from_memory(const t_uint8* data, size_t size
             return false;
         }
         //infobar
+        // NOTE: GDI+ requires the stream to remain valid for the lifetime of the Bitmap.
         m_infobar_bitmap = Gdiplus::Bitmap::FromStream(stream2);
 
-
-        stream->Release();
-
         if (!m_infobar_bitmap || m_infobar_bitmap->GetLastStatus() != Gdiplus::Ok) {
+            stream2->Release();
             delete m_infobar_bitmap;
             m_infobar_bitmap = nullptr;
+        } else {
+            // Release old infobar stream if any, then keep the new one alive
+            if (m_infobar_stream) {
+                m_infobar_stream->Release();
+            }
+            m_infobar_stream = stream2;
         }
     }
     
@@ -1680,12 +1709,20 @@ void artwork_ui_element::cleanup_gdiplus_infobar_image() {
         delete m_infobar_bitmap;
         m_infobar_bitmap = nullptr;
     }
+    if (m_infobar_stream) {
+        m_infobar_stream->Release();
+        m_infobar_stream = nullptr;
+    }
 }
 
 void artwork_ui_element::cleanup_gdiplus_image() {
     if (m_artwork_image) {
         delete m_artwork_image;
         m_artwork_image = nullptr;
+    }
+    if (m_artwork_stream) {
+        m_artwork_stream->Release();
+        m_artwork_stream = nullptr;
     }
 }
 
@@ -2115,39 +2152,54 @@ std::string artwork_ui_element::clean_metadata_for_search(const char* metadata) 
 
 void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
     if (!IsWindow()) return;
-    
-    switch (event.type) {
+
+    // Marshal to the main thread via PostMessage to avoid modifying GDI+ state
+    // from background threads. Heap-allocate a copy of the event data.
+    auto* data = new ArtworkEventData();
+    data->type = event.type;
+    data->bitmap = event.bitmap;
+    data->source = event.source;
+    data->artist = event.artist;
+    data->title = event.title;
+    if (!PostMessage(WM_USER_ARTWORK_EVENT, 0, reinterpret_cast<LPARAM>(data))) {
+        delete data; // PostMessage failed (window destroyed, etc.)
+    }
+}
+
+LRESULT artwork_ui_element::OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+    auto* event = reinterpret_cast<ArtworkEventData*>(lParam);
+    if (!event) {
+        bHandled = TRUE;
+        return 0;
+    }
+
+    // Take ownership — ensure we delete the heap-allocated data when done
+    std::unique_ptr<ArtworkEventData> event_guard(event);
+
+    switch (event->type) {
         case ArtworkEventType::ARTWORK_LOADED:
             {
-            if (event.bitmap) {
-                // PRIORITY CHECK: Disabled to allow all artwork to display
-                // Local tagged artwork will be loaded directly via artwork_manager
-                // if (event.source != "Local file" && event.source != "Cache" && should_prefer_local_artwork()) {
-                //     // Local artwork has priority - don't replace it with API results
-                //     return;
-                // }
+            if (event->bitmap) {
                 m_artwork_loading = false;
-                
+
                 // Convert HBITMAP directly to GDI+ Image (like the existing custom logo loading)
                 cleanup_gdiplus_image();
-                
+
                 // Convert HBITMAP info
                 BITMAP bm;
-                GetObject(event.bitmap, sizeof(BITMAP), &bm);
-                
+                GetObject(event->bitmap, sizeof(BITMAP), &bm);
+
                 try {
-                    // Use regular conversion for now to avoid crashes
-                    m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(event.bitmap, NULL);
-                    
+                    m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(event->bitmap, NULL);
+
                     if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
-                        // Set the artwork source - this was missing!
-                        m_artwork_source = event.source;
-                        
+                        m_artwork_source = event->source;
+
                         // Show OSD for online sources (not local files)
-                        if (!event.source.empty() && event.source != "Local file" && event.source != "Cache") {
-                            show_osd("Artwork from " + event.source);
+                        if (!event->source.empty() && event->source != "Local file" && event->source != "Cache") {
+                            show_osd("Artwork from " + event->source);
                         }
-                        
+
                         //Add result metadata to infobar
                         m_infobar_result = L"Artwork Source: " + stringToWstring(m_artwork_source) + L" [ " + m_infobar_artist + L" / " + m_infobar_title + +L" ] ";
 
@@ -2255,6 +2307,9 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
         case ArtworkEventType::ARTWORK_CLEARED:
             break;
     }
+
+    bHandled = TRUE;
+    return 0;
 }
 
 // Local artwork priority checking functions
