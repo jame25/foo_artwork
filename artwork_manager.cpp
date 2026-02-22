@@ -412,10 +412,9 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 
     find_local_artwork_async(track, [cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
-            // Local artwork found - cache it (if disk cache enabled) and return
-            if (cfg_enable_disk_cache) {
-                async_io_manager::instance().cache_set_async(cache_key, result.data);
-            }
+            // Local artwork found - return directly without caching.
+            // Local files are already on disk so caching is redundant, and it
+            // causes stale images when external tools (e.g. foo_artgrab) overwrite the file.
             callback(result);
         } else {
             // Local search failed - continue to API search
