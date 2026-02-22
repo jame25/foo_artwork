@@ -9,3 +9,5 @@ EXPORTS
     foo_artwork_get_discogs_consumer_key
     foo_artwork_get_discogs_consumer_secret
     foo_artwork_is_api_enabled
+    foo_artwork_cache_remove
+    foo_artwork_refresh
