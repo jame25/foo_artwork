@@ -357,6 +357,20 @@ void update_all_cui_clear_panel_timers() {
     }
 }
 
+// Re-trigger artwork lookup on all CUI panels using the now-playing track
+void refresh_all_cui_artwork_panels() {
+    static_api_ptr_t<playback_control> pc;
+    metadb_handle_ptr track;
+    if (!pc->get_now_playing(track) || !track.is_valid()) return;
+
+    for (t_size i = 0; i < g_cui_artwork_panels.get_count(); i++) {
+        CUIArtworkPanel* panel = g_cui_artwork_panels[i];
+        if (panel && panel->get_wnd()) {
+            panel->on_playback_new_track(track);
+        }
+    }
+}
+
 // Registration verification function
 static class cui_registration_helper {
 public:
