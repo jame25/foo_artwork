@@ -306,7 +306,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.48",
+    "1.5.49",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -323,7 +323,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.48",
+    "1.5.49",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -8096,6 +8096,20 @@ extern "C" __declspec(dllexport) bool foo_artwork_is_api_enabled(const char* api
     if (_stricmp(api_name, "MusicBrainz") == 0)  return cfg_enable_musicbrainz;
     if (_stricmp(api_name, "Discogs") == 0)      return cfg_enable_discogs;
     return false;
+}
+
+extern "C" __declspec(dllexport) void foo_artwork_cache_remove(const char* artist, const char* track) {
+    if (!artist || !track) return;
+    pfc::string8 key = artwork_manager::generate_cache_key(artist, track);
+    async_io_manager::instance().cache_remove(key);
+}
+
+extern void refresh_all_dui_artwork_panels();
+extern void refresh_all_cui_artwork_panels();
+
+extern "C" __declspec(dllexport) void foo_artwork_refresh() {
+    refresh_all_dui_artwork_panels();
+    refresh_all_cui_artwork_panels();
 }
 
 //=============================================================================
