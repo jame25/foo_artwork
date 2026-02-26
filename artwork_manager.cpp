@@ -324,30 +324,34 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
 
     // CACHE SKIP FOR INTERNET STREAMS: For internet streams, metadata is often wrong initially
     // (belongs to previous track), causing wrong cached artwork to be returned.
-    // Skip cache and go directly to local (tagged) artwork search.
+    // Skip cache reads and go directly to local (tagged) artwork search.
+    // Exception: In single-file cache mode, we still WRITE results to "current.cache"
+    // so external consumers (e.g., JScript Panel 3 Thumbs) can pick up the artwork.
     const double length = track->get_length();
-    bool is_internet_stream = (strstr(file_path.c_str(), "://") &&
-                              !(strstr(file_path.c_str(), "file://") == file_path.c_str()) || (strstr(file_path.c_str(), "://") && (strstr(file_path.c_str(), ".tags") && (length <= 0))));
+    bool is_internet_stream = strstr(file_path.c_str(), "://") &&
+                              !(strstr(file_path.c_str(), "file://") == file_path.c_str());
     
     if (is_internet_stream) {
+        pfc::string8 stream_cache_key = cfg_single_file_cache ? cache_key : pfc::string8("");
         if (cfg_skip_local_artwork) {
             // Skip local artwork entirely, go directly to API search
             if (artist != "Unknown Artist" && track_name != "Unknown Track") {
-                search_apis_async(artist, track_name, pfc::string8(""), callback);
+                search_apis_async(artist, track_name, stream_cache_key, callback);
             }
         } else {
             // For internet streams, skip cache but still check for tagged artwork first
             // This prevents stale artwork from being returned when track metadata changes
-            find_local_artwork_async(track, [artist, track_name, callback](const artwork_result& result) {
+            find_local_artwork_async(track, [artist, track_name, stream_cache_key, callback](const artwork_result& result) {
                 if (result.success) {
-                    // Tagged artwork found and supported format - use it (don't cache for streams)
+                    // Tagged artwork found - cache it in single-file mode for external consumers
+                    if (cfg_enable_disk_cache && !stream_cache_key.is_empty()) {
+                        async_io_manager::instance().cache_set_async(stream_cache_key, result.data);
+                    }
                     callback(result);
                 } else {
-                    // No tagged artwork or unsupported format - fall back to API search
-                    // Don't search for failed metadata
-                    // Use empty cache_key to signal "don't cache results"
+                    // No tagged artwork - fall back to API search
                     if (artist != "Unknown Artist" && track_name != "Unknown Track") {
-                        search_apis_async(artist, track_name, pfc::string8(""), callback);
+                        search_apis_async(artist, track_name, stream_cache_key, callback);
                     }
                 }
             });
@@ -412,9 +416,13 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 
     find_local_artwork_async(track, [cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
-            // Local artwork found - return directly without caching.
-            // Local files are already on disk so caching is redundant, and it
-            // causes stale images when external tools (e.g. foo_artgrab) overwrite the file.
+            // Local artwork found - in single-file cache mode, write to current.cache
+            // so external consumers (e.g., JScript Panel 3 Thumbs) see the correct artwork.
+            // In normal cache mode, skip caching since local files are already on disk
+            // and caching causes stale images when external tools overwrite the file.
+            if (cfg_single_file_cache && cfg_enable_disk_cache) {
+                async_io_manager::instance().cache_set_async(cache_key, result.data);
+            }
             callback(result);
         } else {
             // Local search failed - continue to API search
