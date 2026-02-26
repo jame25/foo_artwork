@@ -75,6 +75,25 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
         str = std::regex_replace(str, std::regex("~"), " - ");
     }
     
+    // Replace underscores with spaces (e.g., "Black_Sabbath" -> "Black Sabbath")
+    // Common in some internet radio stream metadata
+    std::replace(str.begin(), str.end(), '_', ' ');
+
+    // Normalize "[+]" collaboration marker to " & " before bracket removal
+    // (e.g., "Chris Cornell [+] Soundgarden" -> "Chris Cornell & Soundgarden")
+    pos = 0;
+    while ((pos = str.find("[+]", pos)) != std::string::npos) {
+        // Determine replacement: if already surrounded by spaces, just use "&"
+        size_t start = pos;
+        size_t end = pos + 3;
+        std::string replacement = " & ";
+        // Avoid double spaces: trim adjacent spaces
+        if (start > 0 && str[start - 1] == ' ') { start--; }
+        if (end < str.length() && str[end] == ' ') { end++; }
+        str.replace(start, end - start, replacement);
+        pos = start + replacement.length();
+    }
+
     // Remove common prefixes
     std::vector<std::string> prefixes = {
         "Now Playing: ", "Now Playing:", "Live: ", "Live:", "Playing: ", "Playing:",
