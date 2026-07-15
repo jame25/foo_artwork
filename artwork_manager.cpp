@@ -99,6 +99,12 @@ static std::string normalize_for_matching(const std::string& s) {
             continue;
         }
 
+        // Treat underscores as spaces (common in stream metadata)
+        if (c == '_') {
+            result += ' ';
+            continue;
+        }
+
         // Convert to lowercase
         result += std::tolower(static_cast<unsigned char>(c));
     }
@@ -337,6 +343,12 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
             // Skip local artwork entirely, go directly to API search
             if (artist != "Unknown Artist" && track_name != "Unknown Track") {
                 search_apis_async(artist, track_name, stream_cache_key, callback);
+            } else {
+                // No valid metadata yet - report failure so fallback images can be tried
+                artwork_result result;
+                result.success = false;
+                result.error_message = "No valid metadata for API search";
+                callback(result);
             }
         } else {
             // For internet streams, skip cache but still check for tagged artwork first
@@ -352,6 +364,9 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
                     // No tagged artwork - fall back to API search
                     if (artist != "Unknown Artist" && track_name != "Unknown Track") {
                         search_apis_async(artist, track_name, stream_cache_key, callback);
+                    } else {
+                        // No valid metadata yet - report failure so fallback images can be tried
+                        callback(result);
                     }
                 }
             });
