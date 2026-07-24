@@ -13,7 +13,7 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 - **Internet Radio Support**: Displays artwork for internet radio streams using metadata
 - **Custom Station Logos**: Support for custom logo files for internet radio stations
 - **Configurable API Services**: Enable/disable individual API services and manage API keys
-- **Smart Caching**: Prevents repeated API calls for the same track during the current session
+- **Smart Caching**: Prevents repeated API calls for the same track with an automatic 1 GB (1000 MB) disk cache limit and LRU cleanup
 - **High-Quality Display**: Uses GDI+ for smooth, high-quality artwork rendering with aspect ratio preservation
 - **Responsive Scaling**: Automatically scales artwork to fit window size while maintaining aspect ratio
 - **Dark Theme Support**: Seamless integration with foobar2000's dark mode
