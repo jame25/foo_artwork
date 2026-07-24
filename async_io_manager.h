@@ -134,6 +134,7 @@ private:
         
         void write_worker();
         pfc::string8 get_cache_file_path(const pfc::string8& key);
+        void prune_disk_cache(uint64_t max_bytes);
         
     public:
         async_cache();
