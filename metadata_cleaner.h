@@ -16,6 +16,9 @@ public:
     
     // Extract only the first artist from multi-artist string for better artwork search results
     static std::string extract_first_artist(const char* artist);
+
+    // Extract second/project artist from multi-artist string (e.g. Gouryella from Ferry Corsten pres. Gouryella)
+    static std::string extract_second_artist(const char* artist);
     
 private:
     // Core cleaning operations - UTF-8 safe
