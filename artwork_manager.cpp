@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "artwork_manager.h"
+#include "metadata_cleaner.h"
 #include "preferences.h"
 #include <winhttp.h>
 #include <shlwapi.h>
@@ -218,7 +219,55 @@ static bool artists_match(const std::string& a, const std::string& b) {
     if (strings_equal_ignore_case(a_stripped, b_stripped)) return true;
 
     // Try fuzzy match on stripped versions too
-    return strings_match_fuzzy(a_stripped, b_stripped);
+    if (strings_match_fuzzy(a_stripped, b_stripped)) return true;
+
+    // Try matching extracted first artists for multi-artist collaborations
+    std::string first_a = MetadataCleaner::extract_first_artist(a.c_str());
+    std::string first_b = MetadataCleaner::extract_first_artist(b.c_str());
+
+    if (!first_a.empty() && !first_b.empty() && (first_a != a || first_b != b)) {
+        if (strings_equal_ignore_case(first_a, first_b)) return true;
+        if (strings_match_fuzzy(first_a, first_b)) return true;
+
+        std::string first_a_stripped = strip_the_prefix(first_a);
+        std::string first_b_stripped = strip_the_prefix(first_b);
+        if (strings_equal_ignore_case(first_a_stripped, first_b_stripped)) return true;
+        if (strings_match_fuzzy(first_a_stripped, first_b_stripped)) return true;
+    }
+
+    if (!first_a.empty() && first_a != a) {
+        if (strings_equal_ignore_case(first_a, b)) return true;
+        if (strings_match_fuzzy(first_a, b)) return true;
+        std::string first_a_stripped = strip_the_prefix(first_a);
+        if (strings_equal_ignore_case(first_a_stripped, b_stripped)) return true;
+        if (strings_match_fuzzy(first_a_stripped, b_stripped)) return true;
+    }
+
+    if (!first_b.empty() && first_b != b) {
+        if (strings_equal_ignore_case(a, first_b)) return true;
+        if (strings_match_fuzzy(a, first_b)) return true;
+        std::string first_b_stripped = strip_the_prefix(first_b);
+        if (strings_equal_ignore_case(a_stripped, first_b_stripped)) return true;
+        if (strings_match_fuzzy(a_stripped, first_b_stripped)) return true;
+    }
+
+    // Try matching extracted second artists (e.g. Gouryella from Ferry Corsten pres. Gouryella)
+    std::string second_a = MetadataCleaner::extract_second_artist(a.c_str());
+    std::string second_b = MetadataCleaner::extract_second_artist(b.c_str());
+
+    if (!second_a.empty()) {
+        if (strings_equal_ignore_case(second_a, b)) return true;
+        if (strings_match_fuzzy(second_a, b)) return true;
+        if (!first_b.empty() && (strings_equal_ignore_case(second_a, first_b) || strings_match_fuzzy(second_a, first_b))) return true;
+    }
+
+    if (!second_b.empty()) {
+        if (strings_equal_ignore_case(a, second_b)) return true;
+        if (strings_match_fuzzy(a, second_b)) return true;
+        if (!first_a.empty() && (strings_equal_ignore_case(first_a, second_b) || strings_match_fuzzy(first_a, second_b))) return true;
+    }
+
+    return false;
 }
 
 #pragma comment(lib, "winhttp.lib")
@@ -450,12 +499,72 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
     });
 }
 
-void artwork_manager::search_apis_async(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback) {
+void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pfc::string8& raw_track, const pfc::string8& cache_key, artwork_callback callback) {
+    pfc::string8 artist = raw_artist;
+    pfc::string8 track = raw_track;
+
+    std::string first_artist_str;
+    std::string second_artist_str;
+    std::string full_cleaned_artist_str;
+
+    if (!raw_artist.is_empty()) {
+        std::string first_artist = MetadataCleaner::extract_first_artist(raw_artist.c_str());
+        second_artist_str = MetadataCleaner::extract_second_artist(raw_artist.c_str());
+        first_artist_str = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
+        full_cleaned_artist_str = MetadataCleaner::clean_for_search(raw_artist.c_str(), true);
+
+        if (!first_artist_str.empty()) {
+            artist = first_artist_str.c_str();
+        } else if (!full_cleaned_artist_str.empty()) {
+            artist = full_cleaned_artist_str.c_str();
+        }
+    }
+
+    if (!raw_track.is_empty()) {
+        std::string cleaned_track = MetadataCleaner::clean_for_search(raw_track.c_str(), true);
+        if (!cleaned_track.empty()) {
+            track = cleaned_track.c_str();
+        }
+    }
+
     // Get the API search order from user preferences
     auto api_order = get_api_search_order();
-    
-    // Helper function to search with the ordered APIs
-    search_apis_by_priority(artist, track, cache_key, callback, api_order, 0);
+
+    // 3-Tier Search Pipeline:
+    // Tier 1: Primary extracted artist (e.g. "Ferry Corsten", "Kyau & Albert", "Dan Stone")
+    // Tier 2: Second extracted artist (e.g. "Gouryella", "Marc Marberg", "Katey Brooks")
+    // Tier 3: Full cleaned artist name (e.g. "Ferry Corsten pres. Gouryella")
+
+    pfc::string8 first_artist_pfc = artist;
+    pfc::string8 second_artist_pfc = second_artist_str.c_str();
+    pfc::string8 full_artist_pfc = full_cleaned_artist_str.c_str();
+
+    search_apis_by_priority(first_artist_pfc, track, cache_key, [first_artist_pfc, second_artist_pfc, full_artist_pfc, track, cache_key, callback, api_order](const artwork_result& result1) {
+        if (result1.success) {
+            callback(result1);
+        } else {
+            // Tier 1 failed. Check if we have a valid second artist to try (Tier 2)
+            if (!second_artist_pfc.is_empty() && second_artist_pfc != first_artist_pfc) {
+                search_apis_by_priority(second_artist_pfc, track, cache_key, [full_artist_pfc, first_artist_pfc, second_artist_pfc, track, cache_key, callback, api_order, result1](const artwork_result& result2) {
+                    if (result2.success) {
+                        callback(result2);
+                    } else {
+                        // Tier 2 failed. Check if full artist name is different from both Tier 1 and Tier 2 (Tier 3)
+                        if (!full_artist_pfc.is_empty() && full_artist_pfc != first_artist_pfc && full_artist_pfc != second_artist_pfc) {
+                            search_apis_by_priority(full_artist_pfc, track, cache_key, callback, api_order, 0);
+                        } else {
+                            callback(result2);
+                        }
+                    }
+                }, api_order, 0);
+            } else if (!full_artist_pfc.is_empty() && full_artist_pfc != first_artist_pfc) {
+                // No distinct second artist, try full artist name directly (Tier 3)
+                search_apis_by_priority(full_artist_pfc, track, cache_key, callback, api_order, 0);
+            } else {
+                callback(result1);
+            }
+        }
+    }, api_order, 0);
 }
 
 void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index) {
