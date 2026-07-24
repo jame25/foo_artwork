@@ -71,6 +71,7 @@ static constexpr GUID guid_cfg_enable_disk_cache = { 0x1234568f, 0x1234, 0x1234,
 static constexpr GUID guid_cfg_cache_folder = { 0x12345691, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x00 } };
 static constexpr GUID guid_cfg_skip_local_artwork = { 0x12345692, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x01 } };
 static constexpr GUID guid_cfg_single_file_cache = { 0x12345693, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x02 } };
+static constexpr GUID guid_cfg_cache_size = { 0x12345694, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x03 } };
 
 
 // Configuration variables with default values
@@ -123,6 +124,9 @@ cfg_bool cfg_skip_local_artwork(guid_cfg_skip_local_artwork, false);  // Always 
 
 // Single file cache mode - only keep current track's artwork in cache folder
 cfg_bool cfg_single_file_cache(guid_cfg_single_file_cache, false);  // Single file cache mode (default disabled)
+
+// Cache size limit in MB (default 1000 MB / 1 GB)
+cfg_uint cfg_cache_size(guid_cfg_cache_size, 1000);
 
 
 //=============================================================================
@@ -306,7 +310,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.53",
+    "1.5.54",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -323,7 +327,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.53",
+    "1.5.54",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
