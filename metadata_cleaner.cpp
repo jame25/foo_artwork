@@ -393,7 +393,9 @@ bool MetadataCleaner::is_featuring_pattern(const std::string& term) {
     std::string lower = term;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
     
-    return (lower == "feat." || lower == "featuring" || lower == "ft." || lower == "with");
+    return (lower == "feat." || lower == "featuring" || lower == "ft." || lower == "with" ||
+            lower == "pres." || lower == "pres" || lower == "presents" || lower == "presenting" ||
+            lower == "meets" || lower == "w/");
 }
 
 std::string MetadataCleaner::extract_first_artist(const char* artist) {
@@ -405,11 +407,14 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
     
     // High-confidence multi-artist separators (clearly indicate collaborations)
     std::vector<std::string> high_confidence_separators = {
-        " feat. ", " ft. ", " featuring ", 
+        " feat. ", " ft. ", " featuring ", " feat ", " ft ",
         " / ", " // ", " /// ",
         " vs. ", " vs ", " versus ",
         " with ", " w/ ",
         " x ", " X ",
+        " pres. ", " pres ", " presents ", " presenting ",
+        " meets ", " intro. ", " introduces ",
+        " aka ", " a.k.a. ", " pka ", " p.k.a. ",
         ", ", "; "
     };
     
@@ -418,10 +423,16 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
         " & ", " and "
     };
     
+    // Create lowercase version of artist string for case-insensitive separator search
+    std::string artist_lower = artist_str;
+    std::transform(artist_lower.begin(), artist_lower.end(), artist_lower.begin(), ::tolower);
+
     // First, check high-confidence separators
     size_t earliest_pos = std::string::npos;
     for (const auto& separator : high_confidence_separators) {
-        size_t pos = artist_str.find(separator);
+        std::string sep_lower = separator;
+        std::transform(sep_lower.begin(), sep_lower.end(), sep_lower.begin(), ::tolower);
+        size_t pos = artist_lower.find(sep_lower);
         if (pos != std::string::npos && pos < earliest_pos) {
             earliest_pos = pos;
         }
@@ -430,7 +441,9 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
     // If no high-confidence separator found, check contextual separators with validation
     if (earliest_pos == std::string::npos) {
         for (const auto& separator : contextual_separators) {
-            size_t pos = artist_str.find(separator);
+            std::string sep_lower = separator;
+            std::transform(sep_lower.begin(), sep_lower.end(), sep_lower.begin(), ::tolower);
+            size_t pos = artist_lower.find(sep_lower);
             if (pos != std::string::npos) {
                 // Validate if this is likely a collaboration vs. a band name
                 if (is_likely_collaboration(artist_str, separator, pos)) {
@@ -449,6 +462,48 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
     
     // Clean up whitespace and return
     return trim(artist_str);
+}
+
+std::string MetadataCleaner::extract_second_artist(const char* artist) {
+    if (!artist || strlen(artist) == 0) {
+        return "";
+    }
+    
+    std::string artist_str(artist);
+    std::string artist_lower = artist_str;
+    std::transform(artist_lower.begin(), artist_lower.end(), artist_lower.begin(), ::tolower);
+
+    std::vector<std::string> high_confidence_separators = {
+        " feat. ", " ft. ", " featuring ", " feat ", " ft ",
+        " / ", " // ", " /// ",
+        " vs. ", " vs ", " versus ",
+        " with ", " w/ ",
+        " x ", " X ",
+        " pres. ", " pres ", " presents ", " presenting ",
+        " meets ", " intro. ", " introduces ",
+        " aka ", " a.k.a. ", " pka ", " p.k.a. ",
+        ", ", "; "
+    };
+
+    size_t earliest_pos = std::string::npos;
+    size_t sep_len = 0;
+    for (const auto& separator : high_confidence_separators) {
+        std::string sep_lower = separator;
+        std::transform(sep_lower.begin(), sep_lower.end(), sep_lower.begin(), ::tolower);
+        size_t pos = artist_lower.find(sep_lower);
+        if (pos != std::string::npos && pos < earliest_pos) {
+            earliest_pos = pos;
+            sep_len = separator.length();
+        }
+    }
+
+    if (earliest_pos != std::string::npos && earliest_pos + sep_len < artist_str.length()) {
+        std::string second = artist_str.substr(earliest_pos + sep_len);
+        // If second part also contains another separator, get first artist of second part
+        return clean_for_search(extract_first_artist(second.c_str()).c_str(), true);
+    }
+
+    return "";
 }
 
 bool MetadataCleaner::is_likely_collaboration(const std::string& artist_str, const std::string& separator, size_t pos) {
