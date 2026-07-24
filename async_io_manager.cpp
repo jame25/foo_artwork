@@ -14,6 +14,7 @@
 extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
 extern cfg_string cfg_cache_folder;
+extern cfg_uint cfg_cache_size;
 
 // MusicBrainz rate limiter - enforces 1 request per second
 static std::mutex g_musicbrainz_rate_mutex;
@@ -609,6 +610,10 @@ void async_io_manager::async_cache::initialize(const pfc::string8& cache_dir) {
     // Create cache directory (use Wide API for Unicode path support)
     std::wstring wide_cache_dir = utf8_to_wide(cache_directory);
     SHCreateDirectoryExW(nullptr, wide_cache_dir.c_str(), nullptr);
+
+    // Initial check to enforce cache size limit on startup
+    uint64_t max_bytes = static_cast<uint64_t>(cfg_cache_size > 0 ? cfg_cache_size : 1000) * 1024 * 1024;
+    prune_disk_cache(max_bytes);
     
     // Start write-behind thread
     write_thread = std::thread([this]() {
@@ -714,6 +719,10 @@ void async_io_manager::async_cache::write_worker() {
             // Perform write operation
             pfc::string8 file_path = get_cache_file_path(item.first);
             instance().write_file_async(file_path, item.second, nullptr);
+
+            // Prune disk cache if total size exceeds configured max limit
+            uint64_t max_bytes = static_cast<uint64_t>(cfg_cache_size > 0 ? cfg_cache_size : 1000) * 1024 * 1024;
+            prune_disk_cache(max_bytes);
         }
     }
 }
@@ -723,6 +732,80 @@ pfc::string8 async_io_manager::async_cache::get_cache_file_path(const pfc::strin
     file_path << key << ".cache";
     return file_path;
 }
+
+void async_io_manager::async_cache::prune_disk_cache(uint64_t max_bytes) {
+    if (cache_directory.is_empty() || max_bytes == 0) return;
+
+    pfc::string8 cache_dir = cache_directory;
+    std::wstring wide_pattern = utf8_to_wide(cache_dir);
+    wide_pattern += L"*.cache";
+
+    WIN32_FIND_DATAW find_data;
+    HANDLE find_handle = FindFirstFileW(wide_pattern.c_str(), &find_data);
+
+    if (find_handle == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    struct disk_cache_entry {
+        std::wstring filename;
+        uint64_t file_size;
+        FILETIME last_write_time;
+    };
+
+    std::vector<disk_cache_entry> entries;
+    uint64_t total_size = 0;
+    std::wstring wide_dir = utf8_to_wide(cache_dir);
+
+    do {
+        if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            // Keep "current.cache" (single-file mode artwork)
+            if (wcscmp(find_data.cFileName, L"current.cache") == 0) {
+                continue;
+            }
+
+            ULARGE_INTEGER sz;
+            sz.LowPart = find_data.nFileSizeLow;
+            sz.HighPart = find_data.nFileSizeHigh;
+
+            disk_cache_entry entry;
+            entry.filename = find_data.cFileName;
+            entry.file_size = sz.QuadPart;
+            entry.last_write_time = find_data.ftLastWriteTime;
+            entries.push_back(entry);
+
+            total_size += sz.QuadPart;
+        }
+    } while (FindNextFileW(find_handle, &find_data));
+
+    FindClose(find_handle);
+
+    // Evict oldest files if total size exceeds maximum configured limit
+    if (total_size > max_bytes) {
+        uint64_t target_size = static_cast<uint64_t>(max_bytes * 0.9);
+
+        // Sort entries by last write time (oldest first)
+        std::sort(entries.begin(), entries.end(), [](const disk_cache_entry& a, const disk_cache_entry& b) {
+            return CompareFileTime(&a.last_write_time, &b.last_write_time) < 0;
+        });
+
+        for (const auto& entry : entries) {
+            if (total_size <= target_size) {
+                break;
+            }
+
+            std::wstring full_path = wide_dir + entry.filename;
+            if (DeleteFileW(full_path.c_str())) {
+                if (total_size >= entry.file_size) {
+                    total_size -= entry.file_size;
+                } else {
+                    total_size = 0;
+                }
+            }
+        }
+    }
+}
+
 
 void async_io_manager::async_cache::clear_all() {
     // Clear memory cache
