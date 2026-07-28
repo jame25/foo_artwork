@@ -12,6 +12,8 @@
 
 // Standard C++ headers first
 #include <memory>
+#include <future>
+#include <chrono>
 
 // Windows headers - include COM definitions
 #ifndef _WIN32_WINNT
@@ -51,5 +53,6 @@ using namespace Gdiplus;
 #include "columns_ui/foobar2000/SDK/coreDarkMode.h"
 #include "columns_ui/foobar2000/SDK/titleformat.h"
 #include "columns_ui/foobar2000/SDK/ui_element.h"
+#include "columns_ui/foobar2000/SDK/vis.h"
 
 #include "resource.h"
