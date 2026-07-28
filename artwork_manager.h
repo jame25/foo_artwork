@@ -26,6 +26,11 @@ public:
     static void get_artwork_async(metadb_handle_ptr track, artwork_callback callback);
     static void get_artwork_async_with_metadata(const char* artist, const char* track, artwork_callback callback);
     
+    // Manual trigger & cooldown management for ACRCloud audio recognition
+    static void force_acrcloud_lookup();
+    static void reset_acrcloud_cooldown();
+    static void cancel_acrcloud_tasks();
+    
     // Initialize/shutdown async I/O system
     static void initialize();
     static void shutdown();
@@ -44,7 +49,7 @@ private:
     static void check_cache_async(const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback);
     static void search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback);
     static void search_apis_async(const pfc::string8& artist, const pfc::string8& album, const pfc::string8& cache_key, artwork_callback callback);
-    static void search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index);
+    static void search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index, bool force_enable_apis = false);
     
     // Async local artwork search (uses SDK only)
     static void find_local_artwork_async(metadb_handle_ptr track, artwork_callback callback);
@@ -56,6 +61,7 @@ private:
     static void search_discogs_api_async(const char* artist, const char* track, artwork_callback callback);
     static void search_lastfm_api_async(const char* artist, const char* track, artwork_callback callback);
     static void search_musicbrainz_api_async(const char* artist, const char* track, artwork_callback callback);
+    static void search_acrcloud_fallback_async(const pfc::string8& cache_key, artwork_callback callback, bool is_manual_trigger = false);
     
     // Async HTTP utilities
     static void download_image_async(const char* url, artwork_callback callback);
