@@ -2,6 +2,7 @@
 #include "artwork_manager.h"
 #include "metadata_cleaner.h"
 #include "preferences.h"
+#include "acrcloud_client.h"
 #include <winhttp.h>
 #include <shlwapi.h>
 #include <shlobj.h>
@@ -288,6 +289,10 @@ extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
 extern cfg_bool cfg_enable_disk_cache;
 extern cfg_bool cfg_single_file_cache;
+extern cfg_bool cfg_enable_acrcloud;
+extern cfg_string cfg_acrcloud_host;
+extern cfg_string cfg_acrcloud_access_key;
+extern cfg_string cfg_acrcloud_access_secret;
 
 // Static member initialization
 std::atomic<bool> artwork_manager::initialized_(false);
@@ -363,6 +368,74 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
     }
 }
 
+static std::chrono::steady_clock::time_point g_acrcloud_cooldown_until;
+static pfc::string8 g_current_stream_url;
+static visualisation_stream::ptr g_vis_stream;
+static std::atomic<uint64_t> g_acrcloud_task_id{0};
+static artwork_manager::artwork_result g_last_recognized_result;
+static pfc::string8 g_last_recognized_stream_url;
+
+extern void refresh_all_dui_artwork_panels();
+extern void refresh_all_cui_artwork_panels();
+
+void artwork_manager::cancel_acrcloud_tasks() {
+    g_acrcloud_task_id++;
+}
+
+void artwork_manager::reset_acrcloud_cooldown() {
+    g_acrcloud_cooldown_until = std::chrono::steady_clock::time_point{};
+    g_vis_stream.release();
+    cancel_acrcloud_tasks();
+    g_last_recognized_result = artwork_result();
+    g_last_recognized_stream_url.reset();
+}
+
+void artwork_manager::force_acrcloud_lookup() {
+    ASSERT_MAIN_THREAD();
+
+    metadb_handle_ptr track;
+    if (!playback_control::get()->get_now_playing(track) || !track.is_valid()) {
+        console::printf("foo_artwork: Manual trigger failed: No track currently playing.");
+        return;
+    }
+
+    console::printf("foo_artwork: Manual trigger: Forcing ACRCloud audio recognition lookup on demand...");
+
+    // Release old visualization stream to capture fresh live audio
+    g_vis_stream.release();
+    g_acrcloud_cooldown_until = std::chrono::steady_clock::time_point{};
+
+    metadb_info_container::ptr info_container = track->get_info_ref();
+    const file_info* info = &info_container->info();
+    pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "Unknown Artist";
+    pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
+    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist, track_name);
+    pfc::string8 current_url = track->get_path();
+
+    search_acrcloud_fallback_async(cache_key, [cache_key, current_url](const artwork_result& result) {
+        if (result.success && result.data.get_size() > 0) {
+            console::printf("foo_artwork: Manual ACRCloud lookup SUCCESS - Artwork retrieved (%u bytes)", (unsigned int)result.data.get_size());
+
+            g_last_recognized_result = result;
+            g_last_recognized_stream_url = current_url;
+
+            // Always write retrieved artwork to cache so panels can display it
+            if (cfg_enable_disk_cache || cfg_single_file_cache) {
+                pfc::string8 key_to_use = cfg_single_file_cache ? pfc::string8("current") : cache_key;
+                async_io_manager::instance().cache_set_async(key_to_use, result.data);
+            }
+
+            // Post UI refresh onto main thread to update all active panels
+            async_io_manager::instance().post_to_main_thread([]() {
+                refresh_all_dui_artwork_panels();
+                refresh_all_cui_artwork_panels();
+            });
+        } else {
+            console::printf("foo_artwork: Manual ACRCloud lookup FAILED: %s", result.error_message.c_str());
+        }
+    }, true /* is_manual_trigger */);
+}
+
 void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
     
@@ -377,49 +450,68 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     
     pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist, track_name);
 
-    // CACHE SKIP FOR INTERNET STREAMS: For internet streams, metadata is often wrong initially
-    // (belongs to previous track), causing wrong cached artwork to be returned.
-    // Skip cache reads and go directly to local (tagged) artwork search.
-    // Exception: In single-file cache mode, we still WRITE results to "current.cache"
-    // so external consumers (e.g., JScript Panel 3 Thumbs) can pick up the artwork.
-    const double length = track->get_length();
     bool is_internet_stream = strstr(file_path.c_str(), "://") &&
                               !(strstr(file_path.c_str(), "file://") == file_path.c_str());
     
     if (is_internet_stream) {
-        pfc::string8 stream_cache_key = cfg_single_file_cache ? cache_key : pfc::string8("");
-        if (cfg_skip_local_artwork) {
-            // Skip local artwork entirely, go directly to API search
-            if (artist != "Unknown Artist" && track_name != "Unknown Track") {
-                search_apis_async(artist, track_name, stream_cache_key, callback);
-            } else {
-                // No valid metadata yet - report failure so fallback images can be tried
-                artwork_result result;
-                result.success = false;
-                result.error_message = "No valid metadata for API search";
-                callback(result);
-            }
-        } else {
-            // For internet streams, skip cache but still check for tagged artwork first
-            // This prevents stale artwork from being returned when track metadata changes
-            find_local_artwork_async(track, [artist, track_name, stream_cache_key, callback](const artwork_result& result) {
-                if (result.success) {
-                    // Tagged artwork found - cache it in single-file mode for external consumers
-                    if (cfg_enable_disk_cache && !stream_cache_key.is_empty()) {
-                        async_io_manager::instance().cache_set_async(stream_cache_key, result.data);
-                    }
-                    callback(result);
-                } else {
-                    // No tagged artwork - fall back to API search
-                    if (artist != "Unknown Artist" && track_name != "Unknown Track") {
-                        search_apis_async(artist, track_name, stream_cache_key, callback);
-                    } else {
-                        // No valid metadata yet - report failure so fallback images can be tried
-                        callback(result);
-                    }
-                }
-            });
+        bool new_stream_connect = (g_current_stream_url != file_path);
+        if (new_stream_connect) {
+            g_current_stream_url = file_path;
+            reset_acrcloud_cooldown(); // Reset cooldown on new radio stream connection
         }
+
+        // RECOGNIZED STREAM ARTWORK GUARD:
+        // If ACRCloud (or manual trigger) recently recognized this stream and cached the result,
+        // and we are within the track length circuit-breaker cooldown, return the recognized artwork!
+        auto now = std::chrono::steady_clock::now();
+        if (g_last_recognized_stream_url == file_path && g_last_recognized_result.success && now < g_acrcloud_cooldown_until) {
+            callback(g_last_recognized_result);
+            return;
+        }
+
+        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str());
+
+        // UNTAGGED STREAMS & PLACEHOLDER METADATA:
+        // Do NOT read stale cache for placeholder metadata ("Unknown Artist - Unknown Track").
+        // On untagged streams or station URLs, bypass cache reads and go directly to API search -> ACRCloud fallback!
+        if (meta.is_station_or_url || !meta.is_valid_search) {
+            if (cfg_skip_local_artwork) {
+                search_apis_async(artist, track_name, cache_key, callback);
+            } else {
+                find_local_artwork_async(track, [artist, track_name, cache_key, callback](const artwork_result& result) {
+                    if (result.success) {
+                        callback(result);
+                    } else {
+                        search_apis_async(artist, track_name, cache_key, callback);
+                    }
+                });
+            }
+            return;
+        }
+
+        // VALID STREAM METADATA (e.g., "The Beatles - Let It Be"):
+        // Check disk cache first for this specific song
+        check_cache_async(cache_key, track, [artist, track_name, cache_key, track, callback](const artwork_result& cache_res) {
+            if (cache_res.success) {
+                callback(cache_res);
+            } else {
+                if (cfg_skip_local_artwork) {
+                    search_apis_async(artist, track_name, cache_key, callback);
+                } else {
+                    find_local_artwork_async(track, [artist, track_name, cache_key, callback](const artwork_result& result) {
+                        if (result.success) {
+                            if (cfg_enable_disk_cache && !cache_key.is_empty()) {
+                                async_io_manager::instance().cache_set_async(cache_key, result.data);
+                            }
+                            callback(result);
+                        } else {
+                            search_apis_async(artist, track_name, cache_key, callback);
+                        }
+                    });
+                }
+            }
+        });
+        return;
     } else if (cfg_single_file_cache) {
         // In single-file cache mode, skip cache reads (key is always "current" so it would
         // return the previous track's artwork). Go directly to local -> APIs, still write to cache.
@@ -484,7 +576,10 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
             // so external consumers (e.g., JScript Panel 3 Thumbs) see the correct artwork.
             // In normal cache mode, skip caching since local files are already on disk
             // and caching causes stale images when external tools overwrite the file.
-            if (cfg_single_file_cache && cfg_enable_disk_cache) {
+            if (cfg_single_file_cache) {
+                async_io_manager::instance().cache_set_async("current", result.data);
+            }
+            if (cfg_enable_disk_cache && !cache_key.is_empty()) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
             }
             callback(result);
@@ -500,74 +595,297 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 }
 
 void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pfc::string8& raw_track, const pfc::string8& cache_key, artwork_callback callback) {
-    pfc::string8 artist = raw_artist;
-    pfc::string8 track = raw_track;
+    StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(raw_artist.c_str(), raw_track.c_str());
 
-    std::string first_artist_str;
-    std::string second_artist_str;
-    std::string full_cleaned_artist_str;
-
-    if (!raw_artist.is_empty()) {
-        std::string first_artist = MetadataCleaner::extract_first_artist(raw_artist.c_str());
-        second_artist_str = MetadataCleaner::extract_second_artist(raw_artist.c_str());
-        first_artist_str = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
-        full_cleaned_artist_str = MetadataCleaner::clean_for_search(raw_artist.c_str(), true);
-
-        if (!first_artist_str.empty()) {
-            artist = first_artist_str.c_str();
-        } else if (!full_cleaned_artist_str.empty()) {
-            artist = full_cleaned_artist_str.c_str();
+    // Direct ACRCloud Tier 4 fallback if metadata is a station name/URL or invalid query
+    if (meta.is_station_or_url || !meta.is_valid_search) {
+        if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
+            console::printf("foo_artwork: Metadata '%s - %s' flagged as station/URL or invalid. Bypassing text search to Tier 4 ACRCloud fallback.",
+                           raw_artist.c_str(), raw_track.c_str());
+            search_acrcloud_fallback_async(cache_key, callback);
+        } else {
+            artwork_result fail_res;
+            fail_res.success = false;
+            fail_res.error_message = "Metadata is station URL or invalid and ACRCloud is disabled";
+            callback(fail_res);
         }
+        return;
     }
 
-    if (!raw_track.is_empty()) {
-        std::string cleaned_track = MetadataCleaner::clean_for_search(raw_track.c_str(), true);
-        if (!cleaned_track.empty()) {
-            track = cleaned_track.c_str();
-        }
-    }
-
-    // Get the API search order from user preferences
     auto api_order = get_api_search_order();
 
-    // 3-Tier Search Pipeline:
-    // Tier 1: Primary extracted artist (e.g. "Ferry Corsten", "Kyau & Albert", "Dan Stone")
-    // Tier 2: Second extracted artist (e.g. "Gouryella", "Marc Marberg", "Katey Brooks")
-    // Tier 3: Full cleaned artist name (e.g. "Ferry Corsten pres. Gouryella")
+    pfc::string8 first_art = meta.first_artist.c_str();
+    pfc::string8 second_art = meta.second_artist.c_str();
+    pfc::string8 full_art = meta.clean_artist.c_str();
+    pfc::string8 clean_title = meta.clean_title.c_str();
+    pfc::string8 primary_title = meta.primary_title.c_str();
 
-    pfc::string8 first_artist_pfc = artist;
-    pfc::string8 second_artist_pfc = second_artist_str.c_str();
-    pfc::string8 full_artist_pfc = full_cleaned_artist_str.c_str();
+    // 4-Tier Fallback Query Pipeline:
+    // Tier 1: Full Track Title (First Artist -> Second Artist -> Full Clean Artist)
+    // Tier 2: Primary Track Title (First Artist -> Second Artist -> Full Clean Artist)
+    // Tier 3: Swapped Fallback (Title as Artist, Artist as Track)
+    // Tier 4: ACRCloud Audio Fingerprinting Recognition
 
-    search_apis_by_priority(first_artist_pfc, track, cache_key, [first_artist_pfc, second_artist_pfc, full_artist_pfc, track, cache_key, callback, api_order](const artwork_result& result1) {
-        if (result1.success) {
-            callback(result1);
-        } else {
-            // Tier 1 failed. Check if we have a valid second artist to try (Tier 2)
-            if (!second_artist_pfc.is_empty() && second_artist_pfc != first_artist_pfc) {
-                search_apis_by_priority(second_artist_pfc, track, cache_key, [full_artist_pfc, first_artist_pfc, second_artist_pfc, track, cache_key, callback, api_order, result1](const artwork_result& result2) {
-                    if (result2.success) {
-                        callback(result2);
+    // Tier 1 Execution
+    search_apis_by_priority(first_art, clean_title, cache_key, [=](const artwork_result& r1) {
+        if (r1.success) {
+            callback(r1);
+            return;
+        }
+
+        auto try_tier1_second = [=]() {
+            if (!second_art.is_empty() && second_art != first_art) {
+                search_apis_by_priority(second_art, clean_title, cache_key, [=](const artwork_result& r1_2) {
+                    if (r1_2.success) {
+                        callback(r1_2);
+                        return;
+                    }
+                    if (!full_art.is_empty() && full_art != first_art && full_art != second_art) {
+                        search_apis_by_priority(full_art, clean_title, cache_key, [=](const artwork_result& r1_3) {
+                            if (r1_3.success) callback(r1_3);
+                            else search_acrcloud_fallback_async(cache_key, callback);
+                        }, api_order, 0);
                     } else {
-                        // Tier 2 failed. Check if full artist name is different from both Tier 1 and Tier 2 (Tier 3)
-                        if (!full_artist_pfc.is_empty() && full_artist_pfc != first_artist_pfc && full_artist_pfc != second_artist_pfc) {
-                            search_apis_by_priority(full_artist_pfc, track, cache_key, callback, api_order, 0);
-                        } else {
-                            callback(result2);
-                        }
+                        search_acrcloud_fallback_async(cache_key, callback);
                     }
                 }, api_order, 0);
-            } else if (!full_artist_pfc.is_empty() && full_artist_pfc != first_artist_pfc) {
-                // No distinct second artist, try full artist name directly (Tier 3)
-                search_apis_by_priority(full_artist_pfc, track, cache_key, callback, api_order, 0);
+            } else if (!full_art.is_empty() && full_art != first_art) {
+                search_apis_by_priority(full_art, clean_title, cache_key, [=](const artwork_result& r1_3) {
+                    if (r1_3.success) callback(r1_3);
+                    else search_acrcloud_fallback_async(cache_key, callback);
+                }, api_order, 0);
             } else {
-                callback(result1);
+                // Tier 1 failed. Try Tier 2 (Primary Title) if available
+                if (!primary_title.is_empty() && primary_title != clean_title) {
+                    search_apis_by_priority(first_art, primary_title, cache_key, [=](const artwork_result& r2) {
+                        if (r2.success) callback(r2);
+                        else {
+                            // Try Tier 3 (Swapped Fallback)
+                            search_apis_by_priority(clean_title, full_art, cache_key, [=](const artwork_result& r3) {
+                                if (r3.success) callback(r3);
+                                else search_acrcloud_fallback_async(cache_key, callback);
+                            }, api_order, 0);
+                        }
+                    }, api_order, 0);
+                } else {
+                    // Try Tier 3 (Swapped Fallback)
+                    search_apis_by_priority(clean_title, full_art, cache_key, [=](const artwork_result& r3) {
+                        if (r3.success) callback(r3);
+                        else search_acrcloud_fallback_async(cache_key, callback);
+                    }, api_order, 0);
+                }
             }
-        }
+        };
+
+        try_tier1_second();
     }, api_order, 0);
 }
 
-void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index) {
+static visualisation_stream::ptr get_persistent_vis_stream() {
+    if (!g_vis_stream.is_valid()) {
+        try {
+            visualisation_manager::get()->create_stream(g_vis_stream, 0);
+            visualisation_stream_v2::ptr stream_v2;
+            if (g_vis_stream.is_valid() && g_vis_stream->service_query_t(stream_v2)) {
+                stream_v2->set_channel_mode(visualisation_stream_v2::channel_mode_mono);
+                stream_v2->request_backlog(10.0);
+            }
+        } catch (...) {
+            g_vis_stream.release();
+        }
+    }
+    return g_vis_stream;
+}
+void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_key, artwork_callback callback, bool is_manual_trigger) {
+    if (!cfg_enable_acrcloud || cfg_acrcloud_host.is_empty() || cfg_acrcloud_access_key.is_empty() || cfg_acrcloud_access_secret.is_empty()) {
+        artwork_result fail_res;
+        fail_res.success = false;
+        fail_res.error_message = "All text search tiers failed; ACRCloud fallback is disabled or unconfigured";
+        callback(fail_res);
+        return;
+    }
+
+    // Smart Trigger & Circuit-Breaker Cooldown Check (Bypassed if manual hotkey trigger)
+    auto now = std::chrono::steady_clock::now();
+    if (!is_manual_trigger && now < g_acrcloud_cooldown_until) {
+        auto remaining_sec = std::chrono::duration_cast<std::chrono::seconds>(g_acrcloud_cooldown_until - now).count();
+        console::printf("foo_artwork: ACRCloud recognition on cooldown (%d seconds remaining). Skipping scan to protect API quota.", (int)remaining_sec);
+
+        artwork_result fail_res;
+        fail_res.success = false;
+        fail_res.error_message = "ACRCloud recognition on cooldown to protect API quota";
+        callback(fail_res);
+        return;
+    }
+
+    uint64_t current_task_id = ++g_acrcloud_task_id;
+
+    if (is_manual_trigger) {
+        console::printf("foo_artwork: Manual Trigger: Bypassing Circuit-Breaker cooldown to force ACRCloud audio recognition...");
+    } else {
+        console::printf("foo_artwork: Tier 4 - Initiating ACRCloud audio recognition fallback...");
+    }
+
+    // Submit task to background worker thread (NON-BLOCKING FOR FOOBAR2000 UI)
+    async_io_manager::instance().submit_task([cache_key, callback, is_manual_trigger, current_task_id]() {
+        std::vector<int16_t> pcm_samples;
+        int sample_rate = 16000;
+
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            if (current_task_id != g_acrcloud_task_id) {
+                console::printf("foo_artwork: ACRCloud background sampling task cancelled (superseded or artwork found).");
+                return;
+            }
+
+            // Sleep on BACKGROUND WORKER THREAD (UI stays completely fluid and responsive!)
+            if (attempt > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            }
+
+            std::promise<bool> query_promise;
+            auto query_future = query_promise.get_future();
+
+            // Non-blocking sub-millisecond snapshot on main thread
+            async_io_manager::instance().post_to_main_thread([&]() {
+                bool captured = false;
+                try {
+                    if (is_manual_trigger && attempt == 0) {
+                        g_vis_stream.release();
+                    }
+                    auto stream = get_persistent_vis_stream();
+                    if (stream.is_valid()) {
+                        double abs_time = 0;
+                        if (stream->get_absolute_time(abs_time) && abs_time >= 3.5) {
+                            double req_len = (abs_time > 6.0) ? 6.0 : abs_time;
+                            audio_chunk_impl chunk;
+                            if (stream->get_chunk_absolute(chunk, abs_time - req_len, req_len)) {
+                                const audio_sample* data = chunk.get_data();
+                                size_t sample_cnt = chunk.get_sample_count();
+                                unsigned chans = chunk.get_channels();
+                                sample_rate = chunk.get_sample_rate();
+
+                                if (data && sample_cnt > 0 && chans > 0) {
+                                    pcm_samples.clear();
+                                    pcm_samples.reserve(sample_cnt);
+                                    for (size_t i = 0; i < sample_cnt; ++i) {
+                                        float sum = 0.0f;
+                                        for (unsigned c = 0; c < chans; ++c) {
+                                            sum += (float)data[i * chans + c];
+                                        }
+                                        float mono = sum / (float)chans;
+                                        if (mono > 1.0f) mono = 1.0f;
+                                        if (mono < -1.0f) mono = -1.0f;
+                                        pcm_samples.push_back((int16_t)(mono * 32767.0f));
+                                    }
+
+                                    if (pcm_samples.size() >= (size_t)(sample_rate * 4.5)) {
+                                        captured = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (...) {}
+                query_promise.set_value(captured);
+            });
+
+            if (query_future.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
+                if (query_future.get()) {
+                    break; // Captured >= 4.5s of audio!
+                }
+            }
+
+            console::printf("foo_artwork: Waiting for 5-second PCM stream accumulation (attempt %d/5)...", attempt + 1);
+        }
+
+        console::printf("foo_artwork: Sampled %u PCM audio samples (%d Hz) for Option B fingerprinting",
+                       (unsigned int)pcm_samples.size(), sample_rate);
+
+        if (pcm_samples.empty() || pcm_samples.size() < (size_t)(sample_rate * 3.5)) {
+            console::printf("foo_artwork: Stream audio buffering (%u samples). Setting short 4s grace period for audio playback to settle.", (unsigned int)pcm_samples.size());
+            g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+            artwork_result fail_res;
+            fail_res.success = false;
+            fail_res.error_message = "Stream audio buffering";
+            callback(fail_res);
+            return;
+        }
+
+        // Resample to 16 kHz on background thread
+        if (sample_rate > 0 && sample_rate != 16000 && !pcm_samples.empty()) {
+            double ratio = 16000.0 / (double)sample_rate;
+            size_t target_samples = (size_t)(pcm_samples.size() * ratio);
+            std::vector<int16_t> resampled_pcm;
+            resampled_pcm.reserve(target_samples);
+            for (size_t i = 0; i < target_samples; ++i) {
+                double src_idx = (double)i / ratio;
+                size_t idx0 = (size_t)src_idx;
+                size_t idx1 = idx0 + 1;
+                if (idx1 >= pcm_samples.size()) idx1 = idx0;
+                double frac = src_idx - (double)idx0;
+                int16_t s = (int16_t)((1.0 - frac) * pcm_samples[idx0] + frac * pcm_samples[idx1]);
+                resampled_pcm.push_back(s);
+            }
+            pcm_samples = std::move(resampled_pcm);
+            sample_rate = 16000;
+        }
+
+        std::vector<uint8_t> audio_bytes;
+        if (!pcm_samples.empty()) {
+            audio_bytes.resize(pcm_samples.size() * sizeof(int16_t));
+            memcpy(audio_bytes.data(), pcm_samples.data(), audio_bytes.size());
+        }
+
+        ACRCloudClient::RecognitionResult rec = ACRCloudClient::recognize_audio(
+            cfg_acrcloud_host.get_ptr(),
+            cfg_acrcloud_access_key.get_ptr(),
+            cfg_acrcloud_access_secret.get_ptr(),
+            audio_bytes.data(),
+            audio_bytes.size()
+        );
+
+        if (rec.success) {
+            console::printf("foo_artwork: Tier 4 ACRCloud MATCH: '%s - %s'", rec.artist.c_str(), rec.title.c_str());
+
+            // Track Length Circuit-Breaker: Compute remaining track duration
+            uint32_t rem_ms = 180000; // Default 3 minutes if duration is not provided
+            if (rec.duration_ms > 0) {
+                rem_ms = (rec.duration_ms > rec.play_offset_ms) ? (rec.duration_ms - rec.play_offset_ms) : rec.duration_ms;
+                if (rem_ms < 30000) rem_ms = 30000; // Minimum 30 seconds
+            }
+
+            g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(rem_ms);
+            console::printf("foo_artwork: Track Length Circuit-Breaker set: Sleeping ACRCloud scans for %u seconds (remaining song duration).", (unsigned int)(rem_ms / 1000));
+
+            StreamMetadataResult rec_meta = MetadataCleaner::sanitize_stream_metadata(rec.artist.c_str(), rec.title.c_str());
+
+            if (rec_meta.is_valid_search) {
+                console::printf("foo_artwork: Querying online APIs with ACRCloud recognized track '%s - %s'...", rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str());
+                auto api_order = get_api_search_order();
+                pfc::string8 current_url = g_current_stream_url;
+                search_apis_by_priority(rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str(), cache_key, [callback, current_url](const artwork_result& res) {
+                    if (res.success && res.data.get_size() > 0) {
+                        g_last_recognized_result = res;
+                        g_last_recognized_stream_url = current_url;
+                    }
+                    callback(res);
+                }, api_order, 0, true);
+                return;
+            }
+        } else {
+            // Non-Music Content / Talk / Ad Backoff: Apply 75-second cooldown on Status 1001 or no match
+            g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::seconds(75);
+            console::printf("foo_artwork: ACRCloud returned No Result (talk/ad break/DJ chatter). Setting 75s backoff cooldown to protect API quota.");
+        }
+
+        artwork_result fail_res;
+        fail_res.success = false;
+        fail_res.error_message = rec.error_message.empty() ? "ACRCloud audio recognition returned no matching track" : rec.error_message.c_str();
+        callback(fail_res);
+    });
+}
+
+void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index, bool force_enable_apis) {
     if (index >= api_order.size()) {
         // No more APIs to try
         artwork_result final_result;
@@ -579,23 +897,23 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
     
     ApiType current_api = api_order[index];
     
-    // Check if this API is enabled and has required keys
+    // Check if this API is enabled and has required keys (or force enabled for ACRCloud fallback)
     bool api_enabled = false;
     switch (current_api) {
         case ApiType::iTunes:
-            api_enabled = cfg_enable_itunes;
+            api_enabled = force_enable_apis || cfg_enable_itunes;
             break;
         case ApiType::Deezer:
-            api_enabled = cfg_enable_deezer;
+            api_enabled = force_enable_apis || cfg_enable_deezer;
             break;
         case ApiType::LastFm:
-            api_enabled = cfg_enable_lastfm && !cfg_lastfm_key.is_empty();
+            api_enabled = (force_enable_apis || cfg_enable_lastfm) && !cfg_lastfm_key.is_empty();
             break;
         case ApiType::MusicBrainz:
-            api_enabled = cfg_enable_musicbrainz;
+            api_enabled = force_enable_apis || cfg_enable_musicbrainz;
             break;
         case ApiType::Discogs:
-            api_enabled = cfg_enable_discogs && 
+            api_enabled = (force_enable_apis || cfg_enable_discogs) && 
                          (!cfg_discogs_key.is_empty() || 
                           (!cfg_discogs_consumer_key.is_empty() && !cfg_discogs_consumer_secret.is_empty()));
             break;
@@ -603,12 +921,12 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
     
     if (!api_enabled) {
         // Skip this API and try the next one
-        search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1);
+        search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1, force_enable_apis);
         return;
     }
     
     // Create a callback that will either return success or try the next API
-    auto api_callback = [artist, track, cache_key, callback, api_order, index](const artwork_result& result) {
+    auto api_callback = [artist, track, cache_key, callback, api_order, index, force_enable_apis](const artwork_result& result) {
         pfc::string8 api_name;
         switch (api_order[index]) {
             case ApiType::iTunes: api_name = "iTunes"; break;
@@ -619,9 +937,15 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         }
         
         if (result.success) {
-            // Cache the result if cache_key is not empty (empty means internet stream) and disk cache is enabled
-            if (cfg_enable_disk_cache && !cache_key.is_empty()) {
-                async_io_manager::instance().cache_set_async(cache_key, result.data);
+            console::printf("foo_artwork: SUCCESS - Artwork retrieved from %s (%u bytes)", api_name.c_str(), (unsigned int)result.data.get_size());
+            cancel_acrcloud_tasks(); // Cancel any pending background ACRCloud sampling tasks
+            if (cfg_enable_disk_cache || cfg_single_file_cache) {
+                if (!cache_key.is_empty()) {
+                    async_io_manager::instance().cache_set_async(cache_key, result.data);
+                }
+                if (cfg_single_file_cache) {
+                    async_io_manager::instance().cache_set_async("current", result.data);
+                }
             }
             callback(result);
         } else {
@@ -629,9 +953,20 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
                            api_name.c_str(), artist.c_str(), track.c_str(), result.error_message.c_str());
             
             // This API failed, try the next one
-            search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1);
+            search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1, force_enable_apis);
         }
     };
+
+    pfc::string8 current_api_name;
+    switch (current_api) {
+        case ApiType::iTunes: current_api_name = "iTunes"; break;
+        case ApiType::Deezer: current_api_name = "Deezer"; break;
+        case ApiType::LastFm: current_api_name = "Last.fm"; break;
+        case ApiType::MusicBrainz: current_api_name = "MusicBrainz"; break;
+        case ApiType::Discogs: current_api_name = "Discogs"; break;
+    }
+
+    console::printf("foo_artwork: Querying %s for '%s - %s'...", current_api_name.c_str(), artist.c_str(), track.c_str());
     
     // Call the appropriate API search function
     switch (current_api) {
@@ -772,20 +1107,41 @@ void artwork_manager::search_itunes_api_async(const char* artist, const char* tr
 
         
         
-        // Download the artwork image
+        // Download the artwork image with 600x600 fallback if 1200x1200 fails
         async_io_manager::instance().http_get_binary_async(artwork_url, [callback, artwork_url](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
-            artwork_result result;
             if (success && data.get_size() > 0) {
+                artwork_result result;
                 result.success = true;
                 result.data = data;
                 result.mime_type = detect_mime_type(data.get_ptr(), data.get_size());
                 result.source = "iTunes";  // Set source for OSD display
+                callback(result);
             } else {
-                result.success = false;
-                result.error_message = "Failed to download iTunes artwork: ";
-                result.error_message << error;
+                pfc::string8 fallback_url = artwork_url;
+                fallback_url.replace_string("1200x1200", "600x600");
+                if (fallback_url != artwork_url) {
+                    async_io_manager::instance().http_get_binary_async(fallback_url, [callback](bool success2, const pfc::array_t<t_uint8>& data2, const pfc::string8& error2) {
+                        artwork_result result;
+                        if (success2 && data2.get_size() > 0) {
+                            result.success = true;
+                            result.data = data2;
+                            result.mime_type = detect_mime_type(data2.get_ptr(), data2.get_size());
+                            result.source = "iTunes";
+                        } else {
+                            result.success = false;
+                            result.error_message = "Failed to download iTunes artwork: ";
+                            result.error_message << error2;
+                        }
+                        callback(result);
+                    });
+                } else {
+                    artwork_result result;
+                    result.success = false;
+                    result.error_message = "Failed to download iTunes artwork: ";
+                    result.error_message << error;
+                    callback(result);
+                }
             }
-            callback(result);
         });
     });
 }
