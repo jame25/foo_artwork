@@ -7,8 +7,9 @@
 // Forward declarations no longer needed - using simpler logging approach
 
 // Reference to configuration variables defined in sdk_main.cpp
-extern cfg_bool cfg_enable_itunes, cfg_enable_discogs, cfg_enable_lastfm, cfg_enable_deezer, cfg_enable_musicbrainz;
+extern cfg_bool cfg_enable_itunes, cfg_enable_discogs, cfg_enable_lastfm, cfg_enable_deezer, cfg_enable_musicbrainz, cfg_enable_acrcloud;
 extern cfg_string cfg_discogs_key, cfg_discogs_consumer_key, cfg_discogs_consumer_secret, cfg_lastfm_key;
+extern cfg_string cfg_acrcloud_host, cfg_acrcloud_access_key, cfg_acrcloud_access_secret;
 extern cfg_int cfg_search_order_1, cfg_search_order_2, cfg_search_order_3, cfg_search_order_4, cfg_search_order_5;
 extern cfg_bool cfg_show_osd;
 extern cfg_bool cfg_enable_custom_logos;
@@ -36,6 +37,9 @@ static const GUID guid_preferences_page_artwork =
 
 static const GUID guid_preferences_page_advanced =
 { 0x12345690, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
+
+static const GUID guid_preferences_page_acrcloud =
+{ 0x123456a0, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf9 } };
 
 //=============================================================================
 // artwork_preferences - preferences page instance implementation
@@ -813,6 +817,168 @@ preferences_page_instance::ptr artwork_advanced_preferences_page::instantiate(HW
     return instance;
 }
 
+//=============================================================================
+// acrcloud_preferences - ACRCloud preferences page instance implementation
+//=============================================================================
+
+class acrcloud_preferences : public preferences_page_instance {
+private:
+    HWND m_hwnd;
+    preferences_page_callback::ptr m_callback;
+    bool m_has_changes;
+    fb2k::CCoreDarkModeHooks m_darkMode;
+
+public:
+    acrcloud_preferences(preferences_page_callback::ptr callback)
+        : m_hwnd(nullptr), m_callback(callback), m_has_changes(false) {}
+
+    HWND get_wnd() override { return m_hwnd; }
+
+    t_uint32 get_state() override {
+        t_uint32 state = preferences_state::resettable | preferences_state::dark_mode_supported;
+        if (m_has_changes) {
+            state |= preferences_state::changed;
+        }
+        return state;
+    }
+
+    void apply() override {
+        apply_settings();
+        m_has_changes = false;
+        m_callback->on_state_changed();
+    }
+
+    void reset() override {
+        reset_settings();
+        m_has_changes = false;
+        m_callback->on_state_changed();
+    }
+
+    static INT_PTR CALLBACK ACRCloudConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
+private:
+    void on_changed() {
+        m_has_changes = true;
+        m_callback->on_state_changed();
+    }
+
+    void apply_settings() {
+        if (!m_hwnd) return;
+
+        cfg_enable_acrcloud = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_ACRCLOUD) == BST_CHECKED);
+
+        char host[256] = {0}, key[256] = {0}, secret[256] = {0};
+        GetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_HOST, host, sizeof(host));
+        GetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY, key, sizeof(key));
+        GetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET, secret, sizeof(secret));
+
+        cfg_acrcloud_host = host;
+        cfg_acrcloud_access_key = key;
+        cfg_acrcloud_access_secret = secret;
+    }
+
+    void reset_settings() {
+        if (!m_hwnd) return;
+
+        cfg_enable_acrcloud = false;
+        cfg_acrcloud_host = "";
+        cfg_acrcloud_access_key = "";
+        cfg_acrcloud_access_secret = "";
+
+        update_controls();
+    }
+
+    void update_controls() {
+        if (!m_hwnd) return;
+
+        CheckDlgButton(m_hwnd, IDC_ENABLE_ACRCLOUD, cfg_enable_acrcloud ? BST_CHECKED : BST_UNCHECKED);
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_HOST, cfg_acrcloud_host.get_ptr());
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY, cfg_acrcloud_access_key.get_ptr());
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET, cfg_acrcloud_access_secret.get_ptr());
+
+        update_control_states();
+    }
+
+    void update_control_states() {
+        if (!m_hwnd) return;
+
+        BOOL enabled = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_ACRCLOUD) == BST_CHECKED);
+        EnableWindow(GetDlgItem(m_hwnd, IDC_ACRCLOUD_HOST), enabled);
+        EnableWindow(GetDlgItem(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY), enabled);
+        EnableWindow(GetDlgItem(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET), enabled);
+    }
+};
+
+INT_PTR CALLBACK acrcloud_preferences::ACRCloudConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    acrcloud_preferences* pThis = nullptr;
+
+    if (msg == WM_INITDIALOG) {
+        pThis = reinterpret_cast<acrcloud_preferences*>(lp);
+        SetWindowLongPtr(hwnd, DWLP_USER, lp);
+        pThis->m_hwnd = hwnd;
+        pThis->m_darkMode.AddDialogWithControls(hwnd);
+        pThis->update_controls();
+        return TRUE;
+    }
+    else {
+        pThis = reinterpret_cast<acrcloud_preferences*>(GetWindowLongPtr(hwnd, DWLP_USER));
+    }
+
+    if (pThis) {
+        switch (msg) {
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+            case IDC_ENABLE_ACRCLOUD:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->on_changed();
+                    pThis->update_control_states();
+                }
+                break;
+
+            case IDC_ACRCLOUD_HOST:
+            case IDC_ACRCLOUD_ACCESS_KEY:
+            case IDC_ACRCLOUD_ACCESS_SECRET:
+                if (HIWORD(wp) == EN_CHANGE) {
+                    pThis->on_changed();
+                }
+                break;
+            }
+            break;
+        }
+    }
+
+    return FALSE;
+}
+
+//=============================================================================
+// acrcloud_preferences_page - ACRCloud preferences page factory implementation
+//=============================================================================
+
+class acrcloud_preferences_page : public preferences_page_v3 {
+public:
+    const char* get_name() override { return "ACRCloud"; }
+    GUID get_guid() override { return guid_preferences_page_acrcloud; }
+    GUID get_parent_guid() override { return guid_preferences_page_artwork; }
+    preferences_page_instance::ptr instantiate(HWND parent, preferences_page_callback::ptr callback) override {
+        auto instance = fb2k::service_new<acrcloud_preferences>(callback);
+
+        HWND hwnd = CreateDialogParam(
+            g_hIns,
+            MAKEINTRESOURCE(IDD_PREFERENCES_ACRCLOUD),
+            parent,
+            acrcloud_preferences::ACRCloudConfigProc,
+            reinterpret_cast<LPARAM>(instance.get_ptr())
+        );
+
+        if (hwnd == nullptr) {
+            throw exception_win32(GetLastError());
+        }
+
+        return instance;
+    }
+};
+
 // Service registration
 static preferences_page_factory_t<artwork_preferences_page> g_artwork_preferences_page_factory;
 static preferences_page_factory_t<artwork_advanced_preferences_page> g_artwork_advanced_preferences_page_factory;
+static preferences_page_factory_t<acrcloud_preferences_page> g_acrcloud_preferences_page_factory;
