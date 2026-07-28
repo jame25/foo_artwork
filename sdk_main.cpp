@@ -72,6 +72,10 @@ static constexpr GUID guid_cfg_cache_folder = { 0x12345691, 0x1234, 0x1234, { 0x
 static constexpr GUID guid_cfg_skip_local_artwork = { 0x12345692, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x01 } };
 static constexpr GUID guid_cfg_single_file_cache = { 0x12345693, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x02 } };
 static constexpr GUID guid_cfg_cache_size = { 0x12345694, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x03 } };
+static constexpr GUID guid_cfg_enable_acrcloud = { 0x12345695, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x04 } };
+static constexpr GUID guid_cfg_acrcloud_host = { 0x12345696, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x05 } };
+static constexpr GUID guid_cfg_acrcloud_access_key = { 0x12345697, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x06 } };
+static constexpr GUID guid_cfg_acrcloud_access_secret = { 0x12345698, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x07 } };
 
 
 // Configuration variables with default values
@@ -80,10 +84,14 @@ cfg_bool cfg_enable_discogs(guid_cfg_enable_discogs, false);
 cfg_bool cfg_enable_lastfm(guid_cfg_enable_lastfm, false);
 cfg_bool cfg_enable_deezer(guid_cfg_enable_deezer, true);
 cfg_bool cfg_enable_musicbrainz(guid_cfg_enable_musicbrainz, false);
+cfg_bool cfg_enable_acrcloud(guid_cfg_enable_acrcloud, false);
 cfg_string cfg_discogs_key(guid_cfg_discogs_key, "");
 cfg_string cfg_discogs_consumer_key(guid_cfg_discogs_consumer_key, "");
 cfg_string cfg_discogs_consumer_secret(guid_cfg_discogs_consumer_secret, "");
 cfg_string cfg_lastfm_key(guid_cfg_lastfm_key, "");
+cfg_string cfg_acrcloud_host(guid_cfg_acrcloud_host, "");
+cfg_string cfg_acrcloud_access_key(guid_cfg_acrcloud_access_key, "");
+cfg_string cfg_acrcloud_access_secret(guid_cfg_acrcloud_access_secret, "");
 cfg_bool cfg_fill_mode(guid_cfg_fill_mode, false);  // true = fill window (crop), false = fit window (letterbox)
 
 // API Priority order (0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs)
@@ -310,7 +318,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.54",
+    "1.6.0",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -327,7 +335,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.5.54",
+    "1.6.0",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -5030,6 +5038,7 @@ public:
             // Handle both local files and internet streams
             if (p_track.is_valid()) {
                 pfc::string8 track_path = p_track->get_path();
+                artwork_manager::reset_acrcloud_cooldown();
                 // Reset artwork state for ALL UI elements before processing new track
                 for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
                     auto* element = g_artwork_ui_elements[i];
@@ -5161,7 +5170,8 @@ public:
         // This callback is for bitrate changes and other non-essential info
     }
     void on_playback_dynamic_info_track(const file_info& p_info) override {
-        // CALLBACK TESTING - Re-enabled with safety checks
+        // Reset ACRCloud cooldown when new stream metadata arrives
+        artwork_manager::reset_acrcloud_cooldown();
         try {
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
@@ -8145,7 +8155,52 @@ extern "C" __declspec(dllexport) void foo_artwork_refresh() {
 }
 
 //=============================================================================
-// Columns UI Panel Implementation - moved to separate file
+// Main Menu & Hotkey Command Implementation
 //=============================================================================
 
-// CUI implementation is now in artwork_panel_cui.cpp
+class mainmenu_commands_artwork : public mainmenu_commands {
+public:
+    enum {
+        cmd_force_acrcloud = 0,
+        cmd_count
+    };
+
+    t_uint32 get_command_count() override {
+        return cmd_count;
+    }
+
+    GUID get_command(t_uint32 p_index) override {
+        static const GUID guid_cmd_force_acrcloud = { 0x3a812345, 0x5b67, 0x4890, { 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x89 } };
+        switch (p_index) {
+            case cmd_force_acrcloud: return guid_cmd_force_acrcloud;
+            default: return pfc::guid_null;
+        }
+    }
+
+    void get_name(t_uint32 p_index, pfc::string_base& p_out) override {
+        switch (p_index) {
+            case cmd_force_acrcloud: p_out = "Force ACRCloud Audio Recognition"; break;
+        }
+    }
+
+    bool get_description(t_uint32 p_index, pfc::string_base& p_out) override {
+        switch (p_index) {
+            case cmd_force_acrcloud:
+                p_out = "Forces an immediate ACRCloud audio recognition scan on the currently playing track/stream, bypassing rate-limiting cooldowns.";
+                return true;
+            default: return false;
+        }
+    }
+
+    GUID get_parent() override {
+        return mainmenu_groups::view;
+    }
+
+    void execute(t_uint32 p_index, service_ptr_t<service_base> p_callback) override {
+        if (p_index == cmd_force_acrcloud) {
+            artwork_manager::force_acrcloud_lookup();
+        }
+    }
+};
+
+static mainmenu_commands_factory_t<mainmenu_commands_artwork> g_mainmenu_commands_artwork_factory;
