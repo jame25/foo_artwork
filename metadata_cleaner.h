@@ -6,8 +6,27 @@
 
 // Unified UTF-8 safe metadata cleaning for consistent artwork search results
 // across Default UI and Columns UI modes
+
+struct StreamMetadataResult {
+    std::string raw_artist;
+    std::string raw_title;
+    std::string clean_artist;
+    std::string clean_title;
+    std::string first_artist;
+    std::string second_artist;
+    std::string primary_title;
+    bool is_valid_search = false;
+    bool is_station_or_url = false;
+};
+
 class MetadataCleaner {
 public:
+    // Main 4-Stage Stream Metadata Sanitizer
+    static StreamMetadataResult sanitize_stream_metadata(const char* raw_artist, const char* raw_title);
+
+    // Station name / stream URL detector
+    static bool is_station_name_or_url(const char* text);
+
     // Main cleaning function - UTF-8 safe for Latin, Cyrillic, and other scripts
     static std::string clean_for_search(const char* metadata, bool preserve_cyrillic = true);
     
@@ -19,6 +38,9 @@ public:
 
     // Extract second/project artist from multi-artist string (e.g. Gouryella from Ferry Corsten pres. Gouryella)
     static std::string extract_second_artist(const char* artist);
+
+    // Extract primary track title (title before extra album/bracket tags)
+    static std::string extract_primary_title(const char* title);
     
 private:
     // Core cleaning operations - UTF-8 safe
