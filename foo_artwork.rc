@@ -81,3 +81,26 @@ BEGIN
 
     LTEXT           "Note: Retries use exponential backoff (1s, 2s, 4s...) for transient failures.",IDC_STATIC,20,262,290,10
 END
+
+IDD_PREFERENCES_ACRCLOUD DIALOGEX 0, 0, 350, 280
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "ACRCloud Service Configuration",IDC_STATIC,10,10,320,165
+
+    CONTROL         "Enable ACRCloud Live Stream Recognition",IDC_ENABLE_ACRCLOUD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,30,220,12
+
+    LTEXT           "Host:",IDC_STATIC,20,55,85,10
+    EDITTEXT        IDC_ACRCLOUD_HOST,110,53,205,14,ES_AUTOHSCROLL
+
+    LTEXT           "Access Key:",IDC_STATIC,20,77,85,10
+    EDITTEXT        IDC_ACRCLOUD_ACCESS_KEY,110,75,205,14,ES_AUTOHSCROLL
+
+    LTEXT           "Access Secret:",IDC_STATIC,20,99,85,10
+    EDITTEXT        IDC_ACRCLOUD_ACCESS_SECRET,110,97,205,14,ES_AUTOHSCROLL | ES_PASSWORD
+
+    LTEXT           "Note: ACRCloud is used to recognize live radio streams without track length.",IDC_STATIC,20,125,295,10
+    LTEXT           "Create a free developer account and project to get your credentials at:",IDC_STATIC,20,137,295,10
+    LTEXT           "https://console.acrcloud.com/",IDC_STATIC,20,149,200,10
+END
+
