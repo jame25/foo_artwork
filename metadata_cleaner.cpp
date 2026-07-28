@@ -408,14 +408,14 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
     // High-confidence multi-artist separators (clearly indicate collaborations)
     std::vector<std::string> high_confidence_separators = {
         " feat. ", " ft. ", " featuring ", " feat ", " ft ",
-        " / ", " // ", " /// ",
+        " / ", " // ", " /// ", "/",
         " vs. ", " vs ", " versus ",
         " with ", " w/ ",
         " x ", " X ",
         " pres. ", " pres ", " presents ", " presenting ",
         " meets ", " intro. ", " introduces ",
         " aka ", " a.k.a. ", " pka ", " p.k.a. ",
-        ", ", "; "
+        ", ", "; ", ";", ","
     };
     
     // Contextual separators that need additional validation
@@ -432,6 +432,12 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
     for (const auto& separator : high_confidence_separators) {
         std::string sep_lower = separator;
         std::transform(sep_lower.begin(), sep_lower.end(), sep_lower.begin(), ::tolower);
+        
+        // Protect band names containing slashes like "AC/DC"
+        if (sep_lower == "/" && artist_lower.find("ac/dc") != std::string::npos) {
+            continue;
+        }
+
         size_t pos = artist_lower.find(sep_lower);
         if (pos != std::string::npos && pos < earliest_pos) {
             earliest_pos = pos;
@@ -475,14 +481,14 @@ std::string MetadataCleaner::extract_second_artist(const char* artist) {
 
     std::vector<std::string> high_confidence_separators = {
         " feat. ", " ft. ", " featuring ", " feat ", " ft ",
-        " / ", " // ", " /// ",
+        " / ", " // ", " /// ", "/",
         " vs. ", " vs ", " versus ",
         " with ", " w/ ",
         " x ", " X ",
         " pres. ", " pres ", " presents ", " presenting ",
         " meets ", " intro. ", " introduces ",
         " aka ", " a.k.a. ", " pka ", " p.k.a. ",
-        ", ", "; "
+        ", ", "; ", ";", ","
     };
 
     size_t earliest_pos = std::string::npos;
@@ -490,6 +496,12 @@ std::string MetadataCleaner::extract_second_artist(const char* artist) {
     for (const auto& separator : high_confidence_separators) {
         std::string sep_lower = separator;
         std::transform(sep_lower.begin(), sep_lower.end(), sep_lower.begin(), ::tolower);
+        
+        // Protect band names containing slashes like "AC/DC"
+        if (sep_lower == "/" && artist_lower.find("ac/dc") != std::string::npos) {
+            continue;
+        }
+
         size_t pos = artist_lower.find(sep_lower);
         if (pos != std::string::npos && pos < earliest_pos) {
             earliest_pos = pos;
@@ -504,6 +516,144 @@ std::string MetadataCleaner::extract_second_artist(const char* artist) {
     }
 
     return "";
+}
+
+bool MetadataCleaner::is_station_name_or_url(const char* text) {
+    if (!text || strlen(text) == 0) return false;
+
+    std::string str(text);
+    std::string lower_str = str;
+    std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(), ::tolower);
+
+    // Check URLs and domains
+    if (lower_str.find("http://") != std::string::npos ||
+        lower_str.find("https://") != std::string::npos ||
+        lower_str.find("www.") != std::string::npos ||
+        lower_str.find(".m3u") != std::string::npos ||
+        lower_str.find(".pls") != std::string::npos ||
+        lower_str.find(".aac") != std::string::npos) {
+        return true;
+    }
+
+    // Check radio station keywords
+    std::vector<std::string> station_keywords = {
+        "radio", "webradio", "hitradio", "stream", "station", "fm",
+        "live365", "somafm", "di.fm", "tunein", "radioparadise",
+        "walmradio", "ipmusic", "on air", "broadcast"
+    };
+
+    for (const auto& kw : station_keywords) {
+        if (lower_str.find(kw) != std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string MetadataCleaner::extract_primary_title(const char* title) {
+    if (!title || strlen(title) == 0) return "";
+
+    std::string str(title);
+
+    // Split at common track version or extra tag delimiters
+    std::vector<std::string> delimiters = { " - ", " / ", " ~ " };
+    for (const auto& delim : delimiters) {
+        size_t pos = str.find(delim);
+        if (pos != std::string::npos && pos > 2) {
+            str = str.substr(0, pos);
+            break;
+        }
+    }
+
+    return trim(str);
+}
+
+StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_artist, const char* raw_title) {
+    StreamMetadataResult res;
+    res.raw_artist = raw_artist ? raw_artist : "";
+    res.raw_title = raw_title ? raw_title : "";
+
+    // Stage 1: Noise Pre-Cleaning & Station/URL Detection
+    res.is_station_or_url = is_station_name_or_url(res.raw_artist.c_str()) || is_station_name_or_url(res.raw_title.c_str());
+
+    res.clean_artist = clean_for_search(res.raw_artist.c_str(), true);
+    res.clean_title = clean_for_search(res.raw_title.c_str(), true);
+
+    // Stage 2: Smart Stream Splitter
+    bool artist_is_placeholder = res.clean_artist.empty() ||
+                                  res.clean_artist == "?" ||
+                                  res.clean_artist == "Unknown" ||
+                                  res.clean_artist == "Unknown Artist" ||
+                                  is_station_name_or_url(res.clean_artist.c_str());
+
+    bool title_is_placeholder = res.clean_title.empty() ||
+                                 res.clean_title == "?" ||
+                                 res.clean_title == "Unknown" ||
+                                 res.clean_title == "Unknown Track" ||
+                                 is_station_name_or_url(res.clean_title.c_str());
+
+    // Helper lambda to split combined metadata like "Artist - Title", "Title by Artist", or "artist-title"
+    auto try_split_combined = [](const std::string& combined, std::string& out_artist, std::string& out_title) -> bool {
+        std::string lower = combined;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+        // Check " by " delimiter first (e.g. "Jail House Rock by Elvis Presley")
+        size_t by_pos = lower.find(" by ");
+        if (by_pos != std::string::npos && by_pos > 1 && by_pos + 4 < combined.length()) {
+            out_title = clean_for_search(combined.substr(0, by_pos).c_str(), true);
+            out_artist = clean_for_search(combined.substr(by_pos + 4).c_str(), true);
+            return !out_artist.empty() && !out_title.empty();
+        }
+
+        // Check delimiters in order of confidence: " - ", " / ", " ~ ", " ˗ ", "-", "/"
+        std::vector<std::string> delims = { " - ", " / ", " ~ ", " ˗ ", "-", "/" };
+        for (const auto& delim : delims) {
+            size_t pos = combined.find(delim);
+            if (pos != std::string::npos && pos > 0 && pos + delim.length() < combined.length()) {
+                std::string part1 = clean_for_search(combined.substr(0, pos).c_str(), true);
+                std::string part2 = clean_for_search(combined.substr(pos + delim.length()).c_str(), true);
+
+                if (!part1.empty() && !part2.empty()) {
+                    out_artist = part1;
+                    out_title = part2;
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    if (artist_is_placeholder && !res.clean_title.empty()) {
+        std::string split_art, split_tit;
+        if (try_split_combined(res.clean_title, split_art, split_tit)) {
+            res.clean_artist = split_art;
+            res.clean_title = split_tit;
+        }
+    } else if (title_is_placeholder && !res.clean_artist.empty()) {
+        std::string split_art, split_tit;
+        if (try_split_combined(res.clean_artist, split_art, split_tit)) {
+            res.clean_artist = split_art;
+            res.clean_title = split_tit;
+        }
+    }
+
+    // Stage 3: Multilingual Collaboration & Token Extraction
+    res.first_artist = extract_first_artist(res.clean_artist.c_str());
+    res.second_artist = extract_second_artist(res.clean_artist.c_str());
+    res.primary_title = extract_primary_title(res.clean_title.c_str());
+
+    if (res.first_artist.empty()) {
+        res.first_artist = res.clean_artist;
+    }
+    if (res.primary_title.empty()) {
+        res.primary_title = res.clean_title;
+    }
+
+    // Stage 4: Search Validation
+    res.is_valid_search = is_valid_for_search(res.clean_artist.c_str(), res.clean_title.c_str());
+
+    return res;
 }
 
 bool MetadataCleaner::is_likely_collaboration(const std::string& artist_str, const std::string& separator, size_t pos) {
