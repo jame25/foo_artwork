@@ -4,6 +4,7 @@
 //
 #define IDD_PREFERENCES                 101
 #define IDD_PREFERENCES_ADVANCED        102
+#define IDD_PREFERENCES_ACRCLOUD        103
 #define IDC_ENABLE_ITUNES              1001
 #define IDC_ENABLE_DISCOGS             1002
 #define IDC_ENABLE_LASTFM              1003
@@ -34,14 +35,18 @@
 #define IDC_ENABLE_DISK_CACHE           1030
 #define IDC_BROWSE_CACHE_FOLDER         1031
 #define IDC_SKIP_LOCAL_ARTWORK          1032
+#define IDC_ENABLE_ACRCLOUD             1033
+#define IDC_ACRCLOUD_HOST               1034
+#define IDC_ACRCLOUD_ACCESS_KEY          1035
+#define IDC_ACRCLOUD_ACCESS_SECRET       1036
 
 // Next default values for new objects
 //
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        103
+#define _APS_NEXT_RESOURCE_VALUE        104
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1033
+#define _APS_NEXT_CONTROL_VALUE         1037
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
