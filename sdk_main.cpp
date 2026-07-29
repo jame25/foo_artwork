@@ -3570,6 +3570,20 @@ void artwork_ui_element::extract_metadata_from_info(const file_info& info, pfc::
             title = title_meta;
         }
         
+        // If artist is empty and title contains " - ", " ˗ ", " / ", or " by ", split title into artist and title
+        if (artist.is_empty() && !title.is_empty()) {
+            std::string t_str = title.c_str();
+            std::string delimiters[] = { " - ", " ˗ ", " / ", " by " };
+            for (const auto& delim : delimiters) {
+                size_t pos = t_str.find(delim);
+                if (pos != std::string::npos) {
+                    artist = t_str.substr(0, pos).c_str();
+                    title = t_str.substr(pos + delim.length()).c_str();
+                    break;
+                }
+            }
+        }
+        
         // Clean metadata
         if (!artist.is_empty()) {
             // Extract only the first artist for better artwork search results
