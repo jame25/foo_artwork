@@ -296,14 +296,29 @@ extern cfg_string cfg_acrcloud_access_secret;
 
 // Static member initialization
 std::atomic<bool> artwork_manager::initialized_(false);
+static std::atomic<bool> g_is_shutting_down{false};
+static std::chrono::steady_clock::time_point g_acrcloud_cooldown_until;
+static pfc::string8 g_current_stream_url;
+static visualisation_stream::ptr g_vis_stream;
+static std::atomic<uint64_t> g_acrcloud_task_id{0};
+static artwork_manager::artwork_result g_last_recognized_result;
+static pfc::string8 g_last_recognized_stream_url;
+static std::atomic<uint64_t> g_rms_detector_token{0};
+static visualisation_stream::ptr get_persistent_vis_stream();
 
 void artwork_manager::initialize() {
+    g_is_shutting_down.store(false);
     if (initialized_.exchange(true)) return; // Already initialized
     
     async_io_manager::instance().initialize(4); // 4 thread pool workers
 }
 
 void artwork_manager::shutdown() {
+    g_is_shutting_down.store(true);
+    g_rms_detector_token++;
+    g_acrcloud_task_id++;
+    g_vis_stream.release();
+
     if (!initialized_.exchange(false)) return; // Not initialized
     
     async_io_manager::instance().shutdown();
@@ -368,15 +383,262 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
     }
 }
 
-static std::chrono::steady_clock::time_point g_acrcloud_cooldown_until;
-static pfc::string8 g_current_stream_url;
-static visualisation_stream::ptr g_vis_stream;
-static std::atomic<uint64_t> g_acrcloud_task_id{0};
-static artwork_manager::artwork_result g_last_recognized_result;
-static pfc::string8 g_last_recognized_stream_url;
-
 extern void refresh_all_dui_artwork_panels();
 extern void refresh_all_cui_artwork_panels();
+
+static bool contains_case_insensitive(const char* haystack, const char* needle) {
+    if (!haystack || !needle) return false;
+    pfc::string8 h(haystack);
+    pfc::string8 n(needle);
+    return strstr(h.toLower().c_str(), n.toLower().c_str()) != nullptr;
+}
+
+struct PerceptualVector {
+    double db1, db2, db3, db4, db5; // 5 sub-band log-energies in dB
+    double total_rms;
+    bool valid;
+
+    PerceptualVector() : db1(-100), db2(-100), db3(-100), db4(-100), db5(-100), total_rms(0), valid(false) {}
+};
+
+static PerceptualVector extract_5band_vector(audio_chunk_impl& chunk) {
+    PerceptualVector vec;
+    const audio_sample* data = chunk.get_data();
+    size_t sample_cnt = chunk.get_sample_count();
+    unsigned chans = chunk.get_channels();
+    size_t total_samples = sample_cnt * chans;
+
+    if (!data || total_samples == 0) return vec;
+
+    double sum_total = 0.0;
+    double sum_b1 = 0.0, sum_b2 = 0.0, sum_b3 = 0.0, sum_b4 = 0.0, sum_b5 = 0.0;
+
+    // 5-band recursive IIR filter states
+    double lp1 = 0.0, lp2 = 0.0, lp3 = 0.0, lp4 = 0.0;
+    double a1 = 0.015; // ~150 Hz (sub-bass)
+    double a2 = 0.060; // ~600 Hz (bass/low-mid)
+    double a3 = 0.250; // ~2.5 kHz (mid/vocals)
+    double a4 = 0.550; // ~7 kHz (treble)
+
+    for (size_t i = 0; i < total_samples; ++i) {
+        double s = (double)data[i];
+        sum_total += s * s;
+
+        lp1 += a1 * (s - lp1);
+        lp2 += a2 * (s - lp2);
+        lp3 += a3 * (s - lp3);
+        lp4 += a4 * (s - lp4);
+
+        double s_sub = lp1;
+        double s_bass = lp2 - lp1;
+        double s_vocal = lp3 - lp2;
+        double s_treble = lp4 - lp3;
+        double s_high = s - lp4;
+
+        sum_b1 += s_sub * s_sub;
+        sum_b2 += s_bass * s_bass;
+        sum_b3 += s_vocal * s_vocal;
+        sum_b4 += s_treble * s_treble;
+        sum_b5 += s_high * s_high;
+    }
+
+    vec.total_rms = std::sqrt(sum_total / (double)total_samples);
+    double e1 = std::sqrt(sum_b1 / (double)total_samples);
+    double e2 = std::sqrt(sum_b2 / (double)total_samples);
+    double e3 = std::sqrt(sum_b3 / (double)total_samples);
+    double e4 = std::sqrt(sum_b4 / (double)total_samples);
+    double e5 = std::sqrt(sum_b5 / (double)total_samples);
+
+    // Convert sub-band energies to log-dB values for scale-invariant distance comparison
+    vec.db1 = 10.0 * std::log10(e1 * e1 + 1e-8);
+    vec.db2 = 10.0 * std::log10(e2 * e2 + 1e-8);
+    vec.db3 = 10.0 * std::log10(e3 * e3 + 1e-8);
+    vec.db4 = 10.0 * std::log10(e4 * e4 + 1e-8);
+    vec.db5 = 10.0 * std::log10(e5 * e5 + 1e-8);
+    vec.valid = true;
+
+    return vec;
+}
+
+static void start_rms_silence_detector(const pfc::string8& stream_url) {
+    uint64_t current_token = ++g_rms_detector_token;
+
+    async_io_manager::instance().submit_task([stream_url, current_token]() {
+        PerceptualVector prev_vec;
+        auto last_trigger_time = std::chrono::steady_clock::now();
+
+        while (true) {
+            // Stable 3-second background poll sleep
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+
+            if (g_is_shutting_down.load() || current_token != g_rms_detector_token.load() || g_current_stream_url != stream_url) {
+                return; // Stream changed, stopped, or app exiting -> exit worker thread cleanly
+            }
+
+            auto now = std::chrono::steady_clock::now();
+
+            // Lock out background scans while playing a recognized track (or during cooldown)
+            if (now < g_acrcloud_cooldown_until) {
+                prev_vec = PerceptualVector(); // Reset previous vector while cooldown is active
+                continue;
+            }
+
+            PerceptualVector curr_vec;
+
+            if (g_vis_stream.is_valid()) {
+                try {
+                    audio_chunk_impl chunk;
+                    double abs_time = 0;
+                    if (g_vis_stream->get_absolute_time(abs_time) && abs_time >= 0.6) {
+                        if (g_vis_stream->get_chunk_absolute(chunk, abs_time - 0.5, 0.5)) {
+                            curr_vec = extract_5band_vector(chunk);
+                        }
+                    }
+                } catch (...) {}
+            }
+
+            if (!curr_vec.valid || curr_vec.total_rms < 0.003) {
+                continue; // Do not reset prev_vec on transient misses
+            }
+
+            auto time_since_last_trigger = std::chrono::duration_cast<std::chrono::seconds>(now - last_trigger_time).count();
+
+            bool trigger_needed = false;
+            const char* trigger_reason = nullptr;
+
+            if (prev_vec.valid) {
+                // Compute Log-Spectral Distance across 5 perceptual sub-bands in dB
+                double d1 = curr_vec.db1 - prev_vec.db1;
+                double d2 = curr_vec.db2 - prev_vec.db2;
+                double d3 = curr_vec.db3 - prev_vec.db3;
+                double d4 = curr_vec.db4 - prev_vec.db4;
+                double d5 = curr_vec.db5 - prev_vec.db5;
+
+                double log_distance = std::sqrt(d1*d1 + d2*d2 + d3*d3 + d4*d4 + d5*d5);
+
+                // Stable trigger threshold: Log-Spectral Distance >= 3.5 dB
+                if (log_distance >= 3.5 && time_since_last_trigger >= 15) {
+                    trigger_needed = true;
+                    trigger_reason = "Log-Spectral Acoustic Shift detected";
+                }
+            }
+
+            // Fallback Safety Rescan: Force ACRCloud rescan every 90 seconds if no acoustic shift triggered
+            if (!trigger_needed && time_since_last_trigger >= 90) {
+                trigger_needed = true;
+                trigger_reason = "90-second safety periodic rescan timer elapsed";
+            }
+
+            if (trigger_needed && trigger_reason != nullptr) {
+                last_trigger_time = now;
+
+                async_io_manager::instance().post_to_main_thread([stream_url, current_token, trigger_reason]() {
+                    if (current_token == g_rms_detector_token.load() && g_current_stream_url == stream_url) {
+                        console::printf("foo_artwork: %s. Waiting 2s for new song to settle before sampling...", trigger_reason);
+
+                        // Schedule 2-second post-transition settling delay on background thread
+                        async_io_manager::instance().submit_task([stream_url, current_token]() {
+                            std::this_thread::sleep_for(std::chrono::seconds(2));
+
+                            async_io_manager::instance().post_to_main_thread([stream_url, current_token]() {
+                                if (current_token == g_rms_detector_token.load() && g_current_stream_url == stream_url) {
+                                    console::printf("foo_artwork: Settling period complete. Initiating ACRCloud audio recognition...");
+                                    g_last_recognized_result = artwork_manager::artwork_result();
+                                    g_last_recognized_stream_url.reset();
+                                    g_acrcloud_cooldown_until = std::chrono::steady_clock::time_point{};
+                                    refresh_all_dui_artwork_panels();
+                                    refresh_all_cui_artwork_panels();
+                                }
+                            });
+                        });
+                    }
+                });
+            }
+
+            prev_vec = curr_vec;
+        }
+    });
+}
+
+static std::atomic<uint64_t> g_stream_monitor_token{0};
+
+void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& stream_url) {
+    uint64_t current_token = ++g_stream_monitor_token;
+    auto last_artist = std::make_shared<pfc::string8>("");
+    auto last_title = std::make_shared<pfc::string8>("");
+
+    async_io_manager::instance().submit_task([stream_url, current_token, last_artist, last_title]() {
+        // Poll every 500ms for up to 10 seconds (20 iterations) during initial stream connection
+        for (int iteration = 0; iteration < 20; ++iteration) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+            if (g_is_shutting_down.load() || current_token != g_stream_monitor_token.load() || g_current_stream_url != stream_url) {
+                return; // Stream changed, stopped, or app exiting
+            }
+
+            async_io_manager::instance().post_to_main_thread([stream_url, current_token, last_artist, last_title]() {
+                if (current_token != g_stream_monitor_token.load() || g_current_stream_url != stream_url) {
+                    return;
+                }
+
+                static_api_ptr_t<playback_control> pc;
+                metadb_handle_ptr track;
+                if (pc->get_now_playing(track) && track.is_valid() && track->get_path() == stream_url) {
+                    metadb_info_container::ptr info_container = track->get_info_ref();
+                    const file_info* info = &info_container->info();
+
+                    pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "";
+                    pfc::string8 title = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "";
+
+                    // If artist is empty and title contains delimiters, split title into artist and title
+                    if (artist.is_empty() && !title.is_empty()) {
+                        std::string t_str = title.c_str();
+                        std::string delimiters[] = { " - ", " ˗ ", " / ", " by " };
+                        for (const auto& delim : delimiters) {
+                            size_t pos = t_str.find(delim);
+                            if (pos != std::string::npos) {
+                                artist = t_str.substr(0, pos).c_str();
+                                title = t_str.substr(pos + delim.length()).c_str();
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!artist.is_empty() && !title.is_empty()) {
+                        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), title.c_str());
+                        if (meta.is_valid_search && !meta.is_station_or_url) {
+                            pfc::string8 clean_art = meta.first_artist.c_str();
+                            pfc::string8 clean_tit = meta.clean_title.c_str();
+
+                            if (clean_art != *last_artist || clean_tit != *last_title) {
+                                *last_artist = clean_art;
+                                *last_title = clean_tit;
+
+                                console::printf("foo_artwork: Initial stream metadata monitor detected valid track: '%s - %s'. Initiating online text search...",
+                                               clean_art.c_str(), clean_tit.c_str());
+
+                                // Stop monitoring since valid track metadata was detected and triggered
+                                g_stream_monitor_token++;
+
+                                pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art, clean_tit);
+                                search_apis_async(clean_art, clean_tit, cache_key, [cache_key](const artwork_result& res) {
+                                    if (res.success && res.data.get_size() > 0) {
+                                        if (cfg_enable_disk_cache || cfg_single_file_cache) {
+                                            pfc::string8 key = cfg_single_file_cache ? pfc::string8("current") : cache_key;
+                                            async_io_manager::instance().cache_set_async(key, res.data);
+                                        }
+                                        refresh_all_dui_artwork_panels();
+                                        refresh_all_cui_artwork_panels();
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+}
 
 void artwork_manager::cancel_acrcloud_tasks() {
     g_acrcloud_task_id++;
@@ -388,6 +650,8 @@ void artwork_manager::reset_acrcloud_cooldown() {
     cancel_acrcloud_tasks();
     g_last_recognized_result = artwork_result();
     g_last_recognized_stream_url.reset();
+    g_rms_detector_token++;
+    g_stream_monitor_token++;
 }
 
 void artwork_manager::force_acrcloud_lookup() {
@@ -436,6 +700,26 @@ void artwork_manager::force_acrcloud_lookup() {
     }, true /* is_manual_trigger */);
 }
 
+static void schedule_periodic_acrcloud_rescan(uint32_t delay_ms) {
+    pfc::string8 current_url = g_current_stream_url;
+    uint64_t current_task_id = g_acrcloud_task_id.load();
+
+    async_io_manager::instance().submit_task([current_url, current_task_id, delay_ms]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms + 1000));
+
+        async_io_manager::instance().post_to_main_thread([current_url, current_task_id]() {
+            if (current_task_id == g_acrcloud_task_id.load() && g_current_stream_url == current_url) {
+                console::printf("foo_artwork: Stream circuit-breaker expired. Triggering automatic periodic ACRCloud recognition...");
+                g_last_recognized_result = artwork_manager::artwork_result();
+                g_acrcloud_cooldown_until = std::chrono::steady_clock::time_point{};
+                g_vis_stream.release();
+                refresh_all_dui_artwork_panels();
+                refresh_all_cui_artwork_panels();
+            }
+        });
+    });
+}
+
 void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
     
@@ -454,10 +738,17 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
                               !(strstr(file_path.c_str(), "file://") == file_path.c_str());
     
     if (is_internet_stream) {
+        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str());
+        bool force_acrcloud = contains_case_insensitive(file_path.c_str(), "forceacr");
+
         bool new_stream_connect = (g_current_stream_url != file_path);
         if (new_stream_connect) {
             g_current_stream_url = file_path;
             reset_acrcloud_cooldown(); // Reset cooldown on new radio stream connection
+            if (force_acrcloud || meta.is_station_or_url || !meta.is_valid_search) {
+                start_rms_silence_detector(file_path);
+                start_initial_stream_metadata_monitor(file_path);
+            }
         }
 
         // RECOGNIZED STREAM ARTWORK GUARD:
@@ -469,12 +760,10 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
             return;
         }
 
-        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str());
-
-        // UNTAGGED STREAMS & PLACEHOLDER METADATA:
-        // Do NOT read stale cache for placeholder metadata ("Unknown Artist - Unknown Track").
-        // On untagged streams or station URLs, bypass cache reads and go directly to API search -> ACRCloud fallback!
-        if (meta.is_station_or_url || !meta.is_valid_search) {
+        // UNTAGGED STREAMS & PLACEHOLDER METADATA OR ?FORCEACR TAG:
+        // Do NOT read stale cache for placeholder metadata ("Unknown Artist - Unknown Track") or forceacr streams.
+        // On untagged streams, station URLs, or ?forceacr streams, bypass cache reads and go directly to API search -> ACRCloud fallback!
+        if (force_acrcloud || meta.is_station_or_url || !meta.is_valid_search) {
             if (cfg_skip_local_artwork) {
                 search_apis_async(artist, track_name, cache_key, callback);
             } else {
@@ -597,18 +886,31 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pfc::string8& raw_track, const pfc::string8& cache_key, artwork_callback callback) {
     StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(raw_artist.c_str(), raw_track.c_str());
 
-    // Direct ACRCloud Tier 4 fallback if metadata is a station name/URL or invalid query
-    if (meta.is_station_or_url || !meta.is_valid_search) {
+    bool force_acrcloud = contains_case_insensitive(g_current_stream_url.c_str(), "forceacr");
+
+    // Direct ACRCloud Tier 4 fallback if URL explicitly contains 'forceacr' tag
+    if (force_acrcloud) {
         if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
-            console::printf("foo_artwork: Metadata '%s - %s' flagged as station/URL or invalid. Bypassing text search to Tier 4 ACRCloud fallback.",
-                           raw_artist.c_str(), raw_track.c_str());
+            console::printf("foo_artwork: Stream URL contains 'forceacr' tag. Bypassing text search to Tier 4 ACRCloud fallback.");
             search_acrcloud_fallback_async(cache_key, callback);
         } else {
             artwork_result fail_res;
             fail_res.success = false;
-            fail_res.error_message = "Metadata is station URL or invalid and ACRCloud is disabled";
+            fail_res.error_message = "Stream URL has 'forceacr' tag but ACRCloud is disabled or unconfigured";
             callback(fail_res);
         }
+        return;
+    }
+
+    // If metadata is station name/URL or invalid, skip text search without triggering ACRCloud fallback.
+    // Dynamic stream metadata updates (e.g. via ICY info) will trigger text-search APIs once valid song title arrives.
+    if (meta.is_station_or_url || !meta.is_valid_search) {
+        console::printf("foo_artwork: Metadata '%s - %s' flagged as station/URL or invalid. Skipping text search.",
+                       raw_artist.c_str(), raw_track.c_str());
+        artwork_result fail_res;
+        fail_res.success = false;
+        fail_res.error_message = "Metadata is station URL or invalid for text search";
+        callback(fail_res);
         return;
     }
 
@@ -847,15 +1149,15 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
         if (rec.success) {
             console::printf("foo_artwork: Tier 4 ACRCloud MATCH: '%s - %s'", rec.artist.c_str(), rec.title.c_str());
 
-            // Track Length Circuit-Breaker: Compute remaining track duration
-            uint32_t rem_ms = 180000; // Default 3 minutes if duration is not provided
+            // Track Cooldown Guard: Compute remaining track duration (minimum 60 seconds)
+            uint32_t rem_ms = 90000;
             if (rec.duration_ms > 0) {
                 rem_ms = (rec.duration_ms > rec.play_offset_ms) ? (rec.duration_ms - rec.play_offset_ms) : rec.duration_ms;
-                if (rem_ms < 30000) rem_ms = 30000; // Minimum 30 seconds
+                if (rem_ms < 60000) rem_ms = 60000;
             }
 
             g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(rem_ms);
-            console::printf("foo_artwork: Track Length Circuit-Breaker set: Sleeping ACRCloud scans for %u seconds (remaining song duration).", (unsigned int)(rem_ms / 1000));
+            console::printf("foo_artwork: Cooldown guard active: Sleeping ACRCloud scans for %u seconds while playing track.", (unsigned int)(rem_ms / 1000));
 
             StreamMetadataResult rec_meta = MetadataCleaner::sanitize_stream_metadata(rec.artist.c_str(), rec.title.c_str());
 
