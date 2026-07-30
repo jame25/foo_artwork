@@ -551,7 +551,7 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
 
                 async_io_manager::instance().post_to_main_thread([stream_url, current_token, trigger_reason]() {
                     if (current_token == g_rms_detector_token.load() && g_current_stream_url == stream_url) {
-                        console::printf("foo_artwork: %s. Waiting 2s for new song to settle before sampling...", trigger_reason);
+                        foo_artwork::log_printf("foo_artwork: %s. Waiting 2s for new song to settle before sampling...", trigger_reason);
 
                         // Schedule 2-second post-transition settling delay on background thread
                         async_io_manager::instance().submit_task([stream_url, current_token]() {
@@ -559,7 +559,7 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
 
                             async_io_manager::instance().post_to_main_thread([stream_url, current_token]() {
                                 if (current_token == g_rms_detector_token.load() && g_current_stream_url == stream_url) {
-                                    console::printf("foo_artwork: Settling period complete. Initiating ACRCloud audio recognition...");
+                                    foo_artwork::log_printf("foo_artwork: Settling period complete. Initiating ACRCloud audio recognition...");
                                     g_last_recognized_result = artwork_manager::artwork_result();
                                     g_last_recognized_stream_url.reset();
                                     g_acrcloud_cooldown_until = std::chrono::steady_clock::time_point{};
@@ -631,7 +631,7 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                                 *last_artist = clean_art;
                                 *last_title = clean_tit;
 
-                                console::printf("foo_artwork: Initial stream metadata monitor detected valid track: '%s - %s'. Initiating online text search...",
+                                foo_artwork::log_printf("foo_artwork: Initial stream metadata monitor detected valid track: '%s - %s'. Initiating online text search...",
                                                clean_art.c_str(), clean_tit.c_str());
 
                                 // Stop monitoring since valid track metadata was detected and triggered
@@ -676,11 +676,11 @@ void artwork_manager::force_acrcloud_lookup() {
 
     metadb_handle_ptr track;
     if (!playback_control::get()->get_now_playing(track) || !track.is_valid()) {
-        console::printf("foo_artwork: Manual trigger failed: No track currently playing.");
+        foo_artwork::log_printf("foo_artwork: Manual trigger failed: No track currently playing.");
         return;
     }
 
-    console::printf("foo_artwork: Manual trigger: Forcing ACRCloud audio recognition lookup on demand...");
+    foo_artwork::log_printf("foo_artwork: Manual trigger: Forcing ACRCloud audio recognition lookup on demand...");
 
     // Release old visualization stream to capture fresh live audio
     g_vis_stream.release();
@@ -695,7 +695,7 @@ void artwork_manager::force_acrcloud_lookup() {
 
     search_acrcloud_fallback_async(cache_key, [cache_key, current_url](const artwork_result& result) {
         if (result.success && result.data.get_size() > 0) {
-            console::printf("foo_artwork: Manual ACRCloud lookup SUCCESS - Artwork retrieved (%u bytes)", (unsigned int)result.data.get_size());
+            foo_artwork::log_printf("foo_artwork: Manual ACRCloud lookup SUCCESS - Artwork retrieved (%u bytes)", (unsigned int)result.data.get_size());
 
             g_last_recognized_result = result;
             g_last_recognized_stream_url = current_url;
@@ -712,7 +712,7 @@ void artwork_manager::force_acrcloud_lookup() {
                 refresh_all_cui_artwork_panels();
             });
         } else {
-            console::printf("foo_artwork: Manual ACRCloud lookup FAILED: %s", result.error_message.c_str());
+            foo_artwork::log_printf("foo_artwork: Manual ACRCloud lookup FAILED: %s", result.error_message.c_str());
         }
     }, true /* is_manual_trigger */);
 }
@@ -726,7 +726,7 @@ static void schedule_periodic_acrcloud_rescan(uint32_t delay_ms) {
 
         async_io_manager::instance().post_to_main_thread([current_url, current_task_id]() {
             if (current_task_id == g_acrcloud_task_id.load() && g_current_stream_url == current_url) {
-                console::printf("foo_artwork: Stream circuit-breaker expired. Triggering automatic periodic ACRCloud recognition...");
+                foo_artwork::log_printf("foo_artwork: Stream circuit-breaker expired. Triggering automatic periodic ACRCloud recognition...");
                 g_last_recognized_result = artwork_manager::artwork_result();
                 g_acrcloud_cooldown_until = std::chrono::steady_clock::time_point{};
                 g_vis_stream.release();
@@ -908,7 +908,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     // Direct ACRCloud Tier 4 fallback if URL explicitly contains 'forceacr' tag
     if (force_acrcloud) {
         if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
-            console::printf("foo_artwork: Stream URL contains 'forceacr' tag. Bypassing text search to Tier 4 ACRCloud fallback.");
+            foo_artwork::log_printf("foo_artwork: Stream URL contains 'forceacr' tag. Bypassing text search to Tier 4 ACRCloud fallback.");
             search_acrcloud_fallback_async(cache_key, callback);
         } else {
             artwork_result fail_res;
@@ -922,7 +922,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     // If metadata is station name/URL or invalid, skip text search without triggering ACRCloud fallback.
     // Dynamic stream metadata updates (e.g. via ICY info) will trigger text-search APIs once valid song title arrives.
     if (meta.is_station_or_url || !meta.is_valid_search) {
-        console::printf("foo_artwork: Metadata '%s - %s' flagged as station/URL or invalid. Skipping text search.",
+        foo_artwork::log_printf("foo_artwork: Metadata '%s - %s' flagged as station/URL or invalid. Skipping text search.",
                        raw_artist.c_str(), raw_track.c_str());
         artwork_result fail_res;
         fail_res.success = false;
@@ -941,7 +941,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
         if (it != g_in_flight_queries.end()) {
             // Already in-flight: queue callback and exit without triggering duplicate network queries
             it->second.push_back(callback);
-            console::printf("foo_artwork: Search for '%s - %s' is already in-flight. Merging request.", meta.clean_artist.c_str(), meta.clean_title.c_str());
+            foo_artwork::log_printf("foo_artwork: Search for '%s - %s' is already in-flight. Merging request.", meta.clean_artist.c_str(), meta.clean_title.c_str());
             return;
         }
         // Register new in-flight query
@@ -1063,7 +1063,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
     auto now = std::chrono::steady_clock::now();
     if (!is_manual_trigger && now < g_acrcloud_cooldown_until) {
         auto remaining_sec = std::chrono::duration_cast<std::chrono::seconds>(g_acrcloud_cooldown_until - now).count();
-        console::printf("foo_artwork: ACRCloud recognition on cooldown (%d seconds remaining). Skipping scan to protect API quota.", (int)remaining_sec);
+        foo_artwork::log_printf("foo_artwork: ACRCloud recognition on cooldown (%d seconds remaining). Skipping scan to protect API quota.", (int)remaining_sec);
 
         artwork_result fail_res;
         fail_res.success = false;
@@ -1075,9 +1075,9 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
     uint64_t current_task_id = ++g_acrcloud_task_id;
 
     if (is_manual_trigger) {
-        console::printf("foo_artwork: Manual Trigger: Bypassing Circuit-Breaker cooldown to force ACRCloud audio recognition...");
+        foo_artwork::log_printf("foo_artwork: Manual Trigger: Bypassing Circuit-Breaker cooldown to force ACRCloud audio recognition...");
     } else {
-        console::printf("foo_artwork: Tier 4 - Initiating ACRCloud audio recognition fallback...");
+        foo_artwork::log_printf("foo_artwork: Tier 4 - Initiating ACRCloud audio recognition fallback...");
     }
 
     // Submit task to background worker thread (NON-BLOCKING FOR FOOBAR2000 UI)
@@ -1087,7 +1087,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
 
         for (int attempt = 0; attempt < 5; ++attempt) {
             if (current_task_id != g_acrcloud_task_id) {
-                console::printf("foo_artwork: ACRCloud background sampling task cancelled (superseded or artwork found).");
+                foo_artwork::log_printf("foo_artwork: ACRCloud background sampling task cancelled (superseded or artwork found).");
                 return;
             }
 
@@ -1149,14 +1149,14 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                 }
             }
 
-            console::printf("foo_artwork: Waiting for 5-second PCM stream accumulation (attempt %d/5)...", attempt + 1);
+            foo_artwork::log_printf("foo_artwork: Waiting for 5-second PCM stream accumulation (attempt %d/5)...", attempt + 1);
         }
 
-        console::printf("foo_artwork: Sampled %u PCM audio samples (%d Hz) for Option B fingerprinting",
+        foo_artwork::log_printf("foo_artwork: Sampled %u PCM audio samples (%d Hz) for Option B fingerprinting",
                        (unsigned int)pcm_samples.size(), sample_rate);
 
         if (pcm_samples.empty() || pcm_samples.size() < (size_t)(sample_rate * 3.5)) {
-            console::printf("foo_artwork: Stream audio buffering (%u samples). Setting short 4s grace period for audio playback to settle.", (unsigned int)pcm_samples.size());
+            foo_artwork::log_printf("foo_artwork: Stream audio buffering (%u samples). Setting short 4s grace period for audio playback to settle.", (unsigned int)pcm_samples.size());
             g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
             artwork_result fail_res;
             fail_res.success = false;
@@ -1199,7 +1199,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
         );
 
         if (rec.success) {
-            console::printf("foo_artwork: Tier 4 ACRCloud MATCH: '%s - %s'", rec.artist.c_str(), rec.title.c_str());
+            foo_artwork::log_printf("foo_artwork: Tier 4 ACRCloud MATCH: '%s - %s'", rec.artist.c_str(), rec.title.c_str());
 
             // Track Cooldown Guard: Compute remaining track duration (minimum 60 seconds)
             uint32_t rem_ms = 90000;
@@ -1209,12 +1209,12 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
             }
 
             g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(rem_ms);
-            console::printf("foo_artwork: Cooldown guard active: Sleeping ACRCloud scans for %u seconds while playing track.", (unsigned int)(rem_ms / 1000));
+            foo_artwork::log_printf("foo_artwork: Cooldown guard active: Sleeping ACRCloud scans for %u seconds while playing track.", (unsigned int)(rem_ms / 1000));
 
             StreamMetadataResult rec_meta = MetadataCleaner::sanitize_stream_metadata(rec.artist.c_str(), rec.title.c_str());
 
             if (rec_meta.is_valid_search) {
-                console::printf("foo_artwork: Querying online APIs with ACRCloud recognized track '%s - %s'...", rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str());
+                foo_artwork::log_printf("foo_artwork: Querying online APIs with ACRCloud recognized track '%s - %s'...", rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str());
                 auto api_order = get_api_search_order();
                 pfc::string8 current_url = g_current_stream_url;
                 search_apis_by_priority(rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str(), cache_key, [callback, current_url](const artwork_result& res) {
@@ -1229,7 +1229,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
         } else {
             // Non-Music Content / Talk / Ad Backoff: Apply 75-second cooldown on Status 1001 or no match
             g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::seconds(75);
-            console::printf("foo_artwork: ACRCloud returned No Result (talk/ad break/DJ chatter). Setting 75s backoff cooldown to protect API quota.");
+            foo_artwork::log_printf("foo_artwork: ACRCloud returned No Result (talk/ad break/DJ chatter). Setting 75s backoff cooldown to protect API quota.");
         }
 
         artwork_result fail_res;
@@ -1321,7 +1321,7 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
             } else {
                 // Query currently in-flight: merge callback
                 it->second.callbacks.push_back(callback);
-                console::printf("foo_artwork: %s search for '%s - %s' is already in-flight. Merging request.", current_api_name.c_str(), artist.c_str(), track.c_str());
+                foo_artwork::log_printf("foo_artwork: %s search for '%s - %s' is already in-flight. Merging request.", current_api_name.c_str(), artist.c_str(), track.c_str());
                 return;
             }
         }
@@ -1357,7 +1357,7 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         }
 
         if (result.success) {
-            console::printf("foo_artwork: SUCCESS - Artwork retrieved from %s (%u bytes)", api_name.c_str(), (unsigned int)result.data.get_size());
+            foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork retrieved from %s (%u bytes)", api_name.c_str(), (unsigned int)result.data.get_size());
             cancel_acrcloud_tasks(); // Cancel any pending background ACRCloud sampling tasks
             if (cfg_enable_disk_cache || cfg_single_file_cache) {
                 if (!cache_key.is_empty()) {
@@ -1371,7 +1371,7 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
                 if (cb) cb(result);
             }
         } else {
-            console::printf("foo_artwork: API FAILED - %s failed for '%s - %s' (error: %s)", 
+            foo_artwork::log_printf("foo_artwork: API FAILED - %s failed for '%s - %s' (error: %s)", 
                            api_name.c_str(), artist.c_str(), track.c_str(), result.error_message.c_str());
             
             // This API failed, try the next one for all merged callbacks
@@ -1381,7 +1381,7 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         }
     };
 
-    console::printf("foo_artwork: Querying %s for '%s - %s'...", current_api_name.c_str(), artist.c_str(), track.c_str());
+    foo_artwork::log_printf("foo_artwork: Querying %s for '%s - %s'...", current_api_name.c_str(), artist.c_str(), track.c_str());
     
     // Call the appropriate API search function
     switch (current_api) {
@@ -2541,7 +2541,7 @@ bool artwork_manager::parse_musicbrainz_json(const pfc::string8& json_in, std::v
         return !release_ids.empty();
     }
     catch (const std::exception& e) {
-        console::info("MusicBrainz JSON parse error: %s");
+        foo_artwork::log_info("MusicBrainz JSON parse error");
         return false;
     }
 }
