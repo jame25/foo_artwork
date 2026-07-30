@@ -1169,7 +1169,7 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
         const char* cstr = str.c_str();
 
         //console log it for the user to know what filename to use
-        console::info(cstr);
+        foo_artwork::log_info(cstr);
     }
     // Keep previous artwork visible - don't clear source info
     // m_artwork_source remains unchanged to preserve last known source
