@@ -6,6 +6,9 @@
 #include <memory>
 #include <thread>
 #include <atomic>
+#include <map>
+#include <mutex>
+#include <vector>
 
 class artwork_manager {
 public:
