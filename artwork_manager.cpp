@@ -908,7 +908,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     // Direct ACRCloud Tier 4 fallback if URL explicitly contains 'forceacr' tag
     if (force_acrcloud) {
         if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
-            foo_artwork::log_printf("foo_artwork: Stream URL contains 'forceacr' tag. Bypassing text search to Tier 4 ACRCloud fallback.");
+            foo_artwork::log_printf("foo_artwork: Stream URL contains 'forceacr' tag. Bypassing text search to ACRCloud fallback.");
             search_acrcloud_fallback_async(cache_key, callback);
         } else {
             artwork_result fail_res;
@@ -1077,7 +1077,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
     if (is_manual_trigger) {
         foo_artwork::log_printf("foo_artwork: Manual Trigger: Bypassing Circuit-Breaker cooldown to force ACRCloud audio recognition...");
     } else {
-        foo_artwork::log_printf("foo_artwork: Tier 4 - Initiating ACRCloud audio recognition fallback...");
+        foo_artwork::log_printf("foo_artwork: Initiating ACRCloud audio recognition fallback...");
     }
 
     // Submit task to background worker thread (NON-BLOCKING FOR FOOBAR2000 UI)
@@ -1152,7 +1152,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
             foo_artwork::log_printf("foo_artwork: Waiting for 5-second PCM stream accumulation (attempt %d/5)...", attempt + 1);
         }
 
-        foo_artwork::log_printf("foo_artwork: Sampled %u PCM audio samples (%d Hz) for Option B fingerprinting",
+        foo_artwork::log_printf("foo_artwork: Sampled %u PCM audio samples (%d Hz) for fingerprinting",
                        (unsigned int)pcm_samples.size(), sample_rate);
 
         if (pcm_samples.empty() || pcm_samples.size() < (size_t)(sample_rate * 3.5)) {
@@ -1199,7 +1199,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
         );
 
         if (rec.success) {
-            foo_artwork::log_printf("foo_artwork: Tier 4 ACRCloud MATCH: '%s - %s'", rec.artist.c_str(), rec.title.c_str());
+            foo_artwork::log_printf("foo_artwork: ACRCloud MATCH: '%s - %s'", rec.artist.c_str(), rec.title.c_str());
 
             // Track Cooldown Guard: Compute remaining track duration (minimum 60 seconds)
             uint32_t rem_ms = 90000;
