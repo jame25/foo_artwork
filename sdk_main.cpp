@@ -76,7 +76,7 @@ static constexpr GUID guid_cfg_enable_acrcloud = { 0x12345695, 0x1234, 0x1234, {
 static constexpr GUID guid_cfg_acrcloud_host = { 0x12345696, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x05 } };
 static constexpr GUID guid_cfg_acrcloud_access_key = { 0x12345697, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x06 } };
 static constexpr GUID guid_cfg_acrcloud_access_secret = { 0x12345698, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x07 } };
-
+static constexpr GUID guid_cfg_quiet_console = { 0x12345699, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x08 } };
 
 // Configuration variables with default values
 cfg_bool cfg_enable_itunes(guid_cfg_enable_itunes, false);
@@ -129,6 +129,9 @@ cfg_string cfg_cache_folder(guid_cfg_cache_folder, "");  // Custom cache folder 
 
 // Skip local artwork setting
 cfg_bool cfg_skip_local_artwork(guid_cfg_skip_local_artwork, false);  // Always skip local artwork (default disabled)
+
+// Quiet console setting - prevent component console messaging
+cfg_bool cfg_quiet_console(guid_cfg_quiet_console, false);  // Quiet console mode (default disabled)
 
 // Single file cache mode - only keep current track's artwork in cache folder
 cfg_bool cfg_single_file_cache(guid_cfg_single_file_cache, false);  // Single file cache mode (default disabled)
@@ -4607,7 +4610,7 @@ bool artwork_ui_element::create_bitmap_from_data(const std::vector<BYTE>& data) 
     char debug_msg[256];
     sprintf_s(debug_msg, "SDK_MAIN DEBUG: Loaded bitmap pixel format: 0x%08X, Has Alpha: %s", 
              format, (format & PixelFormatAlpha) ? "YES" : "NO");
-    console::info(debug_msg);
+    foo_artwork::log_info(debug_msg);
     
     if (format == PixelFormat32bppARGB) {
     } else if (format == PixelFormat32bppRGB) {
@@ -6482,7 +6485,7 @@ namespace standalone {
         char debug_msg[256];
         sprintf_s(debug_msg, "SDK_MAIN DEBUG 2: Loaded bitmap pixel format: 0x%08X, Has Alpha: %s", 
                  format, (format & PixelFormatAlpha) ? "YES" : "NO");
-        console::info(debug_msg);
+        foo_artwork::log_info(debug_msg);
         
         if (format == PixelFormat32bppARGB) {
         } else if (format == PixelFormat32bppRGB) {
