@@ -1185,18 +1185,12 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
                                 !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
         }
         
-        // Check if this stream can have embedded artwork (like YouTube videos)
-        bool can_have_embedded_artwork = !is_internet_stream || is_stream_with_possible_artwork(p_track);
-
-        if (can_have_embedded_artwork) {
-            // For local files and streams that can have embedded artwork (YouTube videos),
-            // try to load tagged artwork first
-            // Clear any existing artwork loading state to avoid conflicts
-            m_artwork_loaded = false;
-            
-            // Use the artwork manager directly to try tagged artwork first
-            try {
-                artwork_manager::get_artwork_async(p_track, [this, p_track](const artwork_manager::artwork_result& result) {
+        m_artwork_loaded = false;
+        
+        // Invoke artwork manager pipeline for all tracks (local files and internet streams)
+        // artwork_manager handles embedded artwork, cache, stream monitoring, and ACRCloud fallback
+        try {
+            artwork_manager::get_artwork_async(p_track, [this, p_track](const artwork_manager::artwork_result& result) {
                 // Handle the result - load artwork directly instead of using events
                 if (result.success && result.data.get_size() > 0) {
                     // Convert pfc::array_t to album_art_data::ptr and load it
@@ -1216,14 +1210,8 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
                     }
                 }
             });
-            } catch (...) {
-                // Silently handle any exceptions from artwork manager
-            }
-        } else {
-            // For internet radio streams that cannot have embedded artwork,
-            // skip tagged artwork search to avoid cached results from previous searches
-            // Clear any existing artwork loading state
-            m_artwork_loaded = false;
+        } catch (...) {
+            // Silently handle any exceptions from artwork manager
         }
         
         // For internet streams, call the original compatibility function
