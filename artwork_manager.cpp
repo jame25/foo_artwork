@@ -304,6 +304,17 @@ static std::atomic<uint64_t> g_acrcloud_task_id{0};
 static artwork_manager::artwork_result g_last_recognized_result;
 static pfc::string8 g_last_recognized_stream_url;
 static std::atomic<uint64_t> g_rms_detector_token{0};
+
+struct ApiDedupEntry {
+    std::vector<artwork_manager::artwork_callback> callbacks;
+    bool completed = false;
+    artwork_manager::artwork_result result;
+    std::chrono::steady_clock::time_point completed_time;
+};
+
+static std::mutex g_in_flight_mutex;
+static std::map<std::string, std::vector<artwork_manager::artwork_callback>> g_in_flight_queries;
+static std::map<std::string, ApiDedupEntry> g_api_dedup_map;
 static visualisation_stream::ptr get_persistent_vis_stream();
 
 void artwork_manager::initialize() {
@@ -318,6 +329,12 @@ void artwork_manager::shutdown() {
     g_rms_detector_token++;
     g_acrcloud_task_id++;
     g_vis_stream.release();
+
+    {
+        std::lock_guard<std::mutex> lock(g_in_flight_mutex);
+        g_in_flight_queries.clear();
+        g_api_dedup_map.clear();
+    }
 
     if (!initialized_.exchange(false)) return; // Not initialized
     
@@ -914,6 +931,41 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
         return;
     }
 
+    // Deduplicate in-flight search requests for identical metadata
+    pfc::string8 dedup_key_pfc = generate_cache_key(meta.clean_artist.c_str(), meta.clean_title.c_str());
+    std::string dedup_key = dedup_key_pfc.c_str();
+
+    {
+        std::lock_guard<std::mutex> lock(g_in_flight_mutex);
+        auto it = g_in_flight_queries.find(dedup_key);
+        if (it != g_in_flight_queries.end()) {
+            // Already in-flight: queue callback and exit without triggering duplicate network queries
+            it->second.push_back(callback);
+            console::printf("foo_artwork: Search for '%s - %s' is already in-flight. Merging request.", meta.clean_artist.c_str(), meta.clean_title.c_str());
+            return;
+        }
+        // Register new in-flight query
+        g_in_flight_queries[dedup_key].push_back(callback);
+    }
+
+    // Callback wrapper to dispatch result to all merged in-flight listeners when query completes
+    auto final_callback = [dedup_key](const artwork_result& result) {
+        std::vector<artwork_callback> callbacks_to_call;
+        {
+            std::lock_guard<std::mutex> lock(g_in_flight_mutex);
+            auto it = g_in_flight_queries.find(dedup_key);
+            if (it != g_in_flight_queries.end()) {
+                callbacks_to_call = std::move(it->second);
+                g_in_flight_queries.erase(it);
+            }
+        }
+        for (const auto& cb : callbacks_to_call) {
+            if (cb) {
+                cb(result);
+            }
+        }
+    };
+
     auto api_order = get_api_search_order();
 
     pfc::string8 first_art = meta.first_artist.c_str();
@@ -931,7 +983,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     // Tier 1 Execution
     search_apis_by_priority(first_art, clean_title, cache_key, [=](const artwork_result& r1) {
         if (r1.success) {
-            callback(r1);
+            final_callback(r1);
             return;
         }
 
@@ -939,41 +991,41 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
             if (!second_art.is_empty() && second_art != first_art) {
                 search_apis_by_priority(second_art, clean_title, cache_key, [=](const artwork_result& r1_2) {
                     if (r1_2.success) {
-                        callback(r1_2);
+                        final_callback(r1_2);
                         return;
                     }
                     if (!full_art.is_empty() && full_art != first_art && full_art != second_art) {
                         search_apis_by_priority(full_art, clean_title, cache_key, [=](const artwork_result& r1_3) {
-                            if (r1_3.success) callback(r1_3);
-                            else search_acrcloud_fallback_async(cache_key, callback);
+                            if (r1_3.success) final_callback(r1_3);
+                            else search_acrcloud_fallback_async(cache_key, final_callback);
                         }, api_order, 0);
                     } else {
-                        search_acrcloud_fallback_async(cache_key, callback);
+                        search_acrcloud_fallback_async(cache_key, final_callback);
                     }
                 }, api_order, 0);
             } else if (!full_art.is_empty() && full_art != first_art) {
                 search_apis_by_priority(full_art, clean_title, cache_key, [=](const artwork_result& r1_3) {
-                    if (r1_3.success) callback(r1_3);
-                    else search_acrcloud_fallback_async(cache_key, callback);
+                    if (r1_3.success) final_callback(r1_3);
+                    else search_acrcloud_fallback_async(cache_key, final_callback);
                 }, api_order, 0);
             } else {
                 // Tier 1 failed. Try Tier 2 (Primary Title) if available
                 if (!primary_title.is_empty() && primary_title != clean_title) {
                     search_apis_by_priority(first_art, primary_title, cache_key, [=](const artwork_result& r2) {
-                        if (r2.success) callback(r2);
+                        if (r2.success) final_callback(r2);
                         else {
                             // Try Tier 3 (Swapped Fallback)
                             search_apis_by_priority(clean_title, full_art, cache_key, [=](const artwork_result& r3) {
-                                if (r3.success) callback(r3);
-                                else search_acrcloud_fallback_async(cache_key, callback);
+                                if (r3.success) final_callback(r3);
+                                else search_acrcloud_fallback_async(cache_key, final_callback);
                             }, api_order, 0);
                         }
                     }, api_order, 0);
                 } else {
                     // Try Tier 3 (Swapped Fallback)
                     search_apis_by_priority(clean_title, full_art, cache_key, [=](const artwork_result& r3) {
-                        if (r3.success) callback(r3);
-                        else search_acrcloud_fallback_async(cache_key, callback);
+                        if (r3.success) final_callback(r3);
+                        else search_acrcloud_fallback_async(cache_key, final_callback);
                     }, api_order, 0);
                 }
             }
@@ -1171,7 +1223,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                         g_last_recognized_stream_url = current_url;
                     }
                     callback(res);
-                }, api_order, 0, true);
+                }, api_order, 0, false);
                 return;
             }
         } else {
@@ -1227,8 +1279,62 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         return;
     }
     
-    // Create a callback that will either return success or try the next API
-    auto api_callback = [artist, track, cache_key, callback, api_order, index, force_enable_apis](const artwork_result& result) {
+    pfc::string8 current_api_name;
+    switch (current_api) {
+        case ApiType::iTunes: current_api_name = "iTunes"; break;
+        case ApiType::Deezer: current_api_name = "Deezer"; break;
+        case ApiType::LastFm: current_api_name = "Last.fm"; break;
+        case ApiType::MusicBrainz: current_api_name = "MusicBrainz"; break;
+        case ApiType::Discogs: current_api_name = "Discogs"; break;
+    }
+
+    std::string api_dedup_key = current_api_name.c_str();
+    api_dedup_key += "|";
+    api_dedup_key += artist.c_str();
+    api_dedup_key += "|";
+    api_dedup_key += track.c_str();
+
+    {
+        std::lock_guard<std::mutex> lock(g_in_flight_mutex);
+        auto now = std::chrono::steady_clock::now();
+
+        // Clean up stale completed entries older than 60 seconds
+        for (auto it = g_api_dedup_map.begin(); it != g_api_dedup_map.end(); ) {
+            if (it->second.completed && (now - it->second.completed_time > std::chrono::seconds(60))) {
+                it = g_api_dedup_map.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        auto it = g_api_dedup_map.find(api_dedup_key);
+        if (it != g_api_dedup_map.end()) {
+            if (it->second.completed) {
+                // Query recently completed within last 60 seconds
+                artwork_result res = it->second.result;
+                if (res.success) {
+                    async_io_manager::instance().post_to_main_thread([callback, res]() {
+                        if (callback) callback(res);
+                    });
+                    return;
+                }
+            } else {
+                // Query currently in-flight: merge callback
+                it->second.callbacks.push_back(callback);
+                console::printf("foo_artwork: %s search for '%s - %s' is already in-flight. Merging request.", current_api_name.c_str(), artist.c_str(), track.c_str());
+                return;
+            }
+        }
+
+        // Register new query entry
+        ApiDedupEntry entry;
+        entry.completed = false;
+        entry.callbacks.push_back(callback);
+        g_api_dedup_map[api_dedup_key] = std::move(entry);
+    }
+    
+    // Create a callback that will either return success or try the next API for all pending callbacks
+    auto api_callback = [artist, track, cache_key, api_order, index, force_enable_apis, api_dedup_key](const artwork_result& result) {
         pfc::string8 api_name;
         switch (api_order[index]) {
             case ApiType::iTunes: api_name = "iTunes"; break;
@@ -1238,6 +1344,18 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
             case ApiType::Discogs: api_name = "Discogs"; break;
         }
         
+        std::vector<artwork_callback> callbacks_to_call;
+        {
+            std::lock_guard<std::mutex> lock(g_in_flight_mutex);
+            auto it = g_api_dedup_map.find(api_dedup_key);
+            if (it != g_api_dedup_map.end()) {
+                it->second.completed = true;
+                it->second.result = result;
+                it->second.completed_time = std::chrono::steady_clock::now();
+                callbacks_to_call = std::move(it->second.callbacks);
+            }
+        }
+
         if (result.success) {
             console::printf("foo_artwork: SUCCESS - Artwork retrieved from %s (%u bytes)", api_name.c_str(), (unsigned int)result.data.get_size());
             cancel_acrcloud_tasks(); // Cancel any pending background ACRCloud sampling tasks
@@ -1249,24 +1367,19 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
                     async_io_manager::instance().cache_set_async("current", result.data);
                 }
             }
-            callback(result);
+            for (const auto& cb : callbacks_to_call) {
+                if (cb) cb(result);
+            }
         } else {
             console::printf("foo_artwork: API FAILED - %s failed for '%s - %s' (error: %s)", 
                            api_name.c_str(), artist.c_str(), track.c_str(), result.error_message.c_str());
             
-            // This API failed, try the next one
-            search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1, force_enable_apis);
+            // This API failed, try the next one for all merged callbacks
+            for (const auto& cb : callbacks_to_call) {
+                search_apis_by_priority(artist, track, cache_key, cb, api_order, index + 1, force_enable_apis);
+            }
         }
     };
-
-    pfc::string8 current_api_name;
-    switch (current_api) {
-        case ApiType::iTunes: current_api_name = "iTunes"; break;
-        case ApiType::Deezer: current_api_name = "Deezer"; break;
-        case ApiType::LastFm: current_api_name = "Last.fm"; break;
-        case ApiType::MusicBrainz: current_api_name = "MusicBrainz"; break;
-        case ApiType::Discogs: current_api_name = "Discogs"; break;
-    }
 
     console::printf("foo_artwork: Querying %s for '%s - %s'...", current_api_name.c_str(), artist.c_str(), track.c_str());
     
