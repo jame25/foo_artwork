@@ -56,3 +56,4 @@ using namespace Gdiplus;
 #include "columns_ui/foobar2000/SDK/vis.h"
 
 #include "resource.h"
+#include "foo_artwork_log.h"
