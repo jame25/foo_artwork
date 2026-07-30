@@ -762,8 +762,10 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
         if (new_stream_connect) {
             g_current_stream_url = file_path;
             reset_acrcloud_cooldown(); // Reset cooldown on new radio stream connection
-            if (force_acrcloud || meta.is_station_or_url || !meta.is_valid_search) {
+            if (force_acrcloud) {
                 start_rms_silence_detector(file_path);
+            }
+            if (meta.is_station_or_url || !meta.is_valid_search) {
                 start_initial_stream_metadata_monitor(file_path);
             }
         }
@@ -920,9 +922,9 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     }
 
     // If metadata is station name/URL or invalid, skip text search without triggering ACRCloud fallback.
-    // Dynamic stream metadata updates (e.g. via ICY info) will trigger text-search APIs once valid song title arrives.
+    // Dynamic stream metadata updates (e.g. via ICY info or initial stream monitor) will trigger text-search APIs once valid song title arrives.
     if (meta.is_station_or_url || !meta.is_valid_search) {
-        foo_artwork::log_printf("foo_artwork: Metadata '%s - %s' flagged as station/URL or invalid. Skipping text search.",
+        foo_artwork::log_printf("foo_artwork: Metadata '%s - %s' flagged as station/URL or invalid.",
                        raw_artist.c_str(), raw_track.c_str());
         artwork_result fail_res;
         fail_res.success = false;
@@ -974,11 +976,20 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     pfc::string8 clean_title = meta.clean_title.c_str();
     pfc::string8 primary_title = meta.primary_title.c_str();
 
-    // 4-Tier Fallback Query Pipeline:
+    auto notify_text_search_failed = [=]() {
+        foo_artwork::log_printf("foo_artwork: Text search failed for '%s - %s'. No artwork found from any online API.",
+                                 meta.clean_artist.c_str(), meta.clean_title.c_str());
+        artwork_result fail_res;
+        fail_res.success = false;
+        fail_res.error_message = "No artwork found in text search";
+        final_callback(fail_res);
+    };
+
+    // 3-Tier Text Search Query Pipeline:
     // Tier 1: Full Track Title (First Artist -> Second Artist -> Full Clean Artist)
     // Tier 2: Primary Track Title (First Artist -> Second Artist -> Full Clean Artist)
     // Tier 3: Swapped Fallback (Title as Artist, Artist as Track)
-    // Tier 4: ACRCloud Audio Fingerprinting Recognition
+    // (Note: ACRCloud audio fingerprinting is dedicated to untagged streams/station URLs and does not trigger on text search failures)
 
     // Tier 1 Execution
     search_apis_by_priority(first_art, clean_title, cache_key, [=](const artwork_result& r1) {
@@ -997,16 +1008,16 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
                     if (!full_art.is_empty() && full_art != first_art && full_art != second_art) {
                         search_apis_by_priority(full_art, clean_title, cache_key, [=](const artwork_result& r1_3) {
                             if (r1_3.success) final_callback(r1_3);
-                            else search_acrcloud_fallback_async(cache_key, final_callback);
+                            else notify_text_search_failed();
                         }, api_order, 0);
                     } else {
-                        search_acrcloud_fallback_async(cache_key, final_callback);
+                        notify_text_search_failed();
                     }
                 }, api_order, 0);
             } else if (!full_art.is_empty() && full_art != first_art) {
                 search_apis_by_priority(full_art, clean_title, cache_key, [=](const artwork_result& r1_3) {
                     if (r1_3.success) final_callback(r1_3);
-                    else search_acrcloud_fallback_async(cache_key, final_callback);
+                    else notify_text_search_failed();
                 }, api_order, 0);
             } else {
                 // Tier 1 failed. Try Tier 2 (Primary Title) if available
@@ -1017,7 +1028,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
                             // Try Tier 3 (Swapped Fallback)
                             search_apis_by_priority(clean_title, full_art, cache_key, [=](const artwork_result& r3) {
                                 if (r3.success) final_callback(r3);
-                                else search_acrcloud_fallback_async(cache_key, final_callback);
+                                else notify_text_search_failed();
                             }, api_order, 0);
                         }
                     }, api_order, 0);
@@ -1025,7 +1036,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
                     // Try Tier 3 (Swapped Fallback)
                     search_apis_by_priority(clean_title, full_art, cache_key, [=](const artwork_result& r3) {
                         if (r3.success) final_callback(r3);
-                        else search_acrcloud_fallback_async(cache_key, final_callback);
+                        else notify_text_search_failed();
                     }, api_order, 0);
                 }
             }
@@ -1091,6 +1102,8 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                 return;
             }
 
+            foo_artwork::log_printf("foo_artwork: Waiting for 5-second PCM stream accumulation (attempt %d/5)...", attempt + 1);
+
             // Sleep on BACKGROUND WORKER THREAD (UI stays completely fluid and responsive!)
             if (attempt > 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1500));
@@ -1103,7 +1116,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
             async_io_manager::instance().post_to_main_thread([&]() {
                 bool captured = false;
                 try {
-                    if (is_manual_trigger && attempt == 0) {
+                    if (attempt == 0) {
                         g_vis_stream.release();
                     }
                     auto stream = get_persistent_vis_stream();
@@ -1148,8 +1161,6 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                     break; // Captured >= 4.5s of audio!
                 }
             }
-
-            foo_artwork::log_printf("foo_artwork: Waiting for 5-second PCM stream accumulation (attempt %d/5)...", attempt + 1);
         }
 
         foo_artwork::log_printf("foo_artwork: Sampled %u PCM audio samples (%d Hz) for fingerprinting",
