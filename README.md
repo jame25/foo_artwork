@@ -11,7 +11,6 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 - **Online API Integration**: Falls back to iTunes, Deezer, Last.fm, MusicBrainz, Discogs, and ACRCloud APIs when local artwork is not found
 - **User-Customizable API Priority**: Configure the order of API fallback chain through an intuitive interface
 - **ACRCloud Live Audio Recognition**: Acoustic fingerprinting recognition engine (local PCM sampling with RIFF WAV payload) that identifies live radio streams and untagged tracks
-- **Smart Rate-Limiting & Manual Hotkey Trigger**: Circuit-breaker track duration timer, non-music exponential backoff, and a customizable hotkey shortcut (`View > Force ACRCloud Audio Recognition`) for manual lookups
 - **Internet Radio Support**: Displays artwork for internet radio streams using metadata or acoustic recognition
 - **Custom Station Logos**: Support for custom logo files for internet radio stations
 - **Configurable API Services**: Enable/disable individual API services and manage API keys
@@ -63,7 +62,6 @@ The component supports six online artwork and audio recognition services.
 6. **ACRCloud Audio Recognition API** (Optional Host/Key/Secret required)
    - Uses ACRCloud identify REST API for acoustic fingerprinting recognition
    - Samples 5 seconds of live PCM stream audio locally and generates a 16 kHz RIFF WAV payload
-   - Bypasses text search when live stream metadata is missing, invalid, or a station URL
    - **`?forceacr` Stream URL Tag Support**: Add `?forceacr` or `&forceacr` to the end of any radio stream URL (e.g. `http://stream.url/live.mp3?forceacr`) to bypass text search entirely and force ACRCloud audio fingerprinting as the exclusive recognition method for that stream.
    - **Stable 3.0s Acoustic Transition Engine & 2s Settling Delay**: Background monitor polls stream audio every 3 seconds. When a song transition or DJ crossfade occurs, enforces a **2-second post-transition settling delay** before sampling audio for ACRCloud recognition, ensuring quick, accurate updates!
    - Manual hotkey triggering (`View > Force ACRCloud Audio Recognition`).
