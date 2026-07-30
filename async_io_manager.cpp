@@ -843,7 +843,7 @@ void async_io_manager::async_cache::clear_all() {
         }
 
         fb2k::inMainThread([]() {
-            console::print("foo_artwork: Artwork cache cleared.");
+            foo_artwork::log_print("foo_artwork: Artwork cache cleared.");
         });
     });
 }
@@ -1142,7 +1142,7 @@ void async_io_manager::perform_http_get(const pfc::string8& url, http_request_ca
 
         // Log retry attempt
         if (attempt < max_retries) {
-            console::printf("foo_artwork: HTTP request failed (attempt %d/%d), retrying: %s",
+            foo_artwork::log_printf("foo_artwork: HTTP request failed (attempt %d/%d), retrying: %s",
                            attempt + 1, max_retries + 1, error_message.c_str());
         }
     }
@@ -1335,7 +1335,7 @@ void async_io_manager::perform_http_get_binary(const pfc::string8& url, file_rea
 
         // Log retry attempt
         if (attempt < max_retries) {
-            console::printf("foo_artwork: Binary HTTP request failed (attempt %d/%d), retrying: %s",
+            foo_artwork::log_printf("foo_artwork: Binary HTTP request failed (attempt %d/%d), retrying: %s",
                            attempt + 1, max_retries + 1, error_message.c_str());
         }
     }
