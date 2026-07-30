@@ -39,6 +39,7 @@
 #define IDC_ACRCLOUD_HOST               1034
 #define IDC_ACRCLOUD_ACCESS_KEY          1035
 #define IDC_ACRCLOUD_ACCESS_SECRET       1036
+#define IDC_QUIET_CONSOLE                1037
 
 // Next default values for new objects
 //
@@ -46,7 +47,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        104
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1037
+#define _APS_NEXT_CONTROL_VALUE         1038
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
