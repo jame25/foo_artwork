@@ -201,7 +201,7 @@ bool ACRCloudClient::create_fingerprint(
         }
     }
 
-    foo_artwork::log_printf("foo_artwork: Option B Local Fingerprint generated (%u bytes)", (unsigned int)out_fp.size());
+    foo_artwork::log_printf("foo_artwork: Local Fingerprint generated (%u bytes)", (unsigned int)out_fp.size());
     return !out_fp.empty();
 }
 
@@ -227,7 +227,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::recognize_fingerprint(
     }
     std::string url = host_str + "/v1/identify";
 
-    foo_artwork::log_printf("foo_artwork: Option B ACRCloud Fingerprint Recognition initiated (Host: %s, FP size: %u bytes)",
+    foo_artwork::log_printf("foo_artwork: ACRCloud Fingerprint Recognition initiated (Host: %s, FP size: %u bytes)",
                    host_str.c_str(), (unsigned int)fp_size);
 
     std::string boundary = "----ACRCloudBoundary123456";
@@ -331,7 +331,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::recognize_fingerprint(
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    foo_artwork::log_printf("foo_artwork: Option B ACRCloud Response Received (%u bytes)", (unsigned int)response_text.size());
+    foo_artwork::log_printf("foo_artwork: ACRCloud Response Received (%u bytes)", (unsigned int)response_text.size());
 
     return parse_response_json(response_text);
 }
