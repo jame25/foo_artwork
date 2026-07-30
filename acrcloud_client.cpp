@@ -113,7 +113,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::parse_response_json(const std:
             int code = j["status"]["code"].get<int>();
             std::string msg = j["status"].contains("msg") ? j["status"]["msg"].get<std::string>() : "Unknown";
 
-            console::printf("foo_artwork: ACRCloud Response Status Code: %d (%s)", code, msg.c_str());
+            foo_artwork::log_printf("foo_artwork: ACRCloud Response Status Code: %d (%s)", code, msg.c_str());
 
             if (code == 0 && j.contains("metadata") && j["metadata"].contains("music")) {
                 auto& music_list = j["metadata"]["music"];
@@ -138,7 +138,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::parse_response_json(const std:
                     }
                     res.success = !res.artist.empty() && !res.title.empty();
                     if (res.success) {
-                        console::printf("foo_artwork: ACRCloud Recognized Track: '%s - %s'", res.artist.c_str(), res.title.c_str());
+                        foo_artwork::log_printf("foo_artwork: ACRCloud Recognized Track: '%s - %s'", res.artist.c_str(), res.title.c_str());
                     }
                 }
             } else {
@@ -147,7 +147,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::parse_response_json(const std:
         }
     } catch (const std::exception& e) {
         res.error_message = e.what();
-        console::printf("foo_artwork: ACRCloud JSON Parse Error: %s", e.what());
+        foo_artwork::log_printf("foo_artwork: ACRCloud JSON Parse Error: %s", e.what());
     }
     return res;
 }
@@ -201,7 +201,7 @@ bool ACRCloudClient::create_fingerprint(
         }
     }
 
-    console::printf("foo_artwork: Option B Local Fingerprint generated (%u bytes)", (unsigned int)out_fp.size());
+    foo_artwork::log_printf("foo_artwork: Option B Local Fingerprint generated (%u bytes)", (unsigned int)out_fp.size());
     return !out_fp.empty();
 }
 
@@ -227,7 +227,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::recognize_fingerprint(
     }
     std::string url = host_str + "/v1/identify";
 
-    console::printf("foo_artwork: Option B ACRCloud Fingerprint Recognition initiated (Host: %s, FP size: %u bytes)",
+    foo_artwork::log_printf("foo_artwork: Option B ACRCloud Fingerprint Recognition initiated (Host: %s, FP size: %u bytes)",
                    host_str.c_str(), (unsigned int)fp_size);
 
     std::string boundary = "----ACRCloudBoundary123456";
@@ -331,7 +331,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::recognize_fingerprint(
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    console::printf("foo_artwork: Option B ACRCloud Response Received (%u bytes)", (unsigned int)response_text.size());
+    foo_artwork::log_printf("foo_artwork: Option B ACRCloud Response Received (%u bytes)", (unsigned int)response_text.size());
 
     return parse_response_json(response_text);
 }
@@ -412,7 +412,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::recognize_audio(
     }
     std::string url = host_str + "/v1/identify";
 
-    console::printf("foo_artwork: ACRCloud Audio Snippet Recognition initiated (Host: %s, WAV size: %u bytes)",
+    foo_artwork::log_printf("foo_artwork: ACRCloud Audio Snippet Recognition initiated (Host: %s, WAV size: %u bytes)",
                    host_str.c_str(), (unsigned int)wav_payload.size());
 
     std::string boundary = "----ACRCloudBoundary123456";
@@ -513,7 +513,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::recognize_audio(
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    console::printf("foo_artwork: ACRCloud Response Received (%u bytes)", (unsigned int)response_text.size());
+    foo_artwork::log_printf("foo_artwork: ACRCloud Response Received (%u bytes)", (unsigned int)response_text.size());
 
     return parse_response_json(response_text);
 }
