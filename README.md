@@ -2,15 +2,17 @@
 
 A comprehensive foobar2000 component that displays cover artwork for currently playing tracks and internet radio streams with intelligent API fallback support. Both Default UI (DUI) and Columns UI (CUI) are supported.
 
-<img width="745" height="553" alt="foo_artwork" src="https://github.com/user-attachments/assets/21bbdabe-5948-4129-9652-e35f939a30b7" />
+<img width="735" height="539" alt="foo_artwork" src="https://github.com/user-attachments/assets/4f76362b-3bb2-4e6d-baad-325022d7fe3a" />
 
 
 ## Features
 
 - **Local Artwork Search**: Automatically searches for artwork files defined in foobar2000 Preferences > Display > Album Art
-- **Online API Integration**: Falls back to iTunes, Deezer, Last.fm, MusicBrainz, and Discogs APIs when local artwork is not found
+- **Online API Integration**: Falls back to iTunes, Deezer, Last.fm, MusicBrainz, Discogs, and ACRCloud APIs when local artwork is not found
 - **User-Customizable API Priority**: Configure the order of API fallback chain through an intuitive interface
-- **Internet Radio Support**: Displays artwork for internet radio streams using metadata
+- **ACRCloud Live Audio Recognition**: Acoustic fingerprinting recognition engine (Option B local PCM sampling with RIFF WAV payload) that identifies live radio streams and untagged tracks
+- **Smart Rate-Limiting & Manual Hotkey Trigger**: Circuit-breaker track duration timer, non-music (status 1001) exponential backoff, and a customizable hotkey shortcut (`View > Force ACRCloud Audio Recognition`) for manual lookups
+- **Internet Radio Support**: Displays artwork for internet radio streams using metadata or acoustic recognition
 - **Custom Station Logos**: Support for custom logo files for internet radio stations
 - **Configurable API Services**: Enable/disable individual API services and manage API keys
 - **Smart Caching**: Prevents repeated API calls for the same track with an automatic 1 GB (1000 MB) disk cache limit and LRU cleanup
@@ -30,7 +32,7 @@ A comprehensive foobar2000 component that displays cover artwork for currently p
 
 ### API Services
 
-The component supports five online artwork services.
+The component supports six online artwork and audio recognition services.
 
 1. **iTunes API** (No API key required)
    - Uses iTunes Search API
@@ -57,6 +59,15 @@ The component supports five online artwork services.
    - API key is optional if consumer credentials are provided
    - Excellent for rare, underground, and vinyl releases
    - Get your credentials from: https://www.discogs.com/settings/developers
+
+6. **ACRCloud Audio Recognition API** (Optional Host/Key/Secret required)
+   - Uses ACRCloud identify REST API for acoustic fingerprinting recognition
+   - Samples 5 seconds of live PCM stream audio locally and generates a 16 kHz RIFF WAV payload
+   - Bypasses text search when live stream metadata is missing, invalid, or a station URL
+   - **`?forceacr` Stream URL Tag Support**: Add `?forceacr` or `&forceacr` to the end of any radio stream URL (e.g. `http://stream.url/live.mp3?forceacr`) to bypass text search entirely and force ACRCloud audio fingerprinting as the exclusive recognition method for that stream.
+   - **Stable 3.0s Acoustic Transition Engine & 2s Settling Delay**: Background monitor polls stream audio every 3 seconds. When a song transition or DJ crossfade occurs ($\Delta D \ge 3.5\text{ dB}$), enforces a **2-second post-transition settling delay** before sampling audio for ACRCloud recognition, ensuring quick, accurate updates!
+   - Features 75s non-music exponential backoffs and manual hotkey triggering (`View > Force ACRCloud Audio Recognition`).
+   - Configure via Preferences → Tools → Artwork Display → ACRCloud
 
 ### Local Artwork Search
 
@@ -260,6 +271,7 @@ The component uses the following priority order for artwork retrieval:
 4. **Last.fm API**: Searches Last.fm database (if enabled and API key provided)
 5. **MusicBrainz API**: Searches MusicBrainz/Cover Art Archive (if enabled)
 6. **Discogs API**: Searches Discogs database (if enabled and API key provided)
+7. **ACRCloud API**: Acoustic audio recognition for untagged streams, station URLs, or when text API searches yield no results
 
 ## Inverted Stations (artist is title , title is artist)
 
