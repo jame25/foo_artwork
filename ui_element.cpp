@@ -829,7 +829,7 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
         const char* cstr = str.c_str();
 
         //console log it for the user to know what filename to use
-        console::info(cstr);
+        foo_artwork::log_info(cstr);
     }
 
     //try to get infobar values
