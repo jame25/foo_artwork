@@ -33,6 +33,7 @@ public:
     static void force_acrcloud_lookup();
     static void reset_acrcloud_cooldown();
     static void cancel_acrcloud_tasks();
+    static void on_stream_metadata_changed(const char* artist, const char* title);
     
     // Initialize/shutdown async I/O system
     static void initialize();
