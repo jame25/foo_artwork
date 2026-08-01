@@ -202,9 +202,16 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
         // Enable/disable browse cache folder button based on disk cache enabled state
         EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_CACHE_FOLDER), (cache_sel == 0 || cache_sel == 1) ? TRUE : FALSE);
 
-        // Initialize skip local artwork and quiet console checkboxes
+        // Initialize skip local artwork checkbox and console logging mode combobox
         CheckDlgButton(hwnd, IDC_SKIP_LOCAL_ARTWORK, cfg_skip_local_artwork ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hwnd, IDC_QUIET_CONSOLE, cfg_quiet_console ? BST_CHECKED : BST_UNCHECKED);
+
+        HWND hConsoleMode = GetDlgItem(hwnd, IDC_CONSOLE_LOGGING_MODE);
+        SendMessage(hConsoleMode, CB_ADDSTRING, 0, (LPARAM)L"Quiet");
+        SendMessage(hConsoleMode, CB_ADDSTRING, 0, (LPARAM)L"Track Info");
+        SendMessage(hConsoleMode, CB_ADDSTRING, 0, (LPARAM)L"Debug");
+        int console_sel = (int)cfg_console_logging_mode;
+        if (console_sel < 0 || console_sel > 2) console_sel = 1;
+        SendMessage(hConsoleMode, CB_SETCURSEL, console_sel, 0);
 
         p_this->update_controls();
         p_this->m_has_changes = false;
@@ -222,8 +229,7 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
             LOWORD(wp) == IDC_ENABLE_LASTFM ||
             LOWORD(wp) == IDC_ENABLE_DEEZER ||
             LOWORD(wp) == IDC_ENABLE_MUSICBRAINZ ||
-            LOWORD(wp) == IDC_SKIP_LOCAL_ARTWORK ||
-            LOWORD(wp) == IDC_QUIET_CONSOLE)) {
+            LOWORD(wp) == IDC_SKIP_LOCAL_ARTWORK)) {
             p_this->update_controls();
             p_this->on_changed();
         }
@@ -237,7 +243,8 @@ INT_PTR CALLBACK artwork_preferences::ConfigProc(HWND hwnd, UINT msg, WPARAM wp,
             LOWORD(wp) == IDC_PRIORITY_2 ||
             LOWORD(wp) == IDC_PRIORITY_3 ||
             LOWORD(wp) == IDC_PRIORITY_4 ||
-            LOWORD(wp) == IDC_PRIORITY_5)) {
+            LOWORD(wp) == IDC_PRIORITY_5 ||
+            LOWORD(wp) == IDC_CONSOLE_LOGGING_MODE)) {
             p_this->on_changed();
         }
         else if (HIWORD(wp) == CBN_SELCHANGE && LOWORD(wp) == IDC_ENABLE_DISK_CACHE) {
@@ -324,15 +331,16 @@ bool artwork_preferences::has_changed() {
     int expected_cache_sel = cfg_enable_disk_cache ? (cfg_single_file_cache ? 1 : 0) : 2;
     bool disk_cache_changed = (disk_cache_selection == 3) || (disk_cache_selection != expected_cache_sel);
 
-    // Check skip local artwork and quiet console checkboxes
+    // Check skip local artwork and console logging mode
     bool skip_local_changed = (IsDlgButtonChecked(m_hwnd, IDC_SKIP_LOCAL_ARTWORK) == BST_CHECKED) != cfg_skip_local_artwork;
-    bool quiet_console_changed = (IsDlgButtonChecked(m_hwnd, IDC_QUIET_CONSOLE) == BST_CHECKED) != cfg_quiet_console;
+    int console_logging_sel = SendMessage(GetDlgItem(m_hwnd, IDC_CONSOLE_LOGGING_MODE), CB_GETCURSEL, 0, 0);
+    bool console_logging_changed = (console_logging_sel != (int)cfg_console_logging_mode);
 
     return itunes_changed || discogs_changed || lastfm_changed || deezer_changed || musicbrainz_changed ||
         discogs_key_changed || discogs_consumer_key_changed ||
         discogs_consumer_secret_changed || lastfm_key_changed || disk_cache_changed ||
         order1_changed || order2_changed || order3_changed || order4_changed || order5_changed ||
-        skip_local_changed || quiet_console_changed;
+        skip_local_changed || console_logging_changed;
 }
 
 void artwork_preferences::apply_settings() {
@@ -378,9 +386,12 @@ void artwork_preferences::apply_settings() {
             cfg_single_file_cache = (disk_cache_selection == 1);
         }
 
-        // Apply skip local artwork & quiet console settings
+        // Apply skip local artwork & console logging mode settings
         cfg_skip_local_artwork = (IsDlgButtonChecked(m_hwnd, IDC_SKIP_LOCAL_ARTWORK) == BST_CHECKED);
-        cfg_quiet_console = (IsDlgButtonChecked(m_hwnd, IDC_QUIET_CONSOLE) == BST_CHECKED);
+        int console_logging_sel = SendMessage(GetDlgItem(m_hwnd, IDC_CONSOLE_LOGGING_MODE), CB_GETCURSEL, 0, 0);
+        if (console_logging_sel >= 0 && console_logging_sel <= 2) {
+            cfg_console_logging_mode = console_logging_sel;
+        }
     }
 }
 
@@ -430,11 +441,11 @@ void artwork_preferences::reset_settings() {
         cfg_enable_disk_cache = true;
         cfg_single_file_cache = false;
 
-        // Reset skip local artwork and quiet console to disabled
+        // Reset skip local artwork to disabled and console logging mode to Track Info (1)
         CheckDlgButton(m_hwnd, IDC_SKIP_LOCAL_ARTWORK, BST_UNCHECKED);
         cfg_skip_local_artwork = false;
-        CheckDlgButton(m_hwnd, IDC_QUIET_CONSOLE, BST_UNCHECKED);
-        cfg_quiet_console = false;
+        SendMessage(GetDlgItem(m_hwnd, IDC_CONSOLE_LOGGING_MODE), CB_SETCURSEL, 1, 0);
+        cfg_console_logging_mode = 1;
 
         update_controls();
     }
