@@ -922,7 +922,7 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
         // Check disk cache first for this specific song
         check_cache_async(cache_key, track, [artist, track_name, cache_key, track, callback](const artwork_result& cache_res) {
             if (cache_res.success) {
-                foo_artwork::log_track_info("foo_artwork: SUCCESS - Cached artwork displayed for initial stream metadata '%s - %s'", artist.c_str(), track_name.c_str());
+                foo_artwork::log_printf("foo_artwork: SUCCESS - Cached artwork displayed for initial stream metadata '%s - %s'", artist.c_str(), track_name.c_str());
                 foo_artwork::log_printf("foo_artwork: Initial 10s stream metadata monitor cancelled (cached artwork loaded).");
                 cancel_acrcloud_tasks(); // Cancel pending 10s initial stream monitor & acoustic shift detector on cache hit!
                 callback(cache_res);
@@ -966,7 +966,7 @@ void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_ha
     async_io_manager::instance().cache_get_async(cache_key, 
         [cache_key, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             if (success && data.get_size() > 0) {
-                foo_artwork::log_track_info("foo_artwork: SUCCESS - Artwork displayed from disk cache");
+                foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork displayed from disk cache");
                 // Cache hit - validate and return
                 validate_and_complete_result(data, callback);
             } else {
@@ -982,7 +982,7 @@ void artwork_manager::check_cache_async_metadata(const pfc::string8& cache_key, 
     async_io_manager::instance().cache_get_async(cache_key,
         [cache_key, artist, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             if (success && data.get_size() > 0) {
-                foo_artwork::log_track_info("foo_artwork: SUCCESS - Artwork displayed from disk cache");
+                foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork displayed from disk cache");
                 // Cache hit - validate and return
                 validate_and_complete_result(data, callback);
             } else {
