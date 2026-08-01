@@ -966,6 +966,20 @@ void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_ha
     async_io_manager::instance().cache_get_async(cache_key, 
         [cache_key, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             if (success && data.get_size() > 0) {
+                if (track.is_valid()) {
+                    metadb_info_container::ptr info_container = track->get_info_ref();
+                    const file_info* info = &info_container->info();
+                    pfc::string8 art = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "";
+                    pfc::string8 tit = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "";
+                    if (!art.is_empty() && !tit.is_empty()) {
+                        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
+                        if (meta.is_valid_search && !meta.is_station_or_url) {
+                            log_simplified_track_info(meta.first_artist.c_str(), meta.clean_title.c_str());
+                        } else {
+                            log_simplified_track_info(art.c_str(), tit.c_str());
+                        }
+                    }
+                }
                 foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork displayed from disk cache");
                 // Cache hit - validate and return
                 validate_and_complete_result(data, callback);
@@ -982,6 +996,14 @@ void artwork_manager::check_cache_async_metadata(const pfc::string8& cache_key, 
     async_io_manager::instance().cache_get_async(cache_key,
         [cache_key, artist, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
             if (success && data.get_size() > 0) {
+                if (!artist.is_empty() && !track.is_empty()) {
+                    StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track.c_str());
+                    if (meta.is_valid_search && !meta.is_station_or_url) {
+                        log_simplified_track_info(meta.first_artist.c_str(), meta.clean_title.c_str());
+                    } else {
+                        log_simplified_track_info(artist.c_str(), track.c_str());
+                    }
+                }
                 foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork displayed from disk cache");
                 // Cache hit - validate and return
                 validate_and_complete_result(data, callback);
