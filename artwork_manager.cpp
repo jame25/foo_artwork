@@ -477,6 +477,10 @@ static PerceptualVector extract_5band_vector(audio_chunk_impl& chunk) {
     return vec;
 }
 
+static void stop_rms_silence_detector() {
+    g_rms_detector_token++;
+}
+
 static void start_rms_silence_detector(const pfc::string8& stream_url) {
     uint64_t current_token = ++g_rms_detector_token;
 
@@ -540,8 +544,9 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
                 }
             }
 
-            // Fallback Safety Rescan: Force ACRCloud rescan every 90 seconds if no acoustic shift triggered
-            if (!trigger_needed && time_since_last_trigger >= 90) {
+            // Fallback Safety Rescan: Force ACRCloud rescan every 90 seconds only for ?forceacr tagged streams
+            bool is_force_acr_stream = contains_case_insensitive(stream_url.c_str(), "forceacr");
+            if (!trigger_needed && is_force_acr_stream && time_since_last_trigger >= 90) {
                 trigger_needed = true;
                 trigger_reason = "90-second safety periodic rescan timer elapsed";
             }
@@ -583,8 +588,9 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
     uint64_t current_token = ++g_stream_monitor_token;
     auto last_artist = std::make_shared<pfc::string8>("");
     auto last_title = std::make_shared<pfc::string8>("");
+    auto valid_meta_found = std::make_shared<bool>(false);
 
-    async_io_manager::instance().submit_task([stream_url, current_token, last_artist, last_title]() {
+    async_io_manager::instance().submit_task([stream_url, current_token, last_artist, last_title, valid_meta_found]() {
         // Poll every 500ms for up to 10 seconds (20 iterations) during initial stream connection
         for (int iteration = 0; iteration < 20; ++iteration) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -593,7 +599,7 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                 return; // Stream changed, stopped, or app exiting
             }
 
-            async_io_manager::instance().post_to_main_thread([stream_url, current_token, last_artist, last_title]() {
+            async_io_manager::instance().post_to_main_thread([stream_url, current_token, last_artist, last_title, valid_meta_found]() {
                 if (current_token != g_stream_monitor_token.load() || g_current_stream_url != stream_url) {
                     return;
                 }
@@ -630,6 +636,7 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                             if (clean_art != *last_artist || clean_tit != *last_title) {
                                 *last_artist = clean_art;
                                 *last_title = clean_tit;
+                                *valid_meta_found = true;
 
                                 foo_artwork::log_printf("foo_artwork: Initial stream metadata monitor detected valid track: '%s - %s'. Initiating online text search...",
                                                clean_art.c_str(), clean_tit.c_str());
@@ -644,6 +651,31 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                                             pfc::string8 key = cfg_single_file_cache ? pfc::string8("current") : cache_key;
                                             async_io_manager::instance().cache_set_async(key, res.data);
                                         }
+                                        refresh_all_dui_artwork_panels();
+                                        refresh_all_cui_artwork_panels();
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // After 10 seconds of polling (20 iterations), check if no valid song metadata was detected
+        if (!g_is_shutting_down.load() && current_token == g_stream_monitor_token.load() && g_current_stream_url == stream_url) {
+            async_io_manager::instance().post_to_main_thread([stream_url, current_token, valid_meta_found]() {
+                if (current_token == g_stream_monitor_token.load() && g_current_stream_url == stream_url && !(*valid_meta_found)) {
+                    if (cfg_enable_acrcloud) {
+                        foo_artwork::log_printf("foo_artwork: Initial 10s stream metadata monitor completed without song metadata update. Enabling Log-Spectral Acoustic Shift detection...");
+                        start_rms_silence_detector(stream_url);
+                        if (!cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
+                            auto now = std::chrono::steady_clock::now();
+                            if (now >= g_acrcloud_cooldown_until) {
+                                foo_artwork::log_printf("foo_artwork: Triggering ACRCloud audio recognition fallback for stream without song metadata...");
+                                pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : pfc::string8("stream_fallback");
+                                search_acrcloud_fallback_async(cache_key, [](const artwork_result& res) {
+                                    if (res.success && res.data.get_size() > 0) {
                                         refresh_all_dui_artwork_panels();
                                         refresh_all_cui_artwork_panels();
                                     }
@@ -762,8 +794,9 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
         if (new_stream_connect) {
             g_current_stream_url = file_path;
             reset_acrcloud_cooldown(); // Reset cooldown on new radio stream connection
+            stop_rms_silence_detector(); // Disabled by default until Stage 3 ends with no artwork
             if (force_acrcloud) {
-                start_rms_silence_detector(file_path);
+                start_rms_silence_detector(file_path); // Active immediately for ?forceacr streams
             }
             if (meta.is_station_or_url || !meta.is_valid_search) {
                 start_initial_stream_metadata_monitor(file_path);
@@ -921,10 +954,9 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
         return;
     }
 
-    // If metadata is station name/URL or invalid, skip text search without triggering ACRCloud fallback.
-    // Dynamic stream metadata updates (e.g. via ICY info or initial stream monitor) will trigger text-search APIs once valid song title arrives.
+    // If metadata is station name/URL or invalid, skip text search to allow the 10-second initial stream metadata monitor time to receive ICY track updates.
     if (meta.is_station_or_url || !meta.is_valid_search) {
-        foo_artwork::log_printf("foo_artwork: Metadata '%s - %s' flagged as station/URL or invalid.",
+        foo_artwork::log_printf("foo_artwork: Metadata '%s - %s' flagged as station/URL or invalid. Skipping text search (allowing 10s stream monitor for metadata updates).",
                        raw_artist.c_str(), raw_track.c_str());
         artwork_result fail_res;
         fail_res.success = false;
@@ -979,6 +1011,18 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     auto notify_text_search_failed = [=]() {
         foo_artwork::log_printf("foo_artwork: Text search failed for '%s - %s'. No artwork found from any online API.",
                                  meta.clean_artist.c_str(), meta.clean_title.c_str());
+        if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
+            auto now = std::chrono::steady_clock::now();
+            if (now >= g_acrcloud_cooldown_until) {
+                foo_artwork::log_printf("foo_artwork: Triggering ACRCloud audio recognition fallback after text search failure...");
+                search_acrcloud_fallback_async(cache_key, final_callback);
+                return;
+            }
+        }
+        if (cfg_enable_acrcloud && !g_current_stream_url.is_empty()) {
+            foo_artwork::log_printf("foo_artwork: Stage 3 text search ended with no artwork found. Enabling Log-Spectral Acoustic Shift detection...");
+            start_rms_silence_detector(g_current_stream_url);
+        }
         artwork_result fail_res;
         fail_res.success = false;
         fail_res.error_message = "No artwork found in text search";
@@ -1232,6 +1276,14 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                     if (res.success && res.data.get_size() > 0) {
                         g_last_recognized_result = res;
                         g_last_recognized_stream_url = current_url;
+                        if (!contains_case_insensitive(current_url.c_str(), "forceacr")) {
+                            stop_rms_silence_detector();
+                        }
+                    } else {
+                        if (cfg_enable_acrcloud && !current_url.is_empty()) {
+                            foo_artwork::log_printf("foo_artwork: Stage 3 text search for ACRCloud metadata returned no artwork. Enabling Log-Spectral Acoustic Shift detection...");
+                            start_rms_silence_detector(current_url);
+                        }
                     }
                     callback(res);
                 }, api_order, 0, false);
@@ -1240,7 +1292,11 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
         } else {
             // Non-Music Content / Talk / Ad Backoff: Apply 75-second cooldown on Status 1001 or no match
             g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::seconds(75);
-            foo_artwork::log_printf("foo_artwork: ACRCloud returned No Result (talk/ad break/DJ chatter). Setting 75s backoff cooldown to protect API quota.");
+            foo_artwork::log_printf("foo_artwork: ACRCloud returned No Result. Setting 75s backoff cooldown to protect API quota.");
+            if (cfg_enable_acrcloud && !g_current_stream_url.is_empty()) {
+                foo_artwork::log_printf("foo_artwork: ACRCloud recognition returned no match. Enabling Log-Spectral Acoustic Shift detection...");
+                start_rms_silence_detector(g_current_stream_url);
+            }
         }
 
         artwork_result fail_res;
