@@ -583,37 +583,79 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
 }
 
 static std::atomic<uint64_t> g_stream_monitor_token{0};
+static pfc::string8 g_last_stream_artist = "";
+static pfc::string8 g_last_stream_title = "";
+
+void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const char* raw_title) {
+    ASSERT_MAIN_THREAD();
+    if (!raw_artist || !raw_title) return;
+
+    StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(raw_artist, raw_title);
+    if (!meta.is_valid_search || meta.is_station_or_url) return;
+
+    pfc::string8 clean_art = meta.first_artist.c_str();
+    pfc::string8 clean_tit = meta.clean_title.c_str();
+
+    if (clean_art == g_last_stream_artist && clean_tit == g_last_stream_title) {
+        return; // Avoid duplicate searches for identical stream metadata
+    }
+    g_last_stream_artist = clean_art;
+    g_last_stream_title = clean_tit;
+
+    // Increment monitor token to cancel any pending 10s initial metadata fallback monitor
+    g_stream_monitor_token++;
+
+    // Stop acoustic shift detector since valid song metadata is now available
+    stop_rms_silence_detector();
+
+    // Reset ACRCloud cooldown on fresh dynamic track update
+    reset_acrcloud_cooldown();
+
+    foo_artwork::log_track_info("foo_artwork: Radio stream track update: '%s - %s'", clean_art.c_str(), clean_tit.c_str());
+
+    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art, clean_tit);
+    search_apis_async(clean_art, clean_tit, cache_key, [cache_key](const artwork_result& res) {
+        if (res.success && res.data.get_size() > 0) {
+            if (cfg_enable_disk_cache || cfg_single_file_cache) {
+                pfc::string8 key = cfg_single_file_cache ? pfc::string8("current") : cache_key;
+                async_io_manager::instance().cache_set_async(key, res.data);
+            }
+            refresh_all_dui_artwork_panels();
+            refresh_all_cui_artwork_panels();
+        }
+    });
+}
 
 void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& stream_url) {
     uint64_t current_token = ++g_stream_monitor_token;
     auto last_artist = std::make_shared<pfc::string8>("");
     auto last_title = std::make_shared<pfc::string8>("");
-    auto valid_meta_found = std::make_shared<bool>(false);
+    auto valid_meta_found = std::make_shared<std::atomic<bool>>(false);
 
     async_io_manager::instance().submit_task([stream_url, current_token, last_artist, last_title, valid_meta_found]() {
         // Poll every 500ms for up to 10 seconds (20 iterations) during initial stream connection
         for (int iteration = 0; iteration < 20; ++iteration) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-            if (g_is_shutting_down.load() || current_token != g_stream_monitor_token.load() || g_current_stream_url != stream_url) {
-                return; // Stream changed, stopped, or app exiting
+            if (g_is_shutting_down.load() || valid_meta_found->load() || current_token != g_stream_monitor_token.load() || g_current_stream_url != stream_url) {
+                return; // Stream changed, stopped, valid meta found, or app exiting
             }
 
             async_io_manager::instance().post_to_main_thread([stream_url, current_token, last_artist, last_title, valid_meta_found]() {
-                if (current_token != g_stream_monitor_token.load() || g_current_stream_url != stream_url) {
+                if (g_is_shutting_down.load() || valid_meta_found->load() || current_token != g_stream_monitor_token.load() || g_current_stream_url != stream_url) {
                     return;
                 }
 
                 static_api_ptr_t<playback_control> pc;
                 metadb_handle_ptr track;
                 if (pc->get_now_playing(track) && track.is_valid() && track->get_path() == stream_url) {
-                    metadb_info_container::ptr info_container = track->get_info_ref();
-                    const file_info* info = &info_container->info();
+                    pfc::string8 artist, title;
+                    service_ptr_t<titleformat_object> script_art, script_tit;
+                    static_api_ptr_t<titleformat_compiler>()->compile_safe(script_art, "%artist%");
+                    static_api_ptr_t<titleformat_compiler>()->compile_safe(script_tit, "%title%");
+                    pc->playback_format_title(nullptr, artist, script_art, nullptr, playback_control::display_level_titles);
+                    pc->playback_format_title(nullptr, title, script_tit, nullptr, playback_control::display_level_titles);
 
-                    pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "";
-                    pfc::string8 title = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "";
-
-                    // If artist is empty and title contains delimiters, split title into artist and title
                     if (artist.is_empty() && !title.is_empty()) {
                         std::string t_str = title.c_str();
                         std::string delimiters[] = { " - ", " ˗ ", " / ", " by " };
@@ -630,32 +672,8 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                     if (!artist.is_empty() && !title.is_empty()) {
                         StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), title.c_str());
                         if (meta.is_valid_search && !meta.is_station_or_url) {
-                            pfc::string8 clean_art = meta.first_artist.c_str();
-                            pfc::string8 clean_tit = meta.clean_title.c_str();
-
-                            if (clean_art != *last_artist || clean_tit != *last_title) {
-                                *last_artist = clean_art;
-                                *last_title = clean_tit;
-                                *valid_meta_found = true;
-
-                                foo_artwork::log_printf("foo_artwork: Initial stream metadata monitor detected valid track: '%s - %s'. Initiating online text search...",
-                                               clean_art.c_str(), clean_tit.c_str());
-
-                                // Stop monitoring since valid track metadata was detected and triggered
-                                g_stream_monitor_token++;
-
-                                pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art, clean_tit);
-                                search_apis_async(clean_art, clean_tit, cache_key, [cache_key](const artwork_result& res) {
-                                    if (res.success && res.data.get_size() > 0) {
-                                        if (cfg_enable_disk_cache || cfg_single_file_cache) {
-                                            pfc::string8 key = cfg_single_file_cache ? pfc::string8("current") : cache_key;
-                                            async_io_manager::instance().cache_set_async(key, res.data);
-                                        }
-                                        refresh_all_dui_artwork_panels();
-                                        refresh_all_cui_artwork_panels();
-                                    }
-                                });
-                            }
+                            valid_meta_found->store(true);
+                            on_stream_metadata_changed(artist.c_str(), title.c_str());
                         }
                     }
                 }
@@ -663,9 +681,9 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
         }
 
         // After 10 seconds of polling (20 iterations), check if no valid song metadata was detected
-        if (!g_is_shutting_down.load() && current_token == g_stream_monitor_token.load() && g_current_stream_url == stream_url) {
+        if (!g_is_shutting_down.load() && !valid_meta_found->load() && current_token == g_stream_monitor_token.load() && g_current_stream_url == stream_url) {
             async_io_manager::instance().post_to_main_thread([stream_url, current_token, valid_meta_found]() {
-                if (current_token == g_stream_monitor_token.load() && g_current_stream_url == stream_url && !(*valid_meta_found)) {
+                if (!g_is_shutting_down.load() && !valid_meta_found->load() && current_token == g_stream_monitor_token.load() && g_current_stream_url == stream_url) {
                     if (cfg_enable_acrcloud) {
                         foo_artwork::log_printf("foo_artwork: Initial 10s stream metadata monitor completed without song metadata update. Enabling Log-Spectral Acoustic Shift detection...");
                         start_rms_silence_detector(stream_url);
@@ -691,6 +709,8 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
 
 void artwork_manager::cancel_acrcloud_tasks() {
     g_acrcloud_task_id++;
+    g_stream_monitor_token++;
+    stop_rms_silence_detector();
 }
 
 void artwork_manager::reset_acrcloud_cooldown() {
@@ -780,6 +800,8 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "Unknown Artist";
     pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
     pfc::string8 file_path = track->get_path();
+
+    foo_artwork::log_track_info("foo_artwork: Processing track: '%s - %s' (%s)", artist.c_str(), track_name.c_str(), file_path.c_str());
     
     pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist, track_name);
 
@@ -793,6 +815,8 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
         bool new_stream_connect = (g_current_stream_url != file_path);
         if (new_stream_connect) {
             g_current_stream_url = file_path;
+            g_last_stream_artist = "";
+            g_last_stream_title = "";
             reset_acrcloud_cooldown(); // Reset cooldown on new radio stream connection
             stop_rms_silence_detector(); // Disabled by default until Stage 3 ends with no artwork
             if (force_acrcloud) {
@@ -1254,7 +1278,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
         );
 
         if (rec.success) {
-            foo_artwork::log_printf("foo_artwork: ACRCloud MATCH: '%s - %s'", rec.artist.c_str(), rec.title.c_str());
+            foo_artwork::log_track_info("foo_artwork: ACRCloud recognized track: '%s - %s'", rec.artist.c_str(), rec.title.c_str());
 
             // Track Cooldown Guard: Compute remaining track duration (minimum 60 seconds)
             uint32_t rem_ms = 90000;
@@ -1307,6 +1331,12 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
 }
 
 void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index, bool force_enable_apis) {
+    ASSERT_MAIN_THREAD();
+    
+    if (index == 0) {
+        foo_artwork::log_track_info("foo_artwork: Querying online APIs for '%s - %s'...", artist.c_str(), track.c_str());
+    }
+
     if (index >= api_order.size()) {
         // No more APIs to try
         artwork_result final_result;
@@ -1424,7 +1454,7 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         }
 
         if (result.success) {
-            foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork retrieved from %s (%u bytes)", api_name.c_str(), (unsigned int)result.data.get_size());
+            foo_artwork::log_track_info("foo_artwork: SUCCESS - Artwork retrieved from %s for '%s - %s' (%u bytes)", api_name.c_str(), artist.c_str(), track.c_str(), (unsigned int)result.data.get_size());
             cancel_acrcloud_tasks(); // Cancel any pending background ACRCloud sampling tasks
             if (cfg_enable_disk_cache || cfg_single_file_cache) {
                 if (!cache_key.is_empty()) {
