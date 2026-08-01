@@ -76,7 +76,7 @@ static constexpr GUID guid_cfg_enable_acrcloud = { 0x12345695, 0x1234, 0x1234, {
 static constexpr GUID guid_cfg_acrcloud_host = { 0x12345696, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x05 } };
 static constexpr GUID guid_cfg_acrcloud_access_key = { 0x12345697, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x06 } };
 static constexpr GUID guid_cfg_acrcloud_access_secret = { 0x12345698, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x07 } };
-static constexpr GUID guid_cfg_quiet_console = { 0x12345699, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x08 } };
+static constexpr GUID guid_cfg_console_logging_mode = { 0x12345699, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x08 } };
 
 // Configuration variables with default values
 cfg_bool cfg_enable_itunes(guid_cfg_enable_itunes, false);
@@ -130,8 +130,8 @@ cfg_string cfg_cache_folder(guid_cfg_cache_folder, "");  // Custom cache folder 
 // Skip local artwork setting
 cfg_bool cfg_skip_local_artwork(guid_cfg_skip_local_artwork, false);  // Always skip local artwork (default disabled)
 
-// Quiet console setting - prevent component console messaging
-cfg_bool cfg_quiet_console(guid_cfg_quiet_console, false);  // Quiet console mode (default disabled)
+// Console logging mode: 0 = Quiet, 1 = Track Info, 2 = Debug
+cfg_int cfg_console_logging_mode(guid_cfg_console_logging_mode, 1);  // Console logging mode (default Track Info)
 
 // Single file cache mode - only keep current track's artwork in cache folder
 cfg_bool cfg_single_file_cache(guid_cfg_single_file_cache, false);  // Single file cache mode (default disabled)
@@ -5190,6 +5190,26 @@ public:
         // Reset ACRCloud cooldown when new stream metadata arrives
         artwork_manager::reset_acrcloud_cooldown();
         try {
+            pfc::string8 stream_artist = p_info.meta_get("ARTIST", 0) ? p_info.meta_get("ARTIST", 0) : "";
+            pfc::string8 stream_title = p_info.meta_get("TITLE", 0) ? p_info.meta_get("TITLE", 0) : "";
+
+            if (stream_artist.is_empty() && !stream_title.is_empty()) {
+                std::string t_str = stream_title.c_str();
+                std::string delimiters[] = { " - ", " ˗ ", " / ", " by " };
+                for (const auto& delim : delimiters) {
+                    size_t pos = t_str.find(delim);
+                    if (pos != std::string::npos) {
+                        stream_artist = t_str.substr(0, pos).c_str();
+                        stream_title = t_str.substr(pos + delim.length()).c_str();
+                        break;
+                    }
+                }
+            }
+
+            if (!stream_artist.is_empty() && !stream_title.is_empty()) {
+                artwork_manager::on_stream_metadata_changed(stream_artist.c_str(), stream_title.c_str());
+            }
+
             static_api_ptr_t<playback_control> pc;
             metadb_handle_ptr current_track;
             if (pc->get_now_playing(current_track)) {
