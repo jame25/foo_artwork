@@ -5158,6 +5158,8 @@ public:
     }
     
     void on_playback_stop(play_control::t_stop_reason p_reason) override {
+        artwork_manager::stop_rms_silence_detector();
+        artwork_manager::cancel_acrcloud_tasks();
         
         // Clear artwork from all UI elements when playback stops (if option is enabled)
         for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
@@ -5190,6 +5192,7 @@ public:
         // Reset ACRCloud cooldown when new stream metadata arrives
         artwork_manager::reset_acrcloud_cooldown();
         try {
+            // Global dynamic stream metadata extraction (independent of active UI panel count)
             pfc::string8 stream_artist = p_info.meta_get("ARTIST", 0) ? p_info.meta_get("ARTIST", 0) : "";
             pfc::string8 stream_title = p_info.meta_get("TITLE", 0) ? p_info.meta_get("TITLE", 0) : "";
 
@@ -5216,7 +5219,7 @@ public:
                 for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
                     auto* element = g_artwork_ui_elements[i];
                     if (element && element->m_hWnd) {
-                        // Just extract metadata safely and update status - no artwork loading yet
+                        // Extract metadata safely from info
                         pfc::string8 artist, title;
                         element->extract_metadata_from_info(p_info, artist, title);
                         
