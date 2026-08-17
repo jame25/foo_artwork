@@ -79,9 +79,11 @@ private:
     static bool is_supported_image_format(const pfc::string8& mime_type);
     static pfc::string8 get_file_directory(const char* file_path);
     static pfc::string8 url_encode(const char* str);
+    static bool is_local_artwork_newer_than_cache(const pfc::string8& file_path, const pfc::string8& cache_key);
 
 public:
     static pfc::string8 generate_cache_key(const char* artist, const char* track);
+    static pfc::string8 generate_cache_key_for_track(metadb_handle_ptr track);
 
 private:
     
