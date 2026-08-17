@@ -1418,6 +1418,11 @@ void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
         auto pc = playback_control::get();
         metadb_handle_ptr current_track;
         if (pc->get_now_playing(current_track) && current_track.is_valid()) {
+            pfc::string8 track_path = current_track->get_path();
+            if (artwork_manager::has_url_flag(track_path.c_str(), "bypass")) {
+                return;
+            }
+
             // Check if this is an internet stream
             // SAFE PATH ACCESS: Use safer helper function
             bool is_internet_stream = is_safe_internet_stream(current_track);
