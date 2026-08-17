@@ -868,7 +868,7 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
         }
     }
     
-    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist, track_name);
+    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key_for_track(track);
 
     if (is_internet_stream) {
         StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str());
@@ -956,7 +956,7 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
             // return the previous track's artwork). Go directly to local -> APIs, still write to cache.
             search_local_async(file_path, cache_key, track, callback);
         } else {
-            // For local files, use normal cache -> local -> APIs pipeline
+            // For local files, check disk cache first with local artwork invalidation verification
             check_cache_async(cache_key, track, callback);
         }
     }
@@ -980,9 +980,43 @@ void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_ha
                         }
                     }
                 }
-                foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork displayed from disk cache");
-                // Cache hit - validate and return
-                validate_and_complete_result(data, callback);
+
+                pfc::string8 file_path = track.is_valid() ? track->get_path() : "";
+                bool is_stream = strstr(file_path.c_str(), "://") && !(strstr(file_path.c_str(), "file://") == file_path.c_str());
+
+                // CACHE PRIORITY & INVALIDATION CHECK:
+                // For local tracks, check if local artwork (embedded or in folder) was added or updated after cache was generated
+                if (track.is_valid() && !is_stream && !cfg_skip_local_artwork) {
+                    async_io_manager::instance().submit_task([cache_key, track, file_path, data, callback]() {
+                        bool local_art_newer = is_local_artwork_newer_than_cache(file_path, cache_key);
+                        if (local_art_newer) {
+                            find_local_artwork_async(track, [cache_key, track, data, callback](const artwork_result& local_result) {
+                                if (local_result.success && local_result.data.get_size() > 0) {
+                                    foo_artwork::log_printf("foo_artwork: Cache invalidation - Local artwork was added or updated after cache generation. Updating cache.");
+                                    if (cfg_enable_disk_cache && !cache_key.is_empty()) {
+                                        async_io_manager::instance().cache_set_async(cache_key, local_result.data);
+                                    }
+                                    if (cfg_single_file_cache) {
+                                        async_io_manager::instance().cache_set_async("current", local_result.data);
+                                    }
+                                    callback(local_result);
+                                } else {
+                                    foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork displayed from disk cache");
+                                    validate_and_complete_result(data, callback);
+                                }
+                            });
+                        } else {
+                            async_io_manager::instance().post_to_main_thread([data, callback]() {
+                                foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork displayed from disk cache");
+                                validate_and_complete_result(data, callback);
+                            });
+                        }
+                    });
+                } else {
+                    foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork displayed from disk cache");
+                    // Cache hit - validate and return
+                    validate_and_complete_result(data, callback);
+                }
             } else {
                 // Cache miss - continue to local search
                 pfc::string8 file_path = track->get_path();
@@ -1038,8 +1072,7 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
         if (result.success) {
             // Local artwork found - in single-file cache mode, write to current.cache
             // so external consumers (e.g., JScript Panel 3 Thumbs) see the correct artwork.
-            // In normal cache mode, skip caching since local files are already on disk
-            // and caching causes stale images when external tools overwrite the file.
+            // In normal cache mode, write to disk cache for fast offline retrieval.
             if (cfg_single_file_cache) {
                 async_io_manager::instance().cache_set_async("current", result.data);
             }
@@ -2201,6 +2234,150 @@ pfc::string8 artwork_manager::generate_cache_key(const char* artist, const char*
     key.replace_char('|', '_');
     
     return key;
+}
+
+// Helper to convert UTF-8 pfc::string8 to wide string for Unicode Windows APIs
+static std::wstring utf8_to_wide(const pfc::string8& utf8_str) {
+    if (utf8_str.is_empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, nullptr, 0);
+    if (len <= 0) return L"";
+    std::wstring result(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, &result[0], len);
+    if (!result.empty() && result.back() == L'\0') {
+        result.pop_back();
+    }
+    return result;
+}
+
+pfc::string8 artwork_manager::generate_cache_key_for_track(metadb_handle_ptr track) {
+    if (!track.is_valid()) return pfc::string8("unknown");
+
+    metadb_info_container::ptr info_container = track->get_info_ref();
+    const file_info* info = &info_container->info();
+
+    pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "";
+    pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "";
+    pfc::string8 file_path = track->get_path();
+
+    bool is_internet_stream = strstr(file_path.c_str(), "://") &&
+                              !(strstr(file_path.c_str(), "file://") == file_path.c_str());
+
+    if (is_internet_stream) {
+        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str());
+        if (meta.is_valid_search && !meta.clean_artist.empty() && !meta.clean_title.empty()) {
+            return generate_cache_key(meta.clean_artist.c_str(), meta.clean_title.c_str());
+        }
+        if (!artist.is_empty() && !track_name.is_empty()) {
+            return generate_cache_key(artist.c_str(), track_name.c_str());
+        }
+        return generate_cache_key(artist.is_empty() ? "Unknown Artist" : artist.c_str(),
+                                  track_name.is_empty() ? "Unknown Track" : track_name.c_str());
+    } else {
+        // Offline / local track
+        if (!artist.is_empty() && !track_name.is_empty() &&
+            artist != "Unknown Artist" && track_name != "Unknown Track") {
+            return generate_cache_key(artist.c_str(), track_name.c_str());
+        }
+
+        // Untagged or missing metadata: generate key from local file name
+        pfc::string8 clean_path = file_path;
+        if (clean_path.find_first("file://") == 0) {
+            clean_path = clean_path.get_ptr() + 7;
+        }
+        t_size last_slash = clean_path.find_last('\\');
+        if (last_slash == pfc_infinite) last_slash = clean_path.find_last('/');
+        pfc::string8 filename = (last_slash != pfc_infinite) ? pfc::string8(clean_path.get_ptr() + last_slash + 1) : clean_path;
+
+        pfc::string8 key = "_local_";
+        key << filename;
+        key.replace_char('\\', '_');
+        key.replace_char('/', '_');
+        key.replace_char(':', '_');
+        key.replace_char('*', '_');
+        key.replace_char('?', '_');
+        key.replace_char('"', '_');
+        key.replace_char('<', '_');
+        key.replace_char('>', '_');
+        key.replace_char('|', '_');
+        return key;
+    }
+}
+
+bool artwork_manager::is_local_artwork_newer_than_cache(const pfc::string8& file_path, const pfc::string8& cache_key) {
+    if (file_path.is_empty() || cache_key.is_empty()) return false;
+
+    pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
+    if (cache_file.is_empty()) return false;
+
+    std::wstring wide_cache_file = utf8_to_wide(cache_file);
+    WIN32_FILE_ATTRIBUTE_DATA cache_attr;
+    if (!GetFileAttributesExW(wide_cache_file.c_str(), GetFileExInfoStandard, &cache_attr)) {
+        // Cache file does not exist on disk yet
+        return false;
+    }
+    FILETIME cache_time = cache_attr.ftLastWriteTime;
+
+    // 1. Check embedded metadata timestamp (the audio file itself)
+    pfc::string8 local_path = file_path;
+    if (local_path.find_first("file://") == 0) {
+        local_path = local_path.get_ptr() + 7;
+    }
+    for (size_t i = 0; i < local_path.length(); i++) {
+        if (local_path[i] == '/') {
+            local_path.set_char(i, '\\');
+        }
+    }
+    std::wstring wide_audio_path = utf8_to_wide(local_path);
+    WIN32_FILE_ATTRIBUTE_DATA audio_attr;
+    if (GetFileAttributesExW(wide_audio_path.c_str(), GetFileExInfoStandard, &audio_attr)) {
+        if (CompareFileTime(&audio_attr.ftLastWriteTime, &cache_time) > 0) {
+            return true;
+        }
+    }
+
+    // 2. Check folder artwork files in the audio file's directory
+    pfc::string8 dir = get_file_directory(file_path);
+    if (!dir.is_empty()) {
+        for (size_t i = 0; i < dir.length(); i++) {
+            if (dir[i] == '/') {
+                dir.set_char(i, '\\');
+            }
+        }
+        if (dir.length() > 0 && dir[dir.length() - 1] != '\\') {
+            dir << "\\";
+        }
+
+        std::wstring wide_dir = utf8_to_wide(dir);
+        std::wstring wide_pattern = wide_dir + L"*.*";
+
+        WIN32_FIND_DATAW find_data;
+        HANDLE find_handle = FindFirstFileW(wide_pattern.c_str(), &find_data);
+        if (find_handle != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                    const wchar_t* ext = wcsrchr(find_data.cFileName, L'.');
+                    if (ext != nullptr) {
+                        if (_wcsicmp(ext, L".jpg") == 0 ||
+                            _wcsicmp(ext, L".jpeg") == 0 ||
+                            _wcsicmp(ext, L".png") == 0 ||
+                            _wcsicmp(ext, L".webp") == 0 ||
+                            _wcsicmp(ext, L".bmp") == 0 ||
+                            _wcsicmp(ext, L".gif") == 0) {
+
+                            if (CompareFileTime(&find_data.ftLastWriteTime, &cache_time) > 0 ||
+                                CompareFileTime(&find_data.ftCreationTime, &cache_time) > 0) {
+                                FindClose(find_handle);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            } while (FindNextFileW(find_handle, &find_data));
+            FindClose(find_handle);
+        }
+    }
+
+    return false;
 }
 
 // JSON parsing implementations
