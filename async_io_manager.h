@@ -40,6 +40,7 @@ public:
     void cache_set_async(const pfc::string8& key, const pfc::array_t<t_uint8>& data, file_write_callback callback = nullptr);
     void cache_clear_all();
     void cache_remove(const pfc::string8& key);
+    pfc::string8 get_cache_file_path(const pfc::string8& key) const;
     
     // Thread pool management
     void initialize(size_t thread_count = 4);
@@ -133,7 +134,6 @@ private:
         pfc::string8 cache_directory;
         
         void write_worker();
-        pfc::string8 get_cache_file_path(const pfc::string8& key);
         void prune_disk_cache(uint64_t max_bytes);
         
     public:
@@ -147,6 +147,7 @@ private:
         void clear_all();
         void flush_all();
         void shutdown();
+        pfc::string8 get_cache_file_path(const pfc::string8& key) const;
     };
     
     // Progressive image loader
