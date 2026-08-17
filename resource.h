@@ -43,6 +43,13 @@
 #define IDC_NOART_FOLDER_PATH           1038
 #define IDC_BROWSE_NOART_FOLDER         1039
 #define IDC_NOART_CYCLE_MODE            1040
+#define IDC_STATIC_LOGOS_FOLDER         1041
+#define IDC_STATIC_NOART_FOLDER         1042
+#define IDC_STATIC_NOART_CYCLE          1043
+#define IDC_STATIC_LOGOS_DESC1          1044
+#define IDC_STATIC_LOGOS_DESC2          1045
+#define IDC_STATIC_LOGOS_DESC3          1046
+#define IDC_STATIC_LOGOS_DESC4          1047
 
 // Next default values for new objects
 //
@@ -50,7 +57,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        104
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1041
+#define _APS_NEXT_CONTROL_VALUE         1048
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
