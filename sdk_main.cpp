@@ -3,6 +3,7 @@
 #include "metadata_cleaner.h"
 #include "preferences.h"
 #include "webp_decoder.h"
+#include "titleformat_provider.h"
 #include <algorithm>
 #include <random>
 #include <atomic>
@@ -327,7 +328,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.3",
+    "1.6.4",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -344,7 +345,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.3",
+    "1.6.4",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -4214,27 +4215,6 @@ bool artwork_ui_element::parse_itunes_response(const pfc::string8& json, pfc::st
                     artwork_url.replace_string("512x512", "1200x1200");
                 }
                 
-                // Set compression quality: 80 for PNG files, 90 for JPEG files
-                if (artwork_url.find_first(".png") != pfc_infinite) {
-                    // For PNG files: add bb-80 quality parameter  
-                    if (artwork_url.find_first("bb.png") != pfc_infinite) {
-                        artwork_url.replace_string("bb.png", "bb-80.png");
-                    } else if (artwork_url.find_first("bf.png") != pfc_infinite) {
-                        artwork_url.replace_string("bf.png", "bb-80.png");
-                    } else if (artwork_url.find_first("1200x1200.png") != pfc_infinite) {
-                        artwork_url.replace_string("1200x1200.png", "1200x1200bb-80.png");
-                    }
-                } else if (artwork_url.find_first(".jpg") != pfc_infinite || artwork_url.find_first(".jpeg") != pfc_infinite) {
-                    // For JPEG files: add bb-90 quality parameter for better quality
-                    if (artwork_url.find_first("bb.jpg") != pfc_infinite) {
-                        artwork_url.replace_string("bb.jpg", "bb-90.jpg");
-                    } else if (artwork_url.find_first("bf.jpg") != pfc_infinite) {
-                        artwork_url.replace_string("bf.jpg", "bb-90.jpg");
-                    } else if (artwork_url.find_first("1200x1200.jpg") != pfc_infinite) {
-                        artwork_url.replace_string("1200x1200.jpg", "1200x1200bb-90.jpg");
-                    }
-                }
-                
                 if (artwork_url.length() > 0) {
                     return true;
                 }
@@ -5137,6 +5117,20 @@ public:
             if (p_track.is_valid()) {
                 pfc::string8 track_path = p_track->get_path();
                 artwork_manager::reset_acrcloud_cooldown();
+
+                // Initialize title formatting variables for the new track
+                try {
+                    metadb_info_container::ptr info_cont = p_track->get_info_ref();
+                    if (info_cont.is_valid()) {
+                        const file_info& info = info_cont->info();
+                        const char* art = info.meta_get("ARTIST", 0);
+                        const char* tit = info.meta_get("TITLE", 0);
+                        pfc::string8 clean_art = art ? MetadataCleaner::clean_for_search(art, true).c_str() : "";
+                        pfc::string8 clean_tit = tit ? MetadataCleaner::clean_for_search(tit, true).c_str() : "";
+                        titleformat_provider::set_track_artwork_info(p_track, clean_art.c_str(), clean_tit.c_str(), "", "");
+                    }
+                } catch (...) {}
+
                 // Reset artwork state for ALL UI elements before processing new track
                 for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
                     auto* element = g_artwork_ui_elements[i];
@@ -5241,6 +5235,7 @@ public:
     void on_playback_stop(play_control::t_stop_reason p_reason) override {
         artwork_manager::stop_rms_silence_detector();
         artwork_manager::cancel_acrcloud_tasks();
+        titleformat_provider::clear_track_artwork_info();
         
         // Clear artwork from all UI elements when playback stops (if option is enabled)
         for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
@@ -5292,6 +5287,13 @@ public:
 
             if (!stream_artist.is_empty() && !stream_title.is_empty()) {
                 artwork_manager::on_stream_metadata_changed(stream_artist.c_str(), stream_title.c_str());
+                static_api_ptr_t<playback_control> pc_tf;
+                metadb_handle_ptr now_track;
+                if (pc_tf->get_now_playing(now_track)) {
+                    pfc::string8 clean_art = MetadataCleaner::clean_for_search(stream_artist.c_str(), true).c_str();
+                    pfc::string8 clean_tit = MetadataCleaner::clean_for_search(stream_title.c_str(), true).c_str();
+                    titleformat_provider::set_track_artwork_info(now_track, clean_art.c_str(), clean_tit.c_str(), "", "");
+                }
             }
 
             static_api_ptr_t<playback_control> pc;
@@ -8283,6 +8285,7 @@ class mainmenu_commands_artwork : public mainmenu_commands {
 public:
     enum {
         cmd_force_acrcloud = 0,
+        cmd_reject_artwork,
         cmd_count
     };
 
@@ -8292,8 +8295,10 @@ public:
 
     GUID get_command(t_uint32 p_index) override {
         static const GUID guid_cmd_force_acrcloud = { 0x3a812345, 0x5b67, 0x4890, { 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x89 } };
+        static const GUID guid_cmd_reject_artwork = { 0x4b923456, 0x6c78, 0x4901, { 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x9a } };
         switch (p_index) {
             case cmd_force_acrcloud: return guid_cmd_force_acrcloud;
+            case cmd_reject_artwork: return guid_cmd_reject_artwork;
             default: return pfc::guid_null;
         }
     }
@@ -8301,6 +8306,7 @@ public:
     void get_name(t_uint32 p_index, pfc::string_base& p_out) override {
         switch (p_index) {
             case cmd_force_acrcloud: p_out = "Force ACRCloud Audio Recognition"; break;
+            case cmd_reject_artwork: p_out = "Reject Artwork & Search Next Provider"; break;
         }
     }
 
@@ -8308,6 +8314,9 @@ public:
         switch (p_index) {
             case cmd_force_acrcloud:
                 p_out = "Forces an immediate ACRCloud audio recognition scan on the currently playing track/stream, bypassing rate-limiting cooldowns.";
+                return true;
+            case cmd_reject_artwork:
+                p_out = "Rejects the currently displayed cover art for the playing track, skips the current provider, and queries the next provider in the chain.";
                 return true;
             default: return false;
         }
@@ -8320,6 +8329,8 @@ public:
     void execute(t_uint32 p_index, service_ptr_t<service_base> p_callback) override {
         if (p_index == cmd_force_acrcloud) {
             artwork_manager::force_acrcloud_lookup();
+        } else if (p_index == cmd_reject_artwork) {
+            artwork_manager::reject_current_artwork();
         }
     }
 };
