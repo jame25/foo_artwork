@@ -834,35 +834,41 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
 
     //try to get infobar values
     try {
-        const file_info& info = track->get_info_ref()->info();
-        std::string artist, title, album, station;
+        pfc::string8 artist, title, album, station;
 
-        if (info.meta_get("ARTIST", 0)) {
-            artist = info.meta_get("ARTIST", 0);
-        }
-        if (info.meta_get("TITLE", 0)) {
-            title = info.meta_get("TITLE", 0);
+        static_api_ptr_t<playback_control> pc;
+        metadb_handle_ptr now_playing;
+        if (pc->get_now_playing(now_playing) && now_playing == track) {
+            static_api_ptr_t<titleformat_compiler> compiler;
+            service_ptr_t<titleformat_object> script_artist, script_title, script_album, script_station;
+            compiler->compile_force(script_artist, "%artist%");
+            compiler->compile_force(script_title, "%title%");
+            compiler->compile_force(script_album, "%album%");
+            compiler->compile_force(script_station, "%stream_name%");
+
+            pfc::string8 s;
+            if (pc->playback_format_title(nullptr, s, script_artist, nullptr, playback_control::display_level_titles) && !s.is_empty() && s != "?") artist = s;
+            if (pc->playback_format_title(nullptr, s, script_title, nullptr, playback_control::display_level_titles) && !s.is_empty() && s != "?") title = s;
+            if (pc->playback_format_title(nullptr, s, script_album, nullptr, playback_control::display_level_titles) && !s.is_empty() && s != "?") album = s;
+            if (pc->playback_format_title(nullptr, s, script_station, nullptr, playback_control::display_level_titles) && !s.is_empty() && s != "?") station = s;
         }
 
-        if (info.meta_get("ALBUM", 0)) {
-            album = info.meta_get("ALBUM", 0);
+        if (artist.is_empty() && title.is_empty()) {
+            const file_info& info = track->get_info_ref()->info();
+            if (info.meta_get("ARTIST", 0)) artist = info.meta_get("ARTIST", 0);
+            if (info.meta_get("TITLE", 0)) title = info.meta_get("TITLE", 0);
+            if (album.is_empty() && info.meta_get("ALBUM", 0)) album = info.meta_get("ALBUM", 0);
+            if (station.is_empty() && info.meta_get("STREAM_NAME", 0)) station = info.meta_get("STREAM_NAME", 0);
         }
-
-        if (info.meta_get("STREAM_NAME", 0)) {
-            station = info.meta_get("STREAM_NAME", 0);
-        }
-
 
         //store metadata for infobar
-
-        m_infobar_artist = stringToWstring(artist);
-        m_infobar_title = stringToWstring(title);
-        m_infobar_album = stringToWstring(album);
-        m_infobar_station = stringToWstring(station);
+        m_infobar_artist = stringToWstring(artist.c_str());
+        m_infobar_title = stringToWstring(title.c_str());
+        m_infobar_album = stringToWstring(album.c_str());
+        m_infobar_station = stringToWstring(station.c_str());
 
         //clear infobar logo
         cleanup_gdiplus_infobar_image();
-
     }
     catch (...) {
         // Handle any errors silently
@@ -932,6 +938,12 @@ bool artwork_ui_element::is_inverted_internet_stream(metadb_handle_ptr track, co
 }											
 void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
     try {
+        if (m_current_track.is_valid()) {
+            pfc::string8 track_path = m_current_track->get_path();
+            if (artwork_manager::has_url_flag(track_path.c_str(), "bypass")) {
+                return;
+            }
+        }
         // Get artist and track from the updated info safely
         const char* artist_ptr = p_info.meta_get("ARTIST", 0);
         const char* track_ptr = p_info.meta_get("TITLE", 0);
