@@ -725,10 +725,16 @@ void artwork_advanced_preferences::update_controls() {
     // Enable/disable noart image checkbox based on clear panel checkbox state
     EnableWindow(GetDlgItem(m_hwnd, IDC_USE_NOART_IMAGE), cfg_clear_panel_when_not_playing ? TRUE : FALSE);
 
-    // Enable/disable folder controls based on checkbox state
-    BOOL enable_folder_controls = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
-    EnableWindow(GetDlgItem(m_hwnd, IDC_LOGOS_FOLDER_PATH), enable_folder_controls);
-    EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_LOGOS_FOLDER), enable_folder_controls);
+    // Enable/disable Station Logos section controls based on checkbox state
+    BOOL enable_logos_section = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_STATIC_LOGOS_FOLDER), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_LOGOS_FOLDER_PATH), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_LOGOS_FOLDER), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_STATIC_NOART_FOLDER), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_NOART_FOLDER_PATH), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_NOART_FOLDER), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_STATIC_NOART_CYCLE), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_NOART_CYCLE_MODE), enable_logos_section);
 }
 
 void artwork_advanced_preferences::update_control_states() {
@@ -738,10 +744,16 @@ void artwork_advanced_preferences::update_control_states() {
     BOOL clear_panel_enabled = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED);
     EnableWindow(GetDlgItem(m_hwnd, IDC_USE_NOART_IMAGE), clear_panel_enabled);
 
-    // Enable/disable folder controls based on current checkbox state (don't change checkbox)
-    BOOL enable_folder_controls = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
-    EnableWindow(GetDlgItem(m_hwnd, IDC_LOGOS_FOLDER_PATH), enable_folder_controls);
-    EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_LOGOS_FOLDER), enable_folder_controls);
+    // Enable/disable Station Logos section controls based on current checkbox state
+    BOOL enable_logos_section = (IsDlgButtonChecked(m_hwnd, IDC_ENABLE_CUSTOM_LOGOS) == BST_CHECKED);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_STATIC_LOGOS_FOLDER), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_LOGOS_FOLDER_PATH), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_LOGOS_FOLDER), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_STATIC_NOART_FOLDER), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_NOART_FOLDER_PATH), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_BROWSE_NOART_FOLDER), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_STATIC_NOART_CYCLE), enable_logos_section);
+    EnableWindow(GetDlgItem(m_hwnd, IDC_NOART_CYCLE_MODE), enable_logos_section);
 }
 
 void artwork_advanced_preferences::browse_for_folder() {
