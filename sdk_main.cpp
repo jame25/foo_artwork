@@ -4,6 +4,8 @@
 #include "preferences.h"
 #include "webp_decoder.h"
 #include <algorithm>
+#include <random>
+#include <atomic>
 #include <thread>
 #include <vector>
 #include <mutex>
@@ -77,6 +79,8 @@ static constexpr GUID guid_cfg_acrcloud_host = { 0x12345696, 0x1234, 0x1234, { 0
 static constexpr GUID guid_cfg_acrcloud_access_key = { 0x12345697, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x06 } };
 static constexpr GUID guid_cfg_acrcloud_access_secret = { 0x12345698, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x07 } };
 static constexpr GUID guid_cfg_console_logging_mode = { 0x12345699, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x08 } };
+static constexpr GUID guid_cfg_noart_folder = { 0x1234569a, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x09 } };
+static constexpr GUID guid_cfg_noart_cycle_mode = { 0x1234569b, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x0a } };
 
 // Configuration variables with default values
 cfg_bool cfg_enable_itunes(guid_cfg_enable_itunes, false);
@@ -116,6 +120,8 @@ cfg_string cfg_logos_folder(guid_cfg_logos_folder, "");  // Custom logos folder 
 // Miscellaneous settings
 cfg_bool cfg_clear_panel_when_not_playing(guid_cfg_clear_panel_when_not_playing, false);  // Clear panel when not playing (default disabled)
 cfg_bool cfg_use_noart_image(guid_cfg_use_noart_image, false);  // Use noart image when clearing panel (default disabled)
+cfg_string cfg_noart_folder(guid_cfg_noart_folder, "");  // Custom noart placeholder folder (empty = use logos folder)
+cfg_int cfg_noart_cycle_mode(guid_cfg_noart_cycle_mode, 0);  // 0 = Single / Disabled, 1 = Sequential, 2 = Random
 
 cfg_bool cfg_infobar(guid_cfg_infobar, false);  // DUI infobar (default disabled)
 
@@ -321,7 +327,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.2",
+    "1.6.3",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -338,7 +344,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.2",
+    "1.6.3",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -989,58 +995,180 @@ std::unique_ptr<Gdiplus::Bitmap> load_noart_logo_gdiplus(metadb_handle_ptr track
     return nullptr;
 }
 
-// Function to load generic noart logo directly as GDI+ bitmap (preserves alpha)
+static std::atomic<size_t> g_noart_cycle_seq_index{0};
+static size_t g_noart_last_random_index = (size_t)-1;
+
+static pfc::string8 get_noart_base_directory() {
+    if (!cfg_noart_folder.is_empty()) {
+        pfc::string8 dir = cfg_noart_folder.get_ptr();
+        if (!dir.is_empty() && dir[dir.length() - 1] != '\\' && dir[dir.length() - 1] != '/') {
+            dir += "\\";
+        }
+        return dir;
+    }
+    if (!cfg_logos_folder.is_empty()) {
+        pfc::string8 dir = cfg_logos_folder.get_ptr();
+        if (!dir.is_empty() && dir[dir.length() - 1] != '\\' && dir[dir.length() - 1] != '/') {
+            dir += "\\";
+        }
+        return dir;
+    }
+    pfc::string8 profile_url = core_api::get_profile_path();
+    pfc::string8 profile_path;
+    if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+        profile_path = profile_url.c_str() + 7;
+        for (size_t i = 0; i < profile_path.length(); i++) {
+            if (profile_path[i] == '/') {
+                profile_path.set_char(i, '\\');
+            }
+        }
+    } else {
+        profile_path = profile_url;
+    }
+    return profile_path + "\\foo_artwork_data\\logos\\";
+}
+
+static std::vector<pfc::string8> get_noart_image_files() {
+    std::vector<pfc::string8> files;
+    pfc::string8 base_dir = get_noart_base_directory();
+    if (base_dir.is_empty()) return files;
+    
+    pfc::string8 scan_dir = base_dir;
+    bool dedicated_folder = !cfg_noart_folder.is_empty();
+    
+    // If no custom noart folder is set, check if a dedicated "noart\" subfolder exists inside the logos folder
+    if (!dedicated_folder) {
+        pfc::string8 subfolder = base_dir + "noart\\";
+        DWORD attrs = GetFileAttributesA(subfolder.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            scan_dir = subfolder;
+            dedicated_folder = true;
+        }
+    }
+    
+    std::wstring wide_dir;
+    int len = MultiByteToWideChar(CP_UTF8, 0, scan_dir.c_str(), -1, nullptr, 0);
+    if (len > 0) {
+        wide_dir.resize(len - 1);
+        MultiByteToWideChar(CP_UTF8, 0, scan_dir.c_str(), -1, &wide_dir[0], len);
+    }
+    
+    std::wstring pattern = wide_dir + L"*.*";
+    WIN32_FIND_DATAW fd;
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                continue;
+            }
+            const wchar_t* ext = wcsrchr(fd.cFileName, L'.');
+            if (!ext) continue;
+            
+            if (_wcsicmp(ext, L".png") == 0 || _wcsicmp(ext, L".jpg") == 0 ||
+                _wcsicmp(ext, L".jpeg") == 0 || _wcsicmp(ext, L".webp") == 0 ||
+                _wcsicmp(ext, L".bmp") == 0 || _wcsicmp(ext, L".gif") == 0) {
+                
+                if (dedicated_folder) {
+                    // In dedicated placeholder folder, include all supported image files
+                    int ulen = WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, nullptr, 0, nullptr, nullptr);
+                    if (ulen > 0) {
+                        std::string fn(ulen - 1, 0);
+                        WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, &fn[0], ulen, nullptr, nullptr);
+                        files.push_back(scan_dir + fn.c_str());
+                    }
+                } else {
+                    // In shared logos folder, match files with "noart" in filename to avoid picking station logos
+                    if (_wcsnicmp(fd.cFileName, L"noart", 5) == 0 || wcsstr(fd.cFileName, L"-noart") != nullptr) {
+                        int ulen = WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, nullptr, 0, nullptr, nullptr);
+                        if (ulen > 0) {
+                            std::string fn(ulen - 1, 0);
+                            WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, &fn[0], ulen, nullptr, nullptr);
+                            files.push_back(scan_dir + fn.c_str());
+                        }
+                    }
+                }
+            }
+        } while (FindNextFileW(hFind, &fd));
+        FindClose(hFind);
+    }
+    
+    std::sort(files.begin(), files.end(), [](const pfc::string8& a, const pfc::string8& b) {
+        return strcmp(a.c_str(), b.c_str()) < 0;
+    });
+    
+    return files;
+}
+
+// Function to load generic noart logo directly as GDI+ bitmap (preserves alpha and supports cycling)
 std::unique_ptr<Gdiplus::Bitmap> load_generic_noart_logo_gdiplus() {
     // Check if custom station logos are enabled
     if (!cfg_enable_custom_logos) {
         return nullptr;
     }
     
-    // Get the logos directory path (using same logic as other logo functions)
-    pfc::string8 logos_dir;
-    
-    // Use custom logos folder if configured
-    if (!cfg_logos_folder.is_empty()) {
-        logos_dir = cfg_logos_folder.get_ptr();
-        if (!logos_dir.is_empty() && logos_dir[logos_dir.length() - 1] != '\\') {
-            logos_dir += "\\";
-        }
-    } else {
-        // Use default path
-        pfc::string8 profile_url = core_api::get_profile_path();
-        pfc::string8 profile_path;
-        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
-            profile_path = profile_url.c_str() + 7;
-            for (size_t i = 0; i < profile_path.length(); i++) {
-                if (profile_path[i] == '/') {
-                    profile_path.set_char(i, '\\');
-                }
-            }
-        } else {
-            profile_path = profile_url;
-        }
-        logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
-    }
-    
     try {
-        // Try common image extensions for generic noart.png
-        const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
-        
-        for (const char* ext : extensions) {
-            pfc::string8 noart_path = logos_dir + "noart" + ext;
-            
-            if (path_file_exists_utf8(noart_path.get_ptr())) {
-                // Convert to wide string for GDI+
-                std::wstring wide_path;
-                wide_path.resize(noart_path.length() + 1);
-                int result = MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], (int)wide_path.size());
-                if (result > 0) {
-                    // Load directly with GDI+ to preserve alpha
-                    auto bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
-                    if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                        return bitmap;
+        std::vector<pfc::string8> files = get_noart_image_files();
+        if (files.empty()) {
+            // Fallback: try common image extensions for generic noart.png
+            pfc::string8 logos_dir = get_noart_base_directory();
+            const char* extensions[] = { ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp" };
+            for (const char* ext : extensions) {
+                pfc::string8 noart_path = logos_dir + "noart" + ext;
+                if (path_file_exists_utf8(noart_path.get_ptr())) {
+                    std::wstring wide_path;
+                    wide_path.resize(noart_path.length() + 1);
+                    int result = MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], (int)wide_path.size());
+                    if (result > 0) {
+                        auto bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
+                        if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                            return bitmap;
+                        }
                     }
                 }
+            }
+            return nullptr;
+        }
+        
+        size_t selected_idx = 0;
+        if (cfg_noart_cycle_mode == 1) {
+            // Sequential cycling
+            selected_idx = g_noart_cycle_seq_index.fetch_add(1) % files.size();
+        } else if (cfg_noart_cycle_mode == 2) {
+            // Random cycling
+            if (files.size() == 1) {
+                selected_idx = 0;
+            } else {
+                std::random_device rd;
+                std::mt19937 gen(rd());
+                std::uniform_int_distribution<size_t> dist(0, files.size() - 1);
+                selected_idx = dist(gen);
+                if (selected_idx == g_noart_last_random_index && files.size() > 1) {
+                    selected_idx = (selected_idx + 1) % files.size();
+                }
+                g_noart_last_random_index = selected_idx;
+            }
+        } else {
+            // Disabled (Single noart): prefer exact "noart.*" if present, else first image
+            selected_idx = 0;
+            for (size_t i = 0; i < files.size(); ++i) {
+                const char* fn = strrchr(files[i].c_str(), '\\');
+                if (!fn) fn = strrchr(files[i].c_str(), '/');
+                fn = fn ? fn + 1 : files[i].c_str();
+                if (_strnicmp(fn, "noart.", 6) == 0) {
+                    selected_idx = i;
+                    break;
+                }
+            }
+        }
+        
+        pfc::string8 chosen_path = files[selected_idx];
+        std::wstring wide_path;
+        wide_path.resize(chosen_path.length() + 1);
+        int result = MultiByteToWideChar(CP_UTF8, 0, chosen_path.c_str(), -1, &wide_path[0], (int)wide_path.size());
+        if (result > 0) {
+            auto bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
+            if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
+                return bitmap;
             }
         }
     } catch (...) {
@@ -1222,6 +1350,22 @@ HBITMAP load_noart_logo(const pfc::string8& domain) {
     return NULL;
 }
 
+// Function to load generic "no artwork" fallback image for all streams (legacy version)
+HBITMAP load_generic_noart_logo() {
+    try {
+        auto gdiplus_bitmap = load_generic_noart_logo_gdiplus();
+        if (gdiplus_bitmap && gdiplus_bitmap->GetLastStatus() == Gdiplus::Ok) {
+            HBITMAP hBmp = NULL;
+            gdiplus_bitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBmp);
+            return hBmp;
+        }
+    } catch (...) {
+        // Silently fail - this is just a fallback feature
+    }
+    
+    return NULL;
+}
+
 // Function to load generic "no artwork" fallback image with full URL path support
 HBITMAP load_generic_noart_logo(metadb_handle_ptr track) {
     try {
@@ -1284,71 +1428,8 @@ HBITMAP load_generic_noart_logo(metadb_handle_ptr track) {
             }
         }
         
-        // Finally try generic noart.png (universal fallback)
-        for (const char* ext : extensions) {
-            pfc::string8 noart_path = logos_dir + "noart" + ext;
-            
-            if (path_file_exists_utf8(noart_path.get_ptr())) {
-                std::wstring wide_path;
-                wide_path.resize(noart_path.length() + 1);
-                MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
-                
-                // CRASH FIX: Use safe helper function for GDI+ bitmap loading
-                HBITMAP hBitmap = safe_load_gdiplus_bitmap(wide_path);
-                if (hBitmap) {
-                    return hBitmap;
-                }
-            }
-        }
-    } catch (...) {
-        // Silently fail - this is just a fallback feature
-    }
-    
-    return NULL;
-}
-
-// Function to load generic "no artwork" fallback image for all streams (legacy version)
-HBITMAP load_generic_noart_logo() {
-    try {
-        // Get foobar2000 profile path (returns file:// URL)
-        pfc::string8 profile_url = core_api::get_profile_path();
-        
-        // Convert file:// URL to filesystem path
-        pfc::string8 profile_path;
-        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
-            // Remove "file://" prefix and convert to Windows path
-            profile_path = profile_url.c_str() + 7; // Skip "file://"
-            // Replace forward slashes with backslashes for Windows
-            for (size_t i = 0; i < profile_path.length(); i++) {
-                if (profile_path[i] == '/') {
-                    profile_path.set_char(i, '\\');
-                }
-            }
-        } else {
-            profile_path = profile_url;
-        }
-        
-        pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
-        
-        // Try common image extensions for generic noart file
-        const char* extensions[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
-        
-        for (const char* ext : extensions) {
-            pfc::string8 noart_path = logos_dir + "noart" + ext;
-            
-            if (path_file_exists_utf8(noart_path.get_ptr())) {
-                // Load the image file
-                std::wstring wide_path;
-                wide_path.resize(noart_path.length() + 1);
-                MultiByteToWideChar(CP_UTF8, 0, noart_path.c_str(), -1, &wide_path[0], wide_path.size());
-                
-                // CRASH FIX: Use safe helper function for GDI+ bitmap loading
-                HBITMAP hBitmap = safe_load_gdiplus_bitmap(wide_path);
-                if (hBitmap) {
-                    return hBitmap;
-                }
-            }
-        }
+        // Finally try generic / cycled noart fallback
+        return load_generic_noart_logo();
     } catch (...) {
         // Silently fail - this is just a fallback feature
     }
