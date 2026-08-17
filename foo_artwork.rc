@@ -51,19 +51,19 @@ IDD_PREFERENCES_ADVANCED DIALOGEX 0, 0, 350, 310
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
-    GROUPBOX        "Custom Station Logos & Placeholders",IDC_STATIC,10,10,320,185
+    GROUPBOX        "Station Logos",IDC_STATIC,10,10,320,185
 
     CONTROL         "Enable custom station logos",IDC_ENABLE_CUSTOM_LOGOS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,25,200,12
 
-    LTEXT           "Custom logos folder:",IDC_STATIC,20,42,100,10
+    LTEXT           "Custom logos folder:",IDC_STATIC_LOGOS_FOLDER,20,42,100,10
     EDITTEXT        IDC_LOGOS_FOLDER_PATH,20,54,214,14,ES_AUTOHSCROLL
     PUSHBUTTON      "Browse...",IDC_BROWSE_LOGOS_FOLDER,239,54,50,14
 
-    LTEXT           "No-Art placeholder folder (empty = use logos folder):",IDC_STATIC,20,72,210,10
+    LTEXT           "No-Art placeholder folder (empty = use logos folder):",IDC_STATIC_NOART_FOLDER,20,72,210,10
     EDITTEXT        IDC_NOART_FOLDER_PATH,20,84,214,14,ES_AUTOHSCROLL
     PUSHBUTTON      "Browse...",IDC_BROWSE_NOART_FOLDER,239,84,50,14
 
-    LTEXT           "No-Art Image Cycling:",IDC_STATIC,20,104,80,10
+    LTEXT           "No-Art Image Cycling:",IDC_STATIC_NOART_CYCLE,20,104,80,10
     COMBOBOX        IDC_NOART_CYCLE_MODE,105,102,120,50,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
     LTEXT           "Logo files can use either full URL path or domain name:",IDC_STATIC,20,122,295,10
