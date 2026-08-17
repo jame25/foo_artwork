@@ -17,6 +17,8 @@ extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
 extern cfg_bool cfg_infobar;
 extern cfg_bool cfg_use_noart_image;
+extern cfg_string cfg_noart_folder;
+extern cfg_int cfg_noart_cycle_mode;
 extern cfg_int cfg_http_timeout;
 extern cfg_int cfg_retry_count;
 extern cfg_bool cfg_enable_disk_cache;
@@ -544,6 +546,7 @@ private:
     void update_controls();
     void update_control_states();
     void browse_for_folder();
+    void browse_for_noart_folder();
 };
 
 artwork_advanced_preferences::artwork_advanced_preferences(preferences_page_callback::ptr callback)
@@ -590,6 +593,15 @@ bool artwork_advanced_preferences::has_changed() {
     GetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, current_folder, MAX_PATH);
     bool folder_changed = strcmp(current_folder, cfg_logos_folder.get_ptr()) != 0;
 
+    // Check if noart placeholder folder path changed
+    char current_noart_folder[MAX_PATH];
+    GetDlgItemTextA(m_hwnd, IDC_NOART_FOLDER_PATH, current_noart_folder, MAX_PATH);
+    bool noart_folder_changed = strcmp(current_noart_folder, cfg_noart_folder.get_ptr()) != 0;
+
+    // Check if noart cycle mode changed
+    int current_cycle_mode = (int)SendMessage(GetDlgItem(m_hwnd, IDC_NOART_CYCLE_MODE), CB_GETCURSEL, 0, 0);
+    bool cycle_mode_changed = (current_cycle_mode != CB_ERR) && (current_cycle_mode != cfg_noart_cycle_mode);
+
     // Check if Clear panel when not playing checkbox changed
     bool clear_panel_changed = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED) != cfg_clear_panel_when_not_playing;
 
@@ -607,8 +619,8 @@ bool artwork_advanced_preferences::has_changed() {
     int current_retry = GetDlgItemInt(m_hwnd, IDC_RETRY_COUNT, NULL, FALSE);
     bool retry_changed = current_retry != cfg_retry_count;
 
-    return enable_logos_changed || folder_changed || clear_panel_changed || use_noart_changed ||
-           infobar_changed || timeout_changed || retry_changed;
+    return enable_logos_changed || folder_changed || noart_folder_changed || cycle_mode_changed ||
+           clear_panel_changed || use_noart_changed || infobar_changed || timeout_changed || retry_changed;
 }
 
 void artwork_advanced_preferences::apply_settings() {
@@ -621,6 +633,17 @@ void artwork_advanced_preferences::apply_settings() {
     char folder_path[MAX_PATH];
     GetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, folder_path, MAX_PATH);
     cfg_logos_folder = folder_path;
+
+    // Apply noart placeholder folder path
+    char noart_path[MAX_PATH];
+    GetDlgItemTextA(m_hwnd, IDC_NOART_FOLDER_PATH, noart_path, MAX_PATH);
+    cfg_noart_folder = noart_path;
+
+    // Apply noart cycle mode
+    int cycle_mode = (int)SendMessage(GetDlgItem(m_hwnd, IDC_NOART_CYCLE_MODE), CB_GETCURSEL, 0, 0);
+    if (cycle_mode != CB_ERR && cycle_mode >= 0 && cycle_mode <= 2) {
+        cfg_noart_cycle_mode = cycle_mode;
+    }
 
     // Apply Clear panel when not playing setting
     cfg_clear_panel_when_not_playing = (IsDlgButtonChecked(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING) == BST_CHECKED);
@@ -653,6 +676,8 @@ void artwork_advanced_preferences::reset_settings() {
     // Reset to default values
     cfg_enable_custom_logos = false;  // Default disabled
     cfg_logos_folder = "";  // Default empty (use default path)
+    cfg_noart_folder = "";  // Default empty (use logos path)
+    cfg_noart_cycle_mode = 0; // Default disabled (single image)
     cfg_clear_panel_when_not_playing = false;  // Default disabled
     cfg_infobar = false;  // Default disabled
     cfg_use_noart_image = false;  // Default disabled
@@ -670,6 +695,17 @@ void artwork_advanced_preferences::update_controls() {
 
     // Update custom folder path
     SetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, cfg_logos_folder.get_ptr());
+
+    // Update noart placeholder folder path
+    SetDlgItemTextA(m_hwnd, IDC_NOART_FOLDER_PATH, cfg_noart_folder.get_ptr());
+
+    // Update noart cycle mode combo
+    HWND hCycle = GetDlgItem(m_hwnd, IDC_NOART_CYCLE_MODE);
+    SendMessage(hCycle, CB_RESETCONTENT, 0, 0);
+    SendMessageA(hCycle, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Disabled (Single noart)"));
+    SendMessageA(hCycle, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Sequential"));
+    SendMessageA(hCycle, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Random"));
+    SendMessage(hCycle, CB_SETCURSEL, (cfg_noart_cycle_mode >= 0 && cfg_noart_cycle_mode <= 2) ? cfg_noart_cycle_mode : 0, 0);
 
     // Update Clear panel when not playing checkbox
     CheckDlgButton(m_hwnd, IDC_CLEAR_PANEL_WHEN_NOT_PLAYING, cfg_clear_panel_when_not_playing ? BST_CHECKED : BST_UNCHECKED);
@@ -712,6 +748,14 @@ void artwork_advanced_preferences::browse_for_folder() {
     pfc::string8 folder_path;
     if (uBrowseForFolder(m_hwnd, "Select Custom Station Logos Folder", folder_path)) {
         SetDlgItemTextA(m_hwnd, IDC_LOGOS_FOLDER_PATH, folder_path);
+        on_changed();
+    }
+}
+
+void artwork_advanced_preferences::browse_for_noart_folder() {
+    pfc::string8 folder_path;
+    if (uBrowseForFolder(m_hwnd, "Select No-Art Placeholder Images Folder", folder_path)) {
+        SetDlgItemTextA(m_hwnd, IDC_NOART_FOLDER_PATH, folder_path);
         on_changed();
     }
 }
@@ -771,6 +815,24 @@ INT_PTR CALLBACK artwork_advanced_preferences::AdvancedConfigProc(HWND hwnd, UIN
             case IDC_BROWSE_LOGOS_FOLDER:
                 if (HIWORD(wp) == BN_CLICKED) {
                     pThis->browse_for_folder();
+                }
+                break;
+
+            case IDC_NOART_FOLDER_PATH:
+                if (HIWORD(wp) == EN_CHANGE) {
+                    pThis->on_changed();
+                }
+                break;
+
+            case IDC_BROWSE_NOART_FOLDER:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->browse_for_noart_folder();
+                }
+                break;
+
+            case IDC_NOART_CYCLE_MODE:
+                if (HIWORD(wp) == CBN_SELCHANGE) {
+                    pThis->on_changed();
                 }
                 break;
 
