@@ -1792,68 +1792,12 @@ void artwork_ui_element::update_clear_panel_timer() {
 }
 
 void artwork_ui_element::load_noart_image() {
-    // Try to load noart image from configured logos directory
-    pfc::string8 data_path;
-    
-    // Use custom logos folder if configured, otherwise use default
-    if (!cfg_logos_folder.is_empty()) {
-        data_path = cfg_logos_folder.get_ptr();
-        if (!data_path.is_empty() && data_path[data_path.length() - 1] != '\\') {
-            data_path += "\\";
-        }
-    } else {
-        // Use default path
-        pfc::string8 profile_path = core_api::get_profile_path();
-        
-        // Convert file:// URL to regular file path
-        pfc::string8 file_path = profile_path;
-        if (file_path.startsWith("file://")) {
-            file_path = file_path.subString(7); // Remove "file://" prefix
-        }
-        
-        data_path = file_path;
-        data_path.add_string("\\foo_artwork_data\\logos\\");
-    }
-    
-    // Try different noart image formats
-    const char* noart_filenames[] = {
-        "noart.png",
-        "noart.jpg", 
-        "noart.jpeg",
-        "noart.gif",
-        "noart.bmp",
-        nullptr
-    };
-    
-    pfc::string8 noart_file_path;
-    bool noart_loaded = false;
-    
-    for (int i = 0; noart_filenames[i] != nullptr && !noart_loaded; i++) {
-        noart_file_path = data_path;
-        noart_file_path.add_string(noart_filenames[i]);
-        
-        // Check if file exists
-        DWORD file_attrs = GetFileAttributesA(noart_file_path);
-        if (file_attrs != INVALID_FILE_ATTRIBUTES && !(file_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-            // File exists, try to load it
-            
-            // Read file data and use load_image_from_memory for proper scaling
-            HANDLE hFile = CreateFileA(noart_file_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-            if (hFile != INVALID_HANDLE_VALUE) {
-                DWORD file_size = GetFileSize(hFile, NULL);
-                if (file_size > 0) {
-                    std::vector<BYTE> file_data(file_size);
-                    DWORD bytes_read;
-                    if (ReadFile(hFile, file_data.data(), file_size, &bytes_read, NULL) && bytes_read == file_size) {
-                        if (load_image_from_memory(file_data.data(), file_data.size())) {
-                            m_artwork_source = "Noart image";
-                            noart_loaded = true;
-                        }
-                    }
-                }
-                CloseHandle(hFile);
-            }
-        }
+    auto generic_bitmap = load_generic_noart_logo_gdiplus();
+    if (generic_bitmap && generic_bitmap->GetLastStatus() == Gdiplus::Ok) {
+        cleanup_gdiplus_image();
+        m_artwork_image = generic_bitmap.release();
+        m_artwork_loading = false;
+        m_artwork_source = "Noart image";
     }
     
     // Invalidate window to redraw with noart image or clear panel
