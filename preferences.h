@@ -31,5 +31,14 @@ extern cfg_int cfg_search_order_1, cfg_search_order_2, cfg_search_order_3, cfg_s
 extern cfg_bool cfg_skip_local_artwork;
 extern cfg_int cfg_console_logging_mode;
 
+// Disk Cache settings
+extern cfg_bool cfg_enable_disk_cache;
+extern cfg_bool cfg_single_file_cache;
+extern cfg_string cfg_cache_folder;
+
+// No-Art Placeholder folder & cycling settings
+extern cfg_string cfg_noart_folder;
+extern cfg_int cfg_noart_cycle_mode; // 0 = Single / Disabled, 1 = Sequential, 2 = Random
+
 // Function to get API search order based on user preferences
 std::vector<ApiType> get_api_search_order();
