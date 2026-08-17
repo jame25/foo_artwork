@@ -42,6 +42,16 @@ public:
     // Extract primary track title (title before extra album/bracket tags)
     static std::string extract_primary_title(const char* title);
     
+    // Title case normalizer
+    static std::string to_title_case(const std::string& str);
+
+    // Track numbering and broadcast date strippers
+    static std::string strip_track_numbers(const std::string& str);
+    static std::string strip_broadcast_dates(const std::string& str);
+
+    // Multilingual release/media keyword filter
+    static std::string filter_multilingual_keywords(const std::string& str);
+    
 private:
     // Core cleaning operations - UTF-8 safe
     static std::string remove_timestamps(const std::string& str);
@@ -61,4 +71,7 @@ private:
     static bool is_common_remix_term(const std::string& term);
     static bool is_featuring_pattern(const std::string& term);
     static bool is_likely_collaboration(const std::string& artist_str, const std::string& separator, size_t pos);
+    static bool is_minor_word(const std::string& word);
+    static bool is_roman_numeral(const std::string& word);
+    static bool is_known_acronym(const std::string& word);
 };
