@@ -217,6 +217,13 @@ void async_io_manager::cache_remove(const pfc::string8& key) {
     }
 }
 
+pfc::string8 async_io_manager::get_cache_file_path(const pfc::string8& key) const {
+    if (cache_) {
+        return cache_->get_cache_file_path(key);
+    }
+    return pfc::string8();
+}
+
 void async_io_manager::post_to_main_thread(main_thread_callback callback) {
     // Simple approach: use fb2k_async which is a common pattern in foobar2000 components
     fb2k::inMainThread([callback]() {
@@ -727,7 +734,7 @@ void async_io_manager::async_cache::write_worker() {
     }
 }
 
-pfc::string8 async_io_manager::async_cache::get_cache_file_path(const pfc::string8& key) {
+pfc::string8 async_io_manager::async_cache::get_cache_file_path(const pfc::string8& key) const {
     pfc::string8 file_path = cache_directory;
     file_path << key << ".cache";
     return file_path;
