@@ -1622,75 +1622,12 @@ void CUIArtworkPanel::load_noart_image() {
     m_current_artwork_path.clear();
     m_current_artwork_source.clear();
     
-    // Try to load noart image from configured logos directory
-    pfc::string8 data_path;
-    
-    // Use custom logos folder if configured, otherwise use default
-    if (!cfg_logos_folder.is_empty()) {
-        data_path = cfg_logos_folder.get_ptr();
-        if (!data_path.is_empty() && data_path[data_path.length() - 1] != '\\') {
-            data_path += "\\";
-        }
-    } else {
-        // Use default path
-        pfc::string8 profile_path = core_api::get_profile_path();
-        
-        // Convert file:// URL to regular file path
-        pfc::string8 file_path = profile_path;
-        if (file_path.startsWith("file://")) {
-            file_path = file_path.subString(7); // Remove "file://" prefix
-        }
-        
-        data_path = file_path;
-        data_path.add_string("\\foo_artwork_data\\logos\\");
-    }
-    
-    // Try different noart image formats
-    const char* noart_filenames[] = {
-        "noart.png",
-        "noart.jpg", 
-        "noart.jpeg",
-        "noart.gif",
-        "noart.bmp",
-        nullptr
-    };
-    
-    pfc::string8 noart_file_path;
-    
-    for (int i = 0; noart_filenames[i] != nullptr; i++) {
-        noart_file_path = data_path;
-        noart_file_path.add_string(noart_filenames[i]);
-        
-        // Check if file exists
-        DWORD file_attrs = GetFileAttributesA(noart_file_path);
-        if (file_attrs != INVALID_FILE_ATTRIBUTES && !(file_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-            // File exists, try to load it using GDI+
-            try {
-                // Convert to wide string for GDI+
-                std::wstring wide_path;
-                wide_path.resize(noart_file_path.length() + 1);
-                int result = MultiByteToWideChar(CP_UTF8, 0, noart_file_path.get_ptr(), -1, &wide_path[0], (int)wide_path.size());
-                if (result > 0) {
-                    wide_path.resize(result - 1); // Remove null terminator from size
-                    
-                    // Load image using GDI+
-                    auto bitmap = std::make_unique<Gdiplus::Bitmap>(wide_path.c_str());
-                    if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok) {
-                        m_artwork_bitmap = std::move(bitmap);
-                        m_artwork_loaded = true;
-                        m_current_artwork_path = wide_path;
-                        m_current_artwork_source = "Noart image";
-                        
-                        // Scale the artwork to fit the panel (same as regular artwork)
-                        resize_artwork_to_fit();
-                        
-                        break;
-                    }
-                }
-            } catch (...) {
-                continue;
-            }
-        }
+    auto generic_bitmap = load_generic_noart_logo_gdiplus();
+    if (generic_bitmap && generic_bitmap->GetLastStatus() == Gdiplus::Ok) {
+        m_artwork_bitmap = std::move(generic_bitmap);
+        m_artwork_loaded = true;
+        m_current_artwork_source = "Noart image";
+        resize_artwork_to_fit();
     }
     
     // Invalidate window to redraw with noart image or clear panel
