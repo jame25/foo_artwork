@@ -3,12 +3,14 @@
 #include "metadata_cleaner.h"
 #include "preferences.h"
 #include "acrcloud_client.h"
+#include "titleformat_provider.h"
 #include <winhttp.h>
 #include <shlwapi.h>
 #include <shlobj.h>
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <set>
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
@@ -306,6 +308,17 @@ static pfc::string8 g_last_recognized_stream_url;
 static pfc::string8 g_last_recognized_artist;
 static pfc::string8 g_last_recognized_title;
 static std::atomic<uint64_t> g_rms_detector_token{0};
+static std::atomic<uint64_t> g_stream_monitor_token{0};
+static pfc::string8 g_last_stream_artist = "";
+static pfc::string8 g_last_stream_title = "";
+static pfc::string8 g_last_logged_track_info = "";
+
+static bool contains_case_insensitive(const char* haystack, const char* needle) {
+    if (!haystack || !needle) return false;
+    pfc::string8 h(haystack);
+    pfc::string8 n(needle);
+    return strstr(h.toLower().c_str(), n.toLower().c_str()) != nullptr;
+}
 
 struct ApiDedupEntry {
     std::vector<artwork_manager::artwork_callback> callbacks;
@@ -342,6 +355,15 @@ void artwork_manager::shutdown() {
     
     async_io_manager::instance().shutdown();
 }
+
+extern void refresh_all_dui_artwork_panels();
+extern void refresh_all_cui_artwork_panels();
+
+static metadb_handle_ptr g_active_playing_track;
+static pfc::string8 g_active_source;
+static pfc::string8 g_active_resolved_provider;
+static pfc::string8 g_active_cache_key;
+static std::set<std::string> g_rejected_providers_for_current_track;
 
 void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
@@ -386,6 +408,24 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
         
         pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist_str, track_str);
 
+        auto original_callback = callback;
+        auto wrapped_callback = [artist_str, track_str, cache_key, original_callback](const artwork_result& res) {
+            if (res.success) {
+                g_active_source = res.source;
+                if (!res.source.is_empty() && res.source != "Cache") {
+                    g_active_resolved_provider = res.source;
+                }
+                pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
+                metadb_handle_ptr now_track;
+                static_api_ptr_t<playback_control> pc;
+                if (pc->get_now_playing(now_track)) {
+                    titleformat_provider::set_track_artwork_info(now_track, artist_str.c_str(), track_str.c_str(), cache_file.c_str(), res.source.c_str());
+                }
+            }
+            original_callback(res);
+        };
+        callback = wrapped_callback;
+
         // In single-file cache mode, skip cache reads (key is always "current" so it would
         // return the previous track's artwork). Go directly to API search, still write to cache.
         if (cfg_single_file_cache) {
@@ -402,14 +442,444 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
     }
 }
 
-extern void refresh_all_dui_artwork_panels();
-extern void refresh_all_cui_artwork_panels();
+pfc::string8 artwork_manager::extract_youtube_video_id(const char* path_or_url) {
+    if (!path_or_url || strlen(path_or_url) == 0) return "";
 
-static bool contains_case_insensitive(const char* haystack, const char* needle) {
-    if (!haystack || !needle) return false;
-    pfc::string8 h(haystack);
-    pfc::string8 n(needle);
-    return strstr(h.toLower().c_str(), n.toLower().c_str()) != nullptr;
+    std::string s(path_or_url);
+
+    // 1. Check "v=" query parameter (e.g. youtube.com/watch?v=dQw4w9WgXcQ)
+    size_t v_pos = s.find("v=");
+    if (v_pos != std::string::npos && v_pos + 2 < s.length()) {
+        std::string vid = s.substr(v_pos + 2, 11);
+        if (vid.length() == 11) return vid.c_str();
+    }
+
+    // 2. Check "youtu.be/" (e.g. youtu.be/dQw4w9WgXcQ)
+    size_t be_pos = s.find("youtu.be/");
+    if (be_pos != std::string::npos && be_pos + 9 < s.length()) {
+        std::string vid = s.substr(be_pos + 9, 11);
+        if (vid.length() == 11) return vid.c_str();
+    }
+
+    // 3. Check "embed/", "v/", "shorts/", "vi/", "3dyd://", "fy://"
+    const char* subpaths[] = { "embed/", "/v/", "shorts/", "/vi/", "3dyd://", "fy://" };
+    for (const char* sp : subpaths) {
+        size_t sp_pos = s.find(sp);
+        if (sp_pos != std::string::npos) {
+            size_t start = sp_pos + strlen(sp);
+            if (s.compare(start, 8, "youtube/") == 0) start += 8;
+            if (start + 11 <= s.length()) {
+                std::string vid = s.substr(start, 11);
+                if (vid.length() == 11) return vid.c_str();
+            }
+        }
+    }
+
+    // 4. Regex for standard 11-char YouTube ID
+    std::smatch match;
+    static const std::regex yt_regex("(?:youtube\\.com\\/(?:[^\\/\\n\\s]+\\/\\S+\\/|(?:v|e(?:mbed)?|shorts)\\/|\\S*?[?&]v=)|youtu\\.be\\/|3dyd:\\/\\/|fy:\\/\\/)([a-zA-Z0-9_-]{11})");
+    if (std::regex_search(s, match, yt_regex)) {
+        return match[1].str().c_str();
+    }
+
+    return "";
+}
+
+void artwork_manager::search_youtube_thumbnail_async(const pfc::string8& video_id, const pfc::string8& cache_key, artwork_callback callback) {
+    if (video_id.is_empty()) {
+        artwork_result fail;
+        fail.success = false;
+        fail.error_message = "Invalid YouTube video ID";
+        callback(fail);
+        return;
+    }
+
+    foo_artwork::log_printf("foo_artwork: Fetching YouTube video thumbnail for ID '%s'...", video_id.c_str());
+
+    pfc::string8 maxres_url = "https://img.youtube.com/vi/";
+    maxres_url << video_id << "/maxresdefault.jpg";
+
+    download_image_async(maxres_url.c_str(), [video_id, cache_key, callback](const artwork_result& res) {
+        if (res.success && res.data.get_size() > 1024) {
+            artwork_result final_res = res;
+            final_res.source = "YouTube Thumbnail";
+            if (cfg_enable_disk_cache && !cache_key.is_empty()) {
+                async_io_manager::instance().cache_set_async(cache_key, final_res.data);
+            }
+            if (cfg_single_file_cache) {
+                async_io_manager::instance().cache_set_async("current", final_res.data);
+            }
+            callback(final_res);
+            return;
+        }
+
+        // Fall back to hqdefault
+        pfc::string8 hq_url = "https://img.youtube.com/vi/";
+        hq_url << video_id << "/hqdefault.jpg";
+
+        download_image_async(hq_url.c_str(), [cache_key, callback](const artwork_result& hq_res) {
+            if (hq_res.success && hq_res.data.get_size() > 0) {
+                artwork_result final_res = hq_res;
+                final_res.source = "YouTube Thumbnail";
+                if (cfg_enable_disk_cache && !cache_key.is_empty()) {
+                    async_io_manager::instance().cache_set_async(cache_key, final_res.data);
+                }
+                if (cfg_single_file_cache) {
+                    async_io_manager::instance().cache_set_async("current", final_res.data);
+                }
+                callback(final_res);
+            } else {
+                callback(hq_res);
+            }
+        });
+    });
+}
+
+bool artwork_manager::has_url_flag(const char* url, const char* flag) {
+    if (!url || !flag || strlen(url) == 0 || strlen(flag) == 0) return false;
+    std::string u(url);
+    std::transform(u.begin(), u.end(), u.begin(), ::tolower);
+    std::string f(flag);
+    std::transform(f.begin(), f.end(), f.begin(), ::tolower);
+
+    std::string p1 = "?" + f;
+    std::string p2 = "&" + f;
+    std::string p3 = "#" + f;
+    return (u.find(p1) != std::string::npos || u.find(p2) != std::string::npos || u.find(p3) != std::string::npos);
+}
+
+pfc::string8 artwork_manager::get_url_param_value(const char* url, const char* param_name) {
+    if (!url || !param_name || strlen(url) == 0 || strlen(param_name) == 0) return "";
+    std::string u(url);
+    std::string p(param_name);
+    
+    std::string u_lower = u;
+    std::transform(u_lower.begin(), u_lower.end(), u_lower.begin(), ::tolower);
+    std::string p_lower = p;
+    std::transform(p_lower.begin(), p_lower.end(), p_lower.begin(), ::tolower);
+
+    std::string search1 = "?" + p_lower + "=";
+    std::string search2 = "&" + p_lower + "=";
+    
+    size_t pos = u_lower.find(search1);
+    size_t offset = search1.length();
+    if (pos == std::string::npos) {
+        pos = u_lower.find(search2);
+        offset = search2.length();
+    }
+    
+    if (pos == std::string::npos) {
+        if (has_url_flag(url, param_name)) {
+            return "1";
+        }
+        return "";
+    }
+    
+    size_t start = pos + offset;
+    size_t end = u.find_first_of("&# \t\r\n", start);
+    std::string val = (end == std::string::npos) ? u.substr(start) : u.substr(start, end - start);
+    return val.c_str();
+}
+
+pfc::string8 artwork_manager::extract_broadcast_artwork_url(metadb_handle_ptr track) {
+    if (!track.is_valid()) return "";
+
+    try {
+        metadb_info_container::ptr info_container = track->get_info_ref();
+        if (info_container.is_valid()) {
+            const file_info& info = info_container->info();
+            const char* tag_names[] = {
+                "COVER_URL", "ARTWORK_URL", "ART_URL", "IMAGE_URL",
+                "STREAM_COVER_URL", "STATION_COVER_URL", "COVERART", "COVER",
+                "RADIO_COVER_URL", "ALBUMART_URL"
+            };
+            for (const char* tag : tag_names) {
+                const char* val = info.meta_get(tag, 0);
+                if (val && (strncmp(val, "http://", 7) == 0 || strncmp(val, "https://", 8) == 0)) {
+                    return val;
+                }
+            }
+        }
+    } catch (...) {}
+
+    try {
+        static_api_ptr_t<playback_control> pc;
+        metadb_handle_ptr now_playing;
+        if (pc->get_now_playing(now_playing) && now_playing == track) {
+            static_api_ptr_t<titleformat_compiler> compiler;
+            const char* tf_patterns[] = {
+                "$info(cover_url)", "$info(artwork_url)", "$info(art_url)",
+                "$info(image_url)", "%cover_url%", "%artwork_url%", "%art_url%"
+            };
+            for (const char* pat : tf_patterns) {
+                service_ptr_t<titleformat_object> script;
+                compiler->compile_force(script, pat);
+                pfc::string8 formatted;
+                if (pc->playback_format_title(nullptr, formatted, script, nullptr, playback_control::display_level_titles)) {
+                    if (formatted.find_first("http://") == 0 || formatted.find_first("https://") == 0) {
+                        return formatted;
+                    }
+                }
+            }
+        }
+    } catch (...) {}
+
+    return "";
+}
+
+void artwork_manager::search_broadcast_artwork_async(const pfc::string8& cover_url, const pfc::string8& cache_key, artwork_callback callback) {
+    if (cover_url.is_empty() || (cover_url.find_first("http://") != 0 && cover_url.find_first("https://") != 0)) {
+        artwork_result fail;
+        fail.success = false;
+        fail.error_message = "Invalid broadcast artwork URL";
+        callback(fail);
+        return;
+    }
+
+    foo_artwork::log_printf("foo_artwork: Fetching in-stream broadcast artwork from '%s'...", cover_url.c_str());
+
+    download_image_async(cover_url.c_str(), [cache_key, callback](const artwork_result& res) {
+        if (res.success && res.data.get_size() > 0) {
+            artwork_result final_res = res;
+            final_res.source = "Broadcast Artwork";
+            if (cfg_enable_disk_cache && !cache_key.is_empty()) {
+                async_io_manager::instance().cache_set_async(cache_key, final_res.data);
+            }
+            if (cfg_single_file_cache) {
+                async_io_manager::instance().cache_set_async("current", final_res.data);
+            }
+            foo_artwork::log_printf("foo_artwork: SUCCESS - In-stream broadcast artwork retrieved (%u bytes)", (unsigned)final_res.data.get_size());
+            callback(final_res);
+        } else {
+            foo_artwork::log_printf("foo_artwork: Failed to download broadcast artwork from in-stream URL");
+            callback(res);
+        }
+    });
+}
+
+static std::atomic<uint64_t> g_external_api_session_token{0};
+
+void artwork_manager::stop_external_stream_api_poller() {
+    g_external_api_session_token++;
+}
+
+void artwork_manager::start_external_stream_api_poller(const pfc::string8& stream_url) {
+    stop_external_stream_api_poller();
+
+    pfc::string8 azuracast_val = get_url_param_value(stream_url.c_str(), "azuracast_api");
+    pfc::string8 radioreg_val = get_url_param_value(stream_url.c_str(), "radioreg_api");
+
+    bool is_azura = !azuracast_val.is_empty() || contains_case_insensitive(stream_url.c_str(), "/api/nowplaying");
+    bool is_radioreg = !radioreg_val.is_empty() || contains_case_insensitive(stream_url.c_str(), "radioreg.net");
+
+    if (!is_azura && !is_radioreg) {
+        return;
+    }
+
+    pfc::string8 endpoint_url;
+    if (is_azura) {
+        if (azuracast_val.find_first("http://") == 0 || azuracast_val.find_first("https://") == 0) {
+            endpoint_url = azuracast_val;
+        } else {
+            std::string s = stream_url.c_str();
+            size_t proto = s.find("://");
+            if (proto != std::string::npos) {
+                size_t host_end = s.find('/', proto + 3);
+                std::string base = (host_end != std::string::npos) ? s.substr(0, host_end) : s;
+                if (!azuracast_val.is_empty() && azuracast_val != "1") {
+                    endpoint_url = (base + "/api/nowplaying/" + azuracast_val.c_str()).c_str();
+                } else {
+                    endpoint_url = (base + "/api/nowplaying").c_str();
+                }
+            }
+        }
+    } else if (is_radioreg) {
+        if (radioreg_val.find_first("http://") == 0 || radioreg_val.find_first("https://") == 0) {
+            endpoint_url = radioreg_val;
+        } else {
+            std::string station = (radioreg_val.is_empty() || radioreg_val == "1") ? "1" : radioreg_val.c_str();
+            endpoint_url = ("https://api.radioreg.net/nowplaying/" + station).c_str();
+        }
+    }
+
+    if (endpoint_url.is_empty()) return;
+
+    uint64_t current_token = ++g_external_api_session_token;
+    foo_artwork::log_printf("foo_artwork: Starting external now-playing API poller for endpoint: %s", endpoint_url.c_str());
+
+    std::thread([endpoint_url, current_token]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        if (g_external_api_session_token != current_token) return;
+        poll_external_stream_api(endpoint_url, current_token);
+
+        while (g_external_api_session_token == current_token) {
+            for (int i = 0; i < 20; ++i) {
+                if (g_external_api_session_token != current_token) return;
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            if (g_external_api_session_token != current_token) return;
+            poll_external_stream_api(endpoint_url, current_token);
+        }
+    }).detach();
+}
+
+void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url, uint64_t session_token) {
+    if (g_external_api_session_token != session_token) return;
+
+    async_io_manager::instance().http_get_async(endpoint_url.c_str(), [endpoint_url, session_token](bool success, const pfc::string8& json_response, const pfc::string8& error) {
+        if (g_external_api_session_token != session_token || !success || json_response.is_empty()) {
+            return;
+        }
+
+        try {
+            json j = json::parse(json_response.c_str(), nullptr, false);
+            if (j.is_discarded()) return;
+
+            std::string artist, title, art_url;
+
+            if (j.is_object() && j.contains("now_playing") && j["now_playing"].is_object()) {
+                auto& np = j["now_playing"];
+                if (np.contains("song") && np["song"].is_object()) {
+                    auto& song = np["song"];
+                    if (song.contains("artist") && song["artist"].is_string()) artist = song["artist"].get<std::string>();
+                    if (song.contains("title") && song["title"].is_string()) title = song["title"].get<std::string>();
+                    if (song.contains("art") && song["art"].is_string()) art_url = song["art"].get<std::string>();
+                    if (song.contains("text") && song["text"].is_string() && (artist.empty() || title.empty())) {
+                        std::string text = song["text"].get<std::string>();
+                        size_t dash = text.find(" - ");
+                        if (dash != std::string::npos) {
+                            artist = text.substr(0, dash);
+                            title = text.substr(dash + 3);
+                        }
+                    }
+                }
+            } else if (j.is_array() && !j.empty() && j[0].is_object() && j[0].contains("now_playing")) {
+                auto& np = j[0]["now_playing"];
+                if (np.contains("song") && np["song"].is_object()) {
+                    auto& song = np["song"];
+                    if (song.contains("artist") && song["artist"].is_string()) artist = song["artist"].get<std::string>();
+                    if (song.contains("title") && song["title"].is_string()) title = song["title"].get<std::string>();
+                    if (song.contains("art") && song["art"].is_string()) art_url = song["art"].get<std::string>();
+                }
+            } else if (j.is_object()) {
+                if (j.contains("artist") && j["artist"].is_string()) artist = j["artist"].get<std::string>();
+                if (j.contains("title") && j["title"].is_string()) title = j["title"].get<std::string>();
+                if (j.contains("cover_url") && j["cover_url"].is_string()) art_url = j["cover_url"].get<std::string>();
+                else if (j.contains("art") && j["art"].is_string()) art_url = j["art"].get<std::string>();
+                else if (j.contains("image") && j["image"].is_string()) art_url = j["image"].get<std::string>();
+                
+                if (j.contains("song") && j["song"].is_object()) {
+                    auto& song = j["song"];
+                    if (artist.empty() && song.contains("artist") && song["artist"].is_string()) artist = song["artist"].get<std::string>();
+                    if (title.empty() && song.contains("title") && song["title"].is_string()) title = song["title"].get<std::string>();
+                    if (art_url.empty() && song.contains("art") && song["art"].is_string()) art_url = song["art"].get<std::string>();
+                }
+            }
+
+            if (artist.empty() && title.empty()) return;
+
+            if (artwork_manager::has_url_flag(g_current_stream_url.c_str(), "inverted")) {
+                std::swap(artist, title);
+            }
+
+            async_io_manager::instance().post_to_main_thread([artist, title, art_url, session_token]() {
+                if (g_external_api_session_token != session_token) return;
+
+                if (artist == g_last_stream_artist.c_str() && title == g_last_stream_title.c_str()) {
+                    return;
+                }
+
+                foo_artwork::log_printf("foo_artwork: External API cue - Track changed: '%s - %s'", artist.c_str(), title.c_str());
+                g_last_stream_artist = artist.c_str();
+                g_last_stream_title = title.c_str();
+                g_rejected_providers_for_current_track.clear();
+                g_active_resolved_provider.reset();
+
+                if (!art_url.empty() && (art_url.find("http://") == 0 || art_url.find("https://") == 0)) {
+                    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist.c_str(), title.c_str());
+                    search_broadcast_artwork_async(art_url.c_str(), cache_key, [](const artwork_result& res) {
+                        if (res.success) {
+                            g_active_source = res.source;
+                            g_active_resolved_provider = res.source;
+                            refresh_all_dui_artwork_panels();
+                            refresh_all_cui_artwork_panels();
+                        } else {
+                            artwork_manager::on_stream_metadata_changed(g_last_stream_artist.c_str(), g_last_stream_title.c_str());
+                        }
+                    });
+                } else {
+                    artwork_manager::on_stream_metadata_changed(artist.c_str(), title.c_str());
+                }
+            });
+        } catch (...) {}
+    });
+}
+
+void artwork_manager::reject_current_artwork() {
+    ASSERT_MAIN_THREAD();
+
+    metadb_handle_ptr track;
+    if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+        g_active_playing_track = track;
+    } else {
+        track = g_active_playing_track;
+    }
+
+    if (!track.is_valid()) {
+        foo_artwork::log_printf("foo_artwork: Reject Artwork: No track currently playing.");
+        return;
+    }
+
+    pfc::string8 source_to_reject = g_active_resolved_provider;
+    if (source_to_reject.is_empty()) {
+        if (!g_active_source.is_empty() && g_active_source != "Cache") {
+            source_to_reject = g_active_source;
+        } else {
+            // Find the first enabled provider in the priority chain not yet rejected
+            auto api_order = get_api_search_order();
+            for (auto api : api_order) {
+                pfc::string8 name;
+                switch (api) {
+                    case ApiType::iTunes: name = "iTunes"; break;
+                    case ApiType::Deezer: name = "Deezer"; break;
+                    case ApiType::LastFm: name = "Last.fm"; break;
+                    case ApiType::MusicBrainz: name = "MusicBrainz"; break;
+                    case ApiType::Discogs: name = "Discogs"; break;
+                }
+                if (g_rejected_providers_for_current_track.find(name.c_str()) == g_rejected_providers_for_current_track.end()) {
+                    source_to_reject = name;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (source_to_reject.is_empty()) {
+        source_to_reject = "Unknown";
+    }
+
+    foo_artwork::log_printf("foo_artwork: Rejecting artwork from '%s' for current track. Searching next provider in chain...", source_to_reject.c_str());
+    g_rejected_providers_for_current_track.insert(source_to_reject.c_str());
+    g_active_resolved_provider.reset();
+    g_active_source.reset();
+
+    // Invalidate current cache on disk
+    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key_for_track(track);
+    async_io_manager::instance().cache_remove(cache_key);
+    if (cfg_single_file_cache) {
+        async_io_manager::instance().cache_remove("current");
+    }
+
+    // Clear in-memory deduplication and in-flight records
+    {
+        std::lock_guard<std::mutex> lock(g_in_flight_mutex);
+        g_api_dedup_map.clear();
+        g_in_flight_queries.clear();
+    }
+
+    // Refresh active panels to trigger re-query with rejected provider excluded
+    refresh_all_dui_artwork_panels();
+    refresh_all_cui_artwork_panels();
 }
 
 struct PerceptualVector {
@@ -608,11 +1078,6 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
     });
 }
 
-static std::atomic<uint64_t> g_stream_monitor_token{0};
-static pfc::string8 g_last_stream_artist = "";
-static pfc::string8 g_last_stream_title = "";
-static pfc::string8 g_last_logged_track_info = "";
-
 static pfc::string8 get_formatted_timestamp() {
     std::time_t t = std::time(nullptr);
     std::tm tm_buf{};
@@ -656,6 +1121,10 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
     }
     g_last_stream_artist = clean_art;
     g_last_stream_title = clean_tit;
+
+    // Reset rejected providers and active provider for the new stream song
+    g_rejected_providers_for_current_track.clear();
+    g_active_resolved_provider.reset();
 
     // Increment monitor token to cancel any pending 10s initial metadata fallback monitor
     g_stream_monitor_token++;
@@ -844,21 +1313,94 @@ static void schedule_periodic_acrcloud_rescan(uint32_t delay_ms) {
     });
 }
 
+static void extract_track_metadata_dynamic(metadb_handle_ptr track, pfc::string8& out_artist, pfc::string8& out_title) {
+    out_artist.reset();
+    out_title.reset();
+
+    if (!track.is_valid()) return;
+
+    pfc::string8 file_path = track->get_path();
+    bool is_youtube = !artwork_manager::extract_youtube_video_id(file_path.c_str()).is_empty();
+    bool is_internet_stream = is_youtube ||
+                              (strstr(file_path.c_str(), "://") && !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
+
+    static_api_ptr_t<playback_control> pc;
+    metadb_handle_ptr now_playing;
+    if (pc->get_now_playing(now_playing) && now_playing == track) {
+        static_api_ptr_t<titleformat_compiler> compiler;
+        service_ptr_t<titleformat_object> script_artist, script_title;
+        compiler->compile_force(script_artist, "%artist%");
+        compiler->compile_force(script_title, "%title%");
+
+        pfc::string8 dyn_art, dyn_tit;
+        if (pc->playback_format_title(nullptr, dyn_art, script_artist, nullptr, playback_control::display_level_titles)) {
+            if (!dyn_art.is_empty() && dyn_art != "?") out_artist = dyn_art;
+        }
+        if (pc->playback_format_title(nullptr, dyn_tit, script_title, nullptr, playback_control::display_level_titles)) {
+            if (!dyn_tit.is_empty() && dyn_tit != "?") out_title = dyn_tit;
+        }
+    }
+
+    if (out_artist.is_empty() || out_title.is_empty()) {
+        try {
+            metadb_info_container::ptr info_container = track->get_info_ref();
+            if (info_container.is_valid()) {
+                const file_info& info = info_container->info();
+                if (out_artist.is_empty() && info.meta_get("ARTIST", 0)) out_artist = info.meta_get("ARTIST", 0);
+                if (out_title.is_empty() && info.meta_get("TITLE", 0)) out_title = info.meta_get("TITLE", 0);
+            }
+        } catch (...) {}
+    }
+
+    if (is_internet_stream && (out_artist.is_empty() || out_artist == "Unknown Artist" || out_title.is_empty() || out_title == "Unknown Track")) {
+        if (!g_last_stream_artist.is_empty() && !g_last_stream_title.is_empty()) {
+            out_artist = g_last_stream_artist;
+            out_title = g_last_stream_title;
+        }
+    }
+
+    if (is_internet_stream) {
+        if (artwork_manager::has_url_flag(file_path.c_str(), "inverted") ||
+            artwork_manager::has_url_flag(g_current_stream_url.c_str(), "inverted")) {
+            std::swap(out_artist, out_title);
+        }
+    }
+
+    if (out_artist.is_empty()) out_artist = "Unknown Artist";
+    if (out_title.is_empty()) out_title = "Unknown Track";
+}
+
 void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
     
+    if (!track.is_valid()) {
+        artwork_result fail;
+        fail.success = false;
+        callback(fail);
+        return;
+    }
 
-    // Extract metadata and path on main thread (this is fast)
-    metadb_info_container::ptr info_container = track->get_info_ref();
-    const file_info* info = &info_container->info();
-
-    pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "Unknown Artist";
-    pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
     pfc::string8 file_path = track->get_path();
 
-    bool is_internet_stream = strstr(file_path.c_str(), "://") &&
-                              !(strstr(file_path.c_str(), "file://") == file_path.c_str());
-    
+    // URL Flag: ?bypass - Completely skip artwork lookup
+    if (has_url_flag(file_path.c_str(), "bypass") || has_url_flag(g_current_stream_url.c_str(), "bypass")) {
+        foo_artwork::log_printf("foo_artwork: Stream URL contains '?bypass' tag. Skipping artwork lookup.");
+        artwork_result res;
+        res.success = false;
+        res.source = "Bypassed";
+        res.error_message = "Bypassed by stream URL flag (?bypass)";
+        callback(res);
+        return;
+    }
+
+    bool is_youtube = !extract_youtube_video_id(file_path.c_str()).is_empty() || 
+                      !extract_youtube_video_id(g_current_stream_url.c_str()).is_empty();
+    bool is_internet_stream = is_youtube ||
+                              (strstr(file_path.c_str(), "://") && !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
+
+    pfc::string8 artist, track_name;
+    extract_track_metadata_dynamic(track, artist, track_name);
+
     if (!is_internet_stream) {
         log_simplified_track_info(artist.c_str(), track_name.c_str());
     } else {
@@ -870,9 +1412,38 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     
     pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key_for_track(track);
 
+    bool is_different_track = false;
+    if (!g_active_playing_track.is_valid() || !track.is_valid()) {
+        is_different_track = true;
+    } else if (strcmp(g_active_playing_track->get_path(), track->get_path()) != 0) {
+        is_different_track = true;
+    }
+
+    if (is_different_track) {
+        g_active_playing_track = track;
+        g_rejected_providers_for_current_track.clear();
+        g_active_resolved_provider.reset();
+    }
+    g_active_cache_key = cache_key;
+
+    auto original_callback = callback;
+    auto wrapped_callback = [track, artist, track_name, cache_key, original_callback](const artwork_result& res) {
+        if (res.success) {
+            g_active_source = res.source;
+            if (!res.source.is_empty() && res.source != "Cache") {
+                g_active_resolved_provider = res.source;
+            }
+            pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
+            titleformat_provider::set_track_artwork_info(track, artist.c_str(), track_name.c_str(), cache_file.c_str(), res.source.c_str());
+        }
+        original_callback(res);
+    };
+    callback = wrapped_callback;
+
     if (is_internet_stream) {
         StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str());
-        bool force_acrcloud = contains_case_insensitive(file_path.c_str(), "forceacr");
+        bool force_acrcloud = has_url_flag(file_path.c_str(), "forceacr") || has_url_flag(g_current_stream_url.c_str(), "forceacr");
+        bool is_reject_station_covers = has_url_flag(file_path.c_str(), "rejectstationcovers") || has_url_flag(g_current_stream_url.c_str(), "rejectstationcovers");
 
         bool new_stream_connect = (g_current_stream_url != file_path);
         if (new_stream_connect) {
@@ -888,6 +1459,7 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
             if (meta.is_station_or_url || !meta.is_valid_search) {
                 start_initial_stream_metadata_monitor(file_path);
             }
+            start_external_stream_api_poller(file_path);
         }
 
         // RECOGNIZED STREAM ARTWORK GUARD:
@@ -899,17 +1471,59 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
             return;
         }
 
+        // Check in-stream broadcast artwork
+        pfc::string8 broadcast_art_url = extract_broadcast_artwork_url(track);
+        bool try_broadcast_artwork = !broadcast_art_url.is_empty() &&
+            (g_rejected_providers_for_current_track.find("Broadcast Artwork") == g_rejected_providers_for_current_track.end());
+
+        // In single-file cache mode, skip cache reads (key is always "current" so it would
+        // return the previous track's artwork). Go directly to broadcast -> API search, still write to cache.
+        if (cfg_single_file_cache) {
+            if (try_broadcast_artwork) {
+                search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track_name, cache_key, callback](const artwork_result& res) {
+                    if (res.success) {
+                        callback(res);
+                    } else {
+                        search_apis_async(artist, track_name, cache_key, callback);
+                    }
+                });
+            } else {
+                search_apis_async(artist, track_name, cache_key, callback);
+            }
+            return;
+        }
+
         // UNTAGGED STREAMS & PLACEHOLDER METADATA OR ?FORCEACR TAG:
         // Do NOT read stale cache for placeholder metadata ("Unknown Artist - Unknown Track") or forceacr streams.
         // On untagged streams, station URLs, or ?forceacr streams, bypass cache reads and go directly to API search -> ACRCloud fallback!
         if (force_acrcloud || meta.is_station_or_url || !meta.is_valid_search) {
-            if (cfg_skip_local_artwork) {
-                search_apis_async(artist, track_name, cache_key, callback);
+            if (cfg_skip_local_artwork || is_youtube || is_reject_station_covers) {
+                if (try_broadcast_artwork) {
+                    search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track_name, cache_key, callback](const artwork_result& res) {
+                        if (res.success) {
+                            cancel_acrcloud_tasks();
+                            callback(res);
+                        } else {
+                            search_apis_async(artist, track_name, cache_key, callback);
+                        }
+                    });
+                } else {
+                    search_apis_async(artist, track_name, cache_key, callback);
+                }
             } else {
-                find_local_artwork_async(track, [artist, track_name, cache_key, callback](const artwork_result& result) {
+                find_local_artwork_async(track, [artist, track_name, cache_key, callback, try_broadcast_artwork, broadcast_art_url](const artwork_result& result) {
                     if (result.success) {
                         cancel_acrcloud_tasks(); // Cancel pending 10s initial stream monitor & acoustic shift detector on station logo / local artwork hit!
                         callback(result);
+                    } else if (try_broadcast_artwork) {
+                        search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track_name, cache_key, callback](const artwork_result& res) {
+                            if (res.success) {
+                                cancel_acrcloud_tasks();
+                                callback(res);
+                            } else {
+                                search_apis_async(artist, track_name, cache_key, callback);
+                            }
+                        });
                     } else {
                         search_apis_async(artist, track_name, cache_key, callback);
                     }
@@ -920,14 +1534,35 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
 
         // VALID STREAM METADATA (e.g., "The Beatles - Let It Be"):
         // Check disk cache first for this specific song
-        check_cache_async(cache_key, track, [artist, track_name, cache_key, track, callback](const artwork_result& cache_res) {
+        check_cache_async(cache_key, track, [artist, track_name, cache_key, track, callback, is_youtube, is_reject_station_covers, try_broadcast_artwork, broadcast_art_url](const artwork_result& cache_res) {
             if (cache_res.success) {
                 foo_artwork::log_printf("foo_artwork: SUCCESS - Cached artwork displayed for initial stream metadata '%s - %s'", artist.c_str(), track_name.c_str());
                 foo_artwork::log_printf("foo_artwork: Initial 10s stream metadata monitor cancelled (cached artwork loaded).");
                 cancel_acrcloud_tasks(); // Cancel pending 10s initial stream monitor & acoustic shift detector on cache hit!
                 callback(cache_res);
             } else {
-                if (cfg_skip_local_artwork) {
+                if (try_broadcast_artwork) {
+                    search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track_name, cache_key, track, callback, is_youtube, is_reject_station_covers](const artwork_result& bcast_res) {
+                        if (bcast_res.success) {
+                            cancel_acrcloud_tasks();
+                            callback(bcast_res);
+                        } else if (cfg_skip_local_artwork || is_youtube || is_reject_station_covers) {
+                            search_apis_async(artist, track_name, cache_key, callback);
+                        } else {
+                            find_local_artwork_async(track, [artist, track_name, cache_key, callback](const artwork_result& result) {
+                                if (result.success) {
+                                    cancel_acrcloud_tasks();
+                                    if (cfg_enable_disk_cache && !cache_key.is_empty()) {
+                                        async_io_manager::instance().cache_set_async(cache_key, result.data);
+                                    }
+                                    callback(result);
+                                } else {
+                                    search_apis_async(artist, track_name, cache_key, callback);
+                                }
+                            });
+                        }
+                    });
+                } else if (cfg_skip_local_artwork || is_youtube || is_reject_station_covers) {
                     search_apis_async(artist, track_name, cache_key, callback);
                 } else {
                     find_local_artwork_async(track, [artist, track_name, cache_key, callback](const artwork_result& result) {
@@ -946,8 +1581,9 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
         });
         return;
     } else {
-        // Local file playback: completely stop acoustic shift detector & clear stream URL
+        // Local file playback: completely stop acoustic shift detector & clear stream URL & external API poller
         stop_rms_silence_detector();
+        stop_external_stream_api_poller();
         g_current_stream_url = "";
         cancel_acrcloud_tasks();
 
@@ -1055,20 +1691,20 @@ void artwork_manager::search_apis_async_metadata(const pfc::string8& artist, con
 
 void artwork_manager::search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
 
-    // If user wants to skip local artwork, go directly to API search
-    if (cfg_skip_local_artwork) {
-        metadb_info_container::ptr info_container = track->get_info_ref();
-        const file_info* info = &info_container->info();
-        pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "Unknown Artist";
-        pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
+    bool is_youtube = !extract_youtube_video_id(file_path.c_str()).is_empty() || 
+                      !extract_youtube_video_id(g_current_stream_url.c_str()).is_empty();
+
+    pfc::string8 artist, track_name;
+    extract_track_metadata_dynamic(track, artist, track_name);
+
+    // If user wants to skip local artwork or if this is a YouTube stream, go directly to API search
+    if (cfg_skip_local_artwork || is_youtube) {
         search_apis_async(artist, track_name, cache_key, callback);
         return;
     }
 
-    // ALWAYS try to find tagged artwork first, regardless of local/internet file type
-    // Internet streams (like YouTube videos) can have embedded artwork too
-
-    find_local_artwork_async(track, [cache_key, track, callback](const artwork_result& result) {
+    // ALWAYS try to find tagged artwork first for local audio files
+    find_local_artwork_async(track, [artist, track_name, cache_key, track, callback](const artwork_result& result) {
         if (result.success) {
             // Local artwork found - in single-file cache mode, write to current.cache
             // so external consumers (e.g., JScript Panel 3 Thumbs) see the correct artwork.
@@ -1082,10 +1718,6 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
             callback(result);
         } else {
             // Local search failed - continue to API search
-            metadb_info_container::ptr info_container = track->get_info_ref();
-            const file_info* info = &info_container->info();
-            pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "Unknown Artist";
-            pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "Unknown Track";
             search_apis_async(artist, track_name, cache_key, callback);
         }
     });
@@ -1167,6 +1799,24 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     auto notify_text_search_failed = [=]() {
         foo_artwork::log_printf("foo_artwork: Text search failed for '%s - %s'. No artwork found from any online API.",
                                  meta.clean_artist.c_str(), meta.clean_title.c_str());
+
+        // YouTube thumbnail direct fallback check
+        pfc::string8 yt_video_id = extract_youtube_video_id(g_current_stream_url.c_str());
+        if (!yt_video_id.is_empty()) {
+            foo_artwork::log_printf("foo_artwork: Querying YouTube video thumbnail for ID '%s' as fallback...", yt_video_id.c_str());
+            search_youtube_thumbnail_async(yt_video_id, cache_key, [final_callback](const artwork_result& yt_res) {
+                if (yt_res.success) {
+                    final_callback(yt_res);
+                } else {
+                    artwork_result fail_res;
+                    fail_res.success = false;
+                    fail_res.error_message = "No artwork found in text search or YouTube thumbnail";
+                    final_callback(fail_res);
+                }
+            });
+            return;
+        }
+
         if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
             auto now = std::chrono::steady_clock::now();
             if (now >= g_acrcloud_cooldown_until) {
@@ -1534,6 +2184,13 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         case ApiType::Discogs: current_api_name = "Discogs"; break;
     }
 
+    // Check if this provider has been rejected by user for current track
+    if (g_rejected_providers_for_current_track.find(current_api_name.c_str()) != g_rejected_providers_for_current_track.end()) {
+        foo_artwork::log_printf("foo_artwork: Skipping rejected provider '%s' for current track.", current_api_name.c_str());
+        search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1, force_enable_apis);
+        return;
+    }
+
     std::string api_dedup_key = current_api_name.c_str();
     api_dedup_key += "|";
     api_dedup_key += artist.c_str();
@@ -1604,6 +2261,8 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
 
         if (result.success) {
             foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork retrieved from %s for '%s - %s' (%u bytes)", api_name.c_str(), artist.c_str(), track.c_str(), (unsigned int)result.data.get_size());
+            g_active_resolved_provider = api_name;
+            g_active_source = api_name;
             cancel_acrcloud_tasks(); // Cancel any pending background ACRCloud sampling tasks
             if (cfg_enable_disk_cache || cfg_single_file_cache) {
                 if (!cache_key.is_empty()) {
@@ -2252,15 +2911,14 @@ static std::wstring utf8_to_wide(const pfc::string8& utf8_str) {
 pfc::string8 artwork_manager::generate_cache_key_for_track(metadb_handle_ptr track) {
     if (!track.is_valid()) return pfc::string8("unknown");
 
-    metadb_info_container::ptr info_container = track->get_info_ref();
-    const file_info* info = &info_container->info();
-
-    pfc::string8 artist = info->meta_get("ARTIST", 0) ? info->meta_get("ARTIST", 0) : "";
-    pfc::string8 track_name = info->meta_get("TITLE", 0) ? info->meta_get("TITLE", 0) : "";
+    pfc::string8 artist, track_name;
     pfc::string8 file_path = track->get_path();
+    bool is_youtube = !extract_youtube_video_id(file_path.c_str()).is_empty() || 
+                      !extract_youtube_video_id(g_current_stream_url.c_str()).is_empty();
+    bool is_internet_stream = is_youtube ||
+                              (strstr(file_path.c_str(), "://") && !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
 
-    bool is_internet_stream = strstr(file_path.c_str(), "://") &&
-                              !(strstr(file_path.c_str(), "file://") == file_path.c_str());
+    extract_track_metadata_dynamic(track, artist, track_name);
 
     if (is_internet_stream) {
         StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str());
@@ -2382,423 +3040,273 @@ bool artwork_manager::is_local_artwork_newer_than_cache(const pfc::string8& file
 
 // JSON parsing implementations
 bool artwork_manager::parse_itunes_json(const char* artist, const char* track, const pfc::string8& json_in, pfc::string8& artwork_url) {
+    try {
+        std::string json_data;
+        json_data += json_in;
 
-    //using nlohmann/json
+        json data = json::parse(json_data);
 
-    std::string json_data;
-    json_data += json_in;
-
-    json data = json::parse(json_data);
-
-    //No data return
-    if (data["resultCount"] == 0) return false;
-
-    // root
-    json s = data["results"];
-
-    // Convert input artist/track to std::string for comparison
-    std::string artist_str(artist);
-    std::string track_str(track);
-
-    // Try multiple artwork URL fields in order of preference
-
-    //search for exact same artist track values first (case-insensitive)
-    for (const auto& item : s)
-    {
-        std::string result_track = item["trackName"].get<std::string>();
-        std::string result_artist = item["artistName"].get<std::string>();
-
-        if (strings_match_fuzzy(result_track, track_str) && artists_match(result_artist, artist_str)) {
-
-            if (item.contains("artworkUrl600")) {
-                artwork_url = item["artworkUrl600"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("600x600", "1200x1200");
-            }
-            else if (item.contains("artworkUrl512")) {
-                artwork_url = item["artworkUrl512"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("512x512", "1200x1200");
-            }
-            else if (item.contains("artworkUrl100")) {
-                artwork_url = item["artworkUrl100"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("100x100", "1200x1200");
-            }
-            else if (item.contains("artworkUrl60")) {
-                artwork_url = item["artworkUrl60"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("60x60", "1200x1200");
-            }
-            else if (item.contains("artworkUrl30")) {
-                artwork_url = item["artworkUrl30"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("30x30", "1200x1200");
-            }
-
-            // Set compression quality: 80 for PNG files, 90 for JPEG files
-            if (artwork_url.find_first(".png") != pfc_infinite) {
-                // For PNG files: add bb-80 quality parameter  
-                if (artwork_url.find_first("bb.png") != pfc_infinite) {
-                    artwork_url.replace_string("bb.png", "bb-80.png");
-                }
-                else if (artwork_url.find_first("bf.png") != pfc_infinite) {
-                    artwork_url.replace_string("bf.png", "bb-80.png");
-                }
-                else if (artwork_url.find_first("1200x1200.png") != pfc_infinite) {
-                    artwork_url.replace_string("1200x1200.png", "1200x1200bb-80.png");
-                }
-            }
-            else if (artwork_url.find_first(".jpg") != pfc_infinite || artwork_url.find_first(".jpeg") != pfc_infinite) {
-                // For JPEG files: add bb-90 quality parameter for better quality
-                if (artwork_url.find_first("bb.jpg") != pfc_infinite) {
-                    artwork_url.replace_string("bb.jpg", "bb-90.jpg");
-                }
-                else if (artwork_url.find_first("bf.jpg") != pfc_infinite) {
-                    artwork_url.replace_string("bf.jpg", "bb-90.jpg");
-                }
-                else if (artwork_url.find_first("1200x1200.jpg") != pfc_infinite) {
-                    artwork_url.replace_string("1200x1200.jpg", "1200x1200bb-90.jpg");
-                }
-            }
-
-            bool is_valid = !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
-
-            return is_valid;
+        if (!data.contains("resultCount") || data["resultCount"].get<int>() == 0 || !data.contains("results") || !data["results"].is_array()) {
+            return false;
         }
+
+        const auto& results = data["results"];
+        std::string artist_str(artist ? artist : "");
+        std::string track_str(track ? track : "");
+
+        auto extract_url = [](const json& item, pfc::string8& out_url) -> bool {
+            std::string url_str;
+            if (item.contains("artworkUrl600") && item["artworkUrl600"].is_string()) {
+                url_str = item["artworkUrl600"].get<std::string>();
+            } else if (item.contains("artworkUrl512") && item["artworkUrl512"].is_string()) {
+                url_str = item["artworkUrl512"].get<std::string>();
+            } else if (item.contains("artworkUrl100") && item["artworkUrl100"].is_string()) {
+                url_str = item["artworkUrl100"].get<std::string>();
+            } else if (item.contains("artworkUrl60") && item["artworkUrl60"].is_string()) {
+                url_str = item["artworkUrl60"].get<std::string>();
+            } else if (item.contains("artworkUrl30") && item["artworkUrl30"].is_string()) {
+                url_str = item["artworkUrl30"].get<std::string>();
+            }
+
+            if (url_str.empty()) return false;
+
+            out_url = url_str.c_str();
+            // Upgrade resolution to 1200x1200 while preserving valid Apple CDN format
+            out_url.replace_string("100x100", "1200x1200");
+            out_url.replace_string("600x600", "1200x1200");
+            out_url.replace_string("512x512", "1200x1200");
+            out_url.replace_string("60x60", "1200x1200");
+            out_url.replace_string("30x30", "1200x1200");
+
+            return !out_url.is_empty() && strstr(out_url.get_ptr(), "http") == out_url.get_ptr();
+        };
+
+        // 1. Search for exact artist + track match
+        for (const auto& item : results) {
+            std::string result_track;
+            if (item.contains("trackName") && item["trackName"].is_string()) {
+                result_track = item["trackName"].get<std::string>();
+            } else if (item.contains("collectionName") && item["collectionName"].is_string()) {
+                result_track = item["collectionName"].get<std::string>();
+            }
+
+            std::string result_artist;
+            if (item.contains("artistName") && item["artistName"].is_string()) {
+                result_artist = item["artistName"].get<std::string>();
+            }
+
+            if (!result_track.empty() && !result_artist.empty()) {
+                if (strings_match_fuzzy(result_track, track_str) && artists_match(result_artist, artist_str)) {
+                    if (extract_url(item, artwork_url)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback: match by artist
+        for (const auto& item : results) {
+            std::string result_artist;
+            if (item.contains("artistName") && item["artistName"].is_string()) {
+                result_artist = item["artistName"].get<std::string>();
+            }
+
+            if (!result_artist.empty() && artists_match(result_artist, artist_str)) {
+                if (extract_url(item, artwork_url)) {
+                    return true;
+                }
+            }
+        }
+    } catch (...) {
+        return false;
     }
 
-    //No exact artist+title match - find first result matching artist (case-insensitive)
-    for (const auto& item : s)
-    {
-            // Only consider results from the same artist to avoid "Best Of" compilations
-            std::string result_artist = item["artistName"].get<std::string>();
-            if (!artists_match(result_artist, artist_str)) {
-                continue; // Skip results from different artists
-            }
-
-            if (item.contains("artworkUrl600")) {
-                artwork_url = item["artworkUrl600"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("600x600", "1200x1200");
-            }
-            else if (item.contains("artworkUrl512")) {
-                artwork_url = item["artworkUrl512"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("512x512", "1200x1200");
-            }
-            else if (item.contains("artworkUrl100")) {
-                artwork_url = item["artworkUrl100"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("100x100", "1200x1200");
-            }
-            else if (item.contains("artworkUrl60")) {
-                artwork_url = item["artworkUrl60"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("60x60", "1200x1200");
-            }
-            else if (item.contains("artworkUrl30")) {
-                artwork_url = item["artworkUrl30"].get<std::string>().c_str();
-                // Upgrade resolution to none for original quality
-                artwork_url.replace_string("30x30", "1200x1200");
-            }
-
-            // Set compression quality: 80 for PNG files, 90 for JPEG files
-            if (artwork_url.find_first(".png") != pfc_infinite) {
-                // For PNG files: add bb-80 quality parameter  
-                if (artwork_url.find_first("bb.png") != pfc_infinite) {
-                    artwork_url.replace_string("bb.png", "bb-80.png");
-                }
-                else if (artwork_url.find_first("bf.png") != pfc_infinite) {
-                    artwork_url.replace_string("bf.png", "bb-80.png");
-                }
-                else if (artwork_url.find_first("1200x1200.png") != pfc_infinite) {
-                    artwork_url.replace_string("1200x1200.png", "1200x1200bb-80.png");
-                }
-            }
-            else if (artwork_url.find_first(".jpg") != pfc_infinite || artwork_url.find_first(".jpeg") != pfc_infinite) {
-                // For JPEG files: add bb-90 quality parameter for better quality
-                if (artwork_url.find_first("bb.jpg") != pfc_infinite) {
-                    artwork_url.replace_string("bb.jpg", "bb-90.jpg");
-                }
-                else if (artwork_url.find_first("bf.jpg") != pfc_infinite) {
-                    artwork_url.replace_string("bf.jpg", "bb-90.jpg");
-                }
-                else if (artwork_url.find_first("1200x1200.jpg") != pfc_infinite) {
-                    artwork_url.replace_string("1200x1200.jpg", "1200x1200bb-90.jpg");
-                }
-            }
-
-            bool is_valid = !artwork_url.is_empty() && strstr(artwork_url.get_ptr(), "http") == artwork_url.get_ptr();
-
-            return is_valid;
-        
-    }
-    
     return false;
 }
 
 bool artwork_manager::parse_deezer_json(const char* artist, const char* track ,const pfc::string8& json_in, pfc::string8& artwork_url) {
-    
-    //using nlohmann/json
+    try {
+        std::string json_data;
+        json_data += json_in;
 
-    //convert to std::string
-    std::string json_data;
-    json_data += json_in;
+        json data = json::parse(json_data);
 
-    //parse
-    json data = json::parse(json_data);
+        if (!data.contains("total") || data["total"] == 0 || !data.contains("data") || !data["data"].is_array()) return false;
 
-    //No data return
-    if (data["total"] == 0) return false;
+        //sort by rank to get higher ratings values first
+        std::sort(data["data"].begin(), data["data"].end(),
+            [](const json& a, const json& b) {
+                int rank_a = (a.contains("rank") && a["rank"].is_number()) ? a["rank"].get<int>() : 0;
+                int rank_b = (b.contains("rank") && b["rank"].is_number()) ? b["rank"].get<int>() : 0;
+                return rank_a > rank_b;
+            });
 
-    //sort by rank to get higher ratings values first (api parameter &order= doesn't work) 
-    std::sort(data["data"].begin(), data["data"].end(),
-        [](const json& a, const json& b) {
-            return a["rank"].get<int>() > b["rank"].get<int>();
-        });
+        json s = data["data"];
+        std::string artist_str(artist ? artist : "");
+        std::string track_str(track ? track : "");
 
-    //select root
-    json s = data["data"];
+        auto unescape_url = [](const std::string& in_url) -> pfc::string8 {
+            pfc::string8 unescaped;
+            const char* src = in_url.c_str();
+            while (*src) {
+                if (*src == '\\' && *(src + 1) == '/') {
+                    unescaped += "/";
+                    src += 2;
+                } else {
+                    char single_char[2] = { *src, '\0' };
+                    unescaped += single_char;
+                    src++;
+                }
+            }
+            return unescaped;
+        };
 
-    // Convert input artist/track to std::string for comparison
-    std::string artist_str(artist);
-    std::string track_str(track);
+        // 1. Search for exact same artist track values first
+        for (const auto& item : s.items()) {
+            if (!item.value().contains("title") || !item.value().contains("artist")) continue;
+            std::string result_title = item.value()["title"].is_string() ? item.value()["title"].get<std::string>() : "";
+            std::string result_artist = (item.value()["artist"].contains("name") && item.value()["artist"]["name"].is_string()) ? item.value()["artist"]["name"].get<std::string>() : "";
 
-   //search for exact same artist track values first (fuzzy matching for punctuation/case/AND-& differences)
-   for (const auto& item : s.items())
-   {
-       std::string result_title = item.value()["title"].get<std::string>();
-       std::string result_artist = item.value()["artist"]["name"].get<std::string>();
+            if (strings_match_fuzzy(result_title, track_str) && artists_match(result_artist, artist_str)) {
+                if (item.value().contains("album") && item.value()["album"].is_object()) {
+                    if (item.value()["album"].contains("cover_xl") && item.value()["album"]["cover_xl"].is_string()) {
+                        artwork_url = unescape_url(item.value()["album"]["cover_xl"].get<std::string>());
+                        artwork_url = artwork_url.replace("1000x1000", "1200x1200");
+                        return true;
+                    }
+                    if (item.value()["album"].contains("cover_big") && item.value()["album"]["cover_big"].is_string()) {
+                        artwork_url = unescape_url(item.value()["album"]["cover_big"].get<std::string>());
+                        return true;
+                    }
+                }
+            }
+        }
 
-       if (strings_match_fuzzy(result_title, track_str) && artists_match(result_artist, artist_str)) {
+        // 2. Fallback: first result matching artist
+        for (const auto& item : s.items()) {
+            if (!item.value().contains("artist")) continue;
+            std::string result_artist = (item.value()["artist"].contains("name") && item.value()["artist"]["name"].is_string()) ? item.value()["artist"]["name"].get<std::string>() : "";
+            if (!artists_match(result_artist, artist_str)) continue;
 
-           //search cover_xl
-           if (item.value()["album"]["cover_xl"].get<std::string>().c_str()) {
-               artwork_url = item.value()["album"]["cover_xl"].get<std::string>().c_str();
+            if (item.value().contains("album") && item.value()["album"].is_object()) {
+                if (item.value()["album"].contains("cover_xl") && item.value()["album"]["cover_xl"].is_string()) {
+                    artwork_url = unescape_url(item.value()["album"]["cover_xl"].get<std::string>());
+                    artwork_url = artwork_url.replace("1000x1000", "1200x1200");
+                    return true;
+                }
+                if (item.value()["album"].contains("cover_big") && item.value()["album"]["cover_big"].is_string()) {
+                    artwork_url = unescape_url(item.value()["album"]["cover_big"].get<std::string>());
+                    return true;
+                }
+            }
+        }
+    } catch (...) {
+        return false;
+    }
 
-               // Unescape JSON slashes (replace \/ with /)
-               pfc::string8 unescaped_url;
-               const char* src = artwork_url.get_ptr();
-               while (*src) {
-                   if (*src == '\\' && *(src + 1) == '/') {
-                       unescaped_url += "/";
-                       src += 2; // Skip both \ and /
-                   }
-                   else {
-                       char single_char[2] = { *src, '\0' };
-                       unescaped_url += single_char;
-                       src++;
-                   }
-               }
-               artwork_url = unescaped_url;
-
-               // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
-               artwork_url = artwork_url.replace("1000x1000", "1200x1200");
-               return true;
-           }
-
-           //cover_big
-           if (item.value()["album"]["cover_big"].get<std::string>().c_str()) {
-               artwork_url = item.value()["album"]["cover_big"].get<std::string>().c_str();
-
-               // Unescape JSON slashes (replace \/ with /)
-               pfc::string8 unescaped_url;
-               const char* src = artwork_url.get_ptr();
-               while (*src) {
-                   if (*src == '\\' && *(src + 1) == '/') {
-                       unescaped_url += "/";
-                       src += 2; // Skip both \ and /
-                   }
-                   else {
-                       char single_char[2] = { *src, '\0' };
-                       unescaped_url += single_char;
-                       src++;
-                   }
-               }
-               artwork_url = unescaped_url;
-               return true;
-           }          
-       }
-   }
-
-   //No exact artist+title match - find first result matching artist (case-insensitive)
-   for (const auto& item : s.items())
-   {
-           // Only consider results from the same artist to avoid "Best Of" compilations
-           std::string result_artist = item.value()["artist"]["name"].get<std::string>();
-           if (!artists_match(result_artist, artist_str)) {
-               continue; // Skip results from different artists
-           }
-
-           //search cover_xl
-           if (item.value()["album"]["cover_xl"].get<std::string>().c_str()) {
-               artwork_url = item.value()["album"]["cover_xl"].get<std::string>().c_str();
-
-               // Unescape JSON slashes (replace \/ with /)
-               pfc::string8 unescaped_url;
-               const char* src = artwork_url.get_ptr();
-               while (*src) {
-                   if (*src == '\\' && *(src + 1) == '/') {
-                       unescaped_url += "/";
-                       src += 2; // Skip both \ and /
-                   }
-                   else {
-                       char single_char[2] = { *src, '\0' };
-                       unescaped_url += single_char;
-                       src++;
-                   }
-               }
-               artwork_url = unescaped_url;
-
-               // Upgrade 1000x1000 resolution to 1200x1200 for higher quality
-               artwork_url = artwork_url.replace("1000x1000", "1200x1200");
-               return true;
-           }
-
-           //cover_big
-           if (item.value()["album"]["cover_big"].get<std::string>().c_str()) {
-               artwork_url = item.value()["album"]["cover_big"].get<std::string>().c_str();
-
-               // Unescape JSON slashes (replace \/ with /)
-               pfc::string8 unescaped_url;
-               const char* src = artwork_url.get_ptr();
-               while (*src) {
-                   if (*src == '\\' && *(src + 1) == '/') {
-                       unescaped_url += "/";
-                       src += 2; // Skip both \ and /
-                   }
-                   else {
-                       char single_char[2] = { *src, '\0' };
-                       unescaped_url += single_char;
-                       src++;
-                   }
-               }
-               artwork_url = unescaped_url;
-               return true;
-           }
-   }
-
-   // No results found matching the artist
-   return false;
+    return false;
 }
 
 bool artwork_manager::parse_lastfm_json(const pfc::string8& json_in, pfc::string8& artwork_url) {
-    
-    //using nlohmann/json
-    
-    std::string json_data;
-    json_data += json_in;
+    try {
+        std::string json_data;
+        json_data += json_in;
 
-    json data = json::parse(json_data);
+        json data = json::parse(json_data);
 
-    //No data return
-    if (data["message"] == "Track not found") return false;
-
-    json s = data["track"]["album"]["image"];
-
-    //extralarge
-    for (const auto& item : s.items())
-    {
-        if (item.value()["size"].get<std::string>() == "extralarge") {
-            artwork_url = item.value()["#text"].get<std::string>().c_str();
-            // Upgrade resolution to none for original quality
-            artwork_url = artwork_url.replace("u/300x300", "u/");
-            return true;
+        if (data.contains("message") && data["message"] == "Track not found") return false;
+        if (!data.contains("track") || !data["track"].contains("album") || !data["track"]["album"].contains("image") || !data["track"]["album"]["image"].is_array()) {
+            return false;
         }
-    }
 
-    //large
-    for (const auto& item : s.items())
-    {
-        if (item.value()["size"].get<std::string>() == "large") {
-            artwork_url = item.value()["#text"].get<std::string>().c_str();
-            // Upgrade resolution to none for original quality
-            artwork_url = artwork_url.replace("u/174s", "u/");
-            return true;
+        json s = data["track"]["album"]["image"];
+
+        for (const auto& item : s.items()) {
+            if (item.value().contains("size") && item.value()["size"].is_string() && item.value()["size"].get<std::string>() == "extralarge") {
+                if (item.value().contains("#text") && item.value()["#text"].is_string()) {
+                    artwork_url = item.value()["#text"].get<std::string>().c_str();
+                    artwork_url = artwork_url.replace("u/300x300", "u/");
+                    return true;
+                }
+            }
         }
+
+        for (const auto& item : s.items()) {
+            if (item.value().contains("size") && item.value()["size"].is_string() && item.value()["size"].get<std::string>() == "large") {
+                if (item.value().contains("#text") && item.value()["#text"].is_string()) {
+                    artwork_url = item.value()["#text"].get<std::string>().c_str();
+                    artwork_url = artwork_url.replace("u/174s", "u/");
+                    return true;
+                }
+            }
+        }
+    } catch (...) {
+        return false;
     }
 
     return false;
 }
 
 bool artwork_manager::parse_discogs_json(const char* artist, const char* track, const pfc::string8& json_in, pfc::string8& artwork_url) {
-    
-    //using nlohmann/json
+    try {
+        std::string json_data;
+        json_data += json_in;
 
-    std::string json_data;
-    json_data += json_in;
+        json data = json::parse(json_data);
 
-    json data = json::parse(json_data);
+        if (data.contains("pagination") && data["pagination"].contains("items") && data["pagination"]["items"].get<int>() == 0) return false;
+        if (!data.contains("results") || !data["results"].is_array()) return false;
 
-    //No data return
-    if (data["pagination"]["items"] == 0) return false;
+        json s = data["results"];
+        std::string artist_str(artist ? artist : "");
 
-    // root
-    json s = data["results"];
+        std::string artist_title;
+        artist_title += (artist ? artist : "");
+        artist_title += " - ";
+        artist_title += (track ? track : "");
 
-    // Convert input artist to std::string for comparison
-    std::string artist_str(artist);
+        for (const auto& item : s.items()) {
+            if (!item.value().contains("title") || !item.value()["title"].is_string()) continue;
+            std::string result_title = item.value()["title"].get<std::string>();
+            if (strings_match_fuzzy(result_title, artist_title)) {
+                if (item.value().contains("cover_image") && item.value()["cover_image"].is_string()) {
+                    artwork_url = item.value()["cover_image"].get<std::string>().c_str();
+                    return true;
+                } else if (item.value().contains("thumb") && item.value()["thumb"].is_string()) {
+                    artwork_url = item.value()["thumb"].get<std::string>().c_str();
+                    return true;
+                }
+            }
+        }
 
-    //search for exact same artist - track value first (case-insensitive)
-    std::string artist_title;
-    artist_title += artist;
-    artist_title += " - ";
-    artist_title += track;
+        for (const auto& item : s.items()) {
+            if (!item.value().contains("title") || !item.value()["title"].is_string()) continue;
+            std::string result_title = item.value()["title"].get<std::string>();
 
-    for (const auto& item : s.items())
-    {
-        std::string result_title = item.value()["title"].get<std::string>();
-        if (strings_match_fuzzy(result_title, artist_title)) {
-            if (item.value()["cover_image"].get<std::string>().c_str()) {
+            bool artist_matches = false;
+            std::string artist_stripped = strip_the_prefix(artist_str);
+            std::string title_stripped = strip_the_prefix(result_title);
+
+            if (result_title.size() >= artist_str.size()) {
+                artist_matches = strings_equal_ignore_case(result_title.substr(0, artist_str.size()), artist_str);
+            }
+            if (!artist_matches && title_stripped.size() >= artist_stripped.size()) {
+                artist_matches = strings_equal_ignore_case(title_stripped.substr(0, artist_stripped.size()), artist_stripped);
+            }
+
+            if (!artist_matches) continue;
+
+            if (item.value().contains("cover_image") && item.value()["cover_image"].is_string()) {
                 artwork_url = item.value()["cover_image"].get<std::string>().c_str();
                 return true;
-            }
-            else if (item.value()["thumb"].get<std::string>().c_str()) {
+            } else if (item.value().contains("thumb") && item.value()["thumb"].is_string()) {
                 artwork_url = item.value()["thumb"].get<std::string>().c_str();
                 return true;
             }
         }
+    } catch (...) {
+        return false;
     }
-
-    //No exact artist+title match - find first result matching artist (case-insensitive)
-    // Discogs format is "Artist - Album/Track", so check if title starts with artist
-    for (const auto& item : s.items())
-    {
-        std::string result_title = item.value()["title"].get<std::string>();
-
-        // Check if title starts with artist name (case-insensitive)
-        // Discogs format: "Artist - Album" or "Artist - Track"
-        // Also handle "The " prefix differences
-        bool artist_matches = false;
-        std::string artist_stripped = strip_the_prefix(artist_str);
-        std::string title_stripped = strip_the_prefix(result_title);
-
-        // Try matching with original artist
-        if (result_title.size() >= artist_str.size()) {
-            artist_matches = strings_equal_ignore_case(
-                result_title.substr(0, artist_str.size()), artist_str);
-        }
-        // Try matching after stripping "The " from both
-        if (!artist_matches && title_stripped.size() >= artist_stripped.size()) {
-            artist_matches = strings_equal_ignore_case(
-                title_stripped.substr(0, artist_stripped.size()), artist_stripped);
-        }
-
-        if (!artist_matches) {
-            continue; // Skip results from different artists
-        }
-
-        if (item.value()["cover_image"].get<std::string>().c_str()) {
-            artwork_url = item.value()["cover_image"].get<std::string>().c_str();
-            return true;
-        }
-        else if (item.value()["thumb"].get<std::string>().c_str()) {
-            artwork_url = item.value()["thumb"].get<std::string>().c_str();
-            return true;
-        }
-    }
-
 
     return false;
 }
