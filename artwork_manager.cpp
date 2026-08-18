@@ -375,6 +375,7 @@ void artwork_manager::shutdown() {
 
 extern void refresh_all_dui_artwork_panels();
 extern void refresh_all_cui_artwork_panels();
+extern bool create_bitmap_from_image_data(const std::vector<BYTE>& data);
 
 void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
@@ -802,6 +803,11 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                 g_rejected_providers_for_current_track.clear();
                 g_active_resolved_provider.reset();
 
+                metadb_handle_ptr track;
+                if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+                    titleformat_provider::set_track_artwork_info(track, artist.c_str(), title.c_str(), "", "");
+                }
+
                 if (!art_url.empty() && (art_url.find("http://") == 0 || art_url.find("https://") == 0) &&
                     (g_rejected_providers_for_current_track.find("Broadcast Artwork") == g_rejected_providers_for_current_track.end())) {
                     pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist.c_str(), title.c_str());
@@ -816,6 +822,11 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
 
                             g_active_source = res.source;
                             g_active_resolved_provider = res.source;
+
+                            if (res.data.get_size() > 0) {
+                                std::vector<BYTE> vec(res.data.get_ptr(), res.data.get_ptr() + res.data.get_size());
+                                create_bitmap_from_image_data(vec);
+                            }
 
                             metadb_handle_ptr track;
                             if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
@@ -1159,13 +1170,27 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
 
     log_simplified_track_info(clean_art.c_str(), clean_tit.c_str());
 
+    metadb_handle_ptr track;
+    if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+        titleformat_provider::set_track_artwork_info(track, clean_art.c_str(), clean_tit.c_str(), "", "");
+    }
+
     pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art, clean_tit);
-    search_apis_async(clean_art, clean_tit, cache_key, [cache_key](const artwork_result& res) {
+    search_apis_async(clean_art, clean_tit, cache_key, [clean_art, clean_tit, cache_key](const artwork_result& res) {
         if (res.success && res.data.get_size() > 0) {
             if (cfg_enable_disk_cache || cfg_single_file_cache) {
                 pfc::string8 key = cfg_single_file_cache ? pfc::string8("current") : cache_key;
                 async_io_manager::instance().cache_set_async(key, res.data);
             }
+            std::vector<BYTE> vec(res.data.get_ptr(), res.data.get_ptr() + res.data.get_size());
+            create_bitmap_from_image_data(vec);
+
+            metadb_handle_ptr now_track;
+            if (playback_control::get()->get_now_playing(now_track) && now_track.is_valid()) {
+                pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
+                titleformat_provider::set_track_artwork_info(now_track, clean_art.c_str(), clean_tit.c_str(), cache_file.c_str(), res.source.c_str());
+            }
+
             refresh_all_dui_artwork_panels();
             refresh_all_cui_artwork_panels();
         }
