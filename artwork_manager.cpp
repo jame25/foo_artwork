@@ -309,9 +309,16 @@ static pfc::string8 g_last_recognized_artist;
 static pfc::string8 g_last_recognized_title;
 static std::atomic<uint64_t> g_rms_detector_token{0};
 static std::atomic<uint64_t> g_stream_monitor_token{0};
+static std::atomic<uint64_t> g_external_api_session_token{0};
 static pfc::string8 g_last_stream_artist = "";
 static pfc::string8 g_last_stream_title = "";
 static pfc::string8 g_last_logged_track_info = "";
+
+static metadb_handle_ptr g_active_playing_track;
+static pfc::string8 g_active_source;
+static pfc::string8 g_active_resolved_provider;
+static pfc::string8 g_active_cache_key;
+static std::set<std::string> g_rejected_providers_for_current_track;
 
 static bool contains_case_insensitive(const char* haystack, const char* needle) {
     if (!haystack || !needle) return false;
@@ -344,9 +351,16 @@ void artwork_manager::initialize() {
 
 void artwork_manager::shutdown() {
     g_is_shutting_down.store(true);
+    stop_external_stream_api_poller();
+    stop_rms_silence_detector();
+    cancel_acrcloud_tasks();
     g_rms_detector_token++;
     g_acrcloud_task_id++;
+    g_stream_monitor_token++;
+    g_external_api_session_token++;
     g_vis_stream.release();
+    g_active_playing_track.release();
+    titleformat_provider::clear_track_artwork_info();
 
     {
         std::lock_guard<std::mutex> lock(g_in_flight_mutex);
@@ -361,12 +375,6 @@ void artwork_manager::shutdown() {
 
 extern void refresh_all_dui_artwork_panels();
 extern void refresh_all_cui_artwork_panels();
-
-static metadb_handle_ptr g_active_playing_track;
-static pfc::string8 g_active_source;
-static pfc::string8 g_active_resolved_provider;
-static pfc::string8 g_active_cache_key;
-static std::set<std::string> g_rejected_providers_for_current_track;
 
 void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
@@ -659,8 +667,6 @@ void artwork_manager::search_broadcast_artwork_async(const pfc::string8& cover_u
         }
     });
 }
-
-static std::atomic<uint64_t> g_external_api_session_token{0};
 
 void artwork_manager::stop_external_stream_api_poller() {
     g_external_api_session_token++;
