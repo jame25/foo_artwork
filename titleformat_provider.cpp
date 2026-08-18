@@ -24,10 +24,10 @@ void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track, const
         } else {
             g_tf_track_path.reset();
         }
-        if (artist && strlen(artist) > 0) g_tf_artist = artist;
-        if (title && strlen(title) > 0) g_tf_title = title;
-        if (cover_path && strlen(cover_path) > 0) g_tf_cover = cover_path;
-        if (source && strlen(source) > 0) g_tf_source = source;
+        if (artist) g_tf_artist = artist;
+        if (title) g_tf_title = title;
+        if (cover_path) g_tf_cover = cover_path;
+        if (source) g_tf_source = source;
     }
 
     if (track.is_valid() && core_api::is_main_thread() && !core_api::is_shutting_down()) {
