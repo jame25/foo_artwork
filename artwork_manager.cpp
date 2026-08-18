@@ -331,6 +331,9 @@ static std::mutex g_in_flight_mutex;
 static std::map<std::string, std::vector<artwork_manager::artwork_callback>> g_in_flight_queries;
 static std::map<std::string, ApiDedupEntry> g_api_dedup_map;
 static visualisation_stream::ptr get_persistent_vis_stream();
+static void stop_rms_silence_detector();
+static void reset_acrcloud_cooldown();
+static void log_simplified_track_info(const char* artist, const char* title);
 
 void artwork_manager::initialize() {
     g_is_shutting_down.store(false);
@@ -790,21 +793,34 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                 }
 
                 foo_artwork::log_printf("foo_artwork: External API cue - Track changed: '%s - %s'", artist.c_str(), title.c_str());
-                g_last_stream_artist = artist.c_str();
-                g_last_stream_title = title.c_str();
                 g_rejected_providers_for_current_track.clear();
                 g_active_resolved_provider.reset();
 
-                if (!art_url.empty() && (art_url.find("http://") == 0 || art_url.find("https://") == 0)) {
+                if (!art_url.empty() && (art_url.find("http://") == 0 || art_url.find("https://") == 0) &&
+                    (g_rejected_providers_for_current_track.find("Broadcast Artwork") == g_rejected_providers_for_current_track.end())) {
                     pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist.c_str(), title.c_str());
-                    search_broadcast_artwork_async(art_url.c_str(), cache_key, [](const artwork_result& res) {
+                    search_broadcast_artwork_async(art_url.c_str(), cache_key, [artist, title, cache_key](const artwork_result& res) {
                         if (res.success) {
+                            g_last_stream_artist = artist.c_str();
+                            g_last_stream_title = title.c_str();
+                            g_stream_monitor_token++;
+                            stop_rms_silence_detector();
+                            reset_acrcloud_cooldown();
+                            log_simplified_track_info(artist.c_str(), title.c_str());
+
                             g_active_source = res.source;
                             g_active_resolved_provider = res.source;
+
+                            metadb_handle_ptr track;
+                            if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+                                pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
+                                titleformat_provider::set_track_artwork_info(track, artist.c_str(), title.c_str(), cache_file.c_str(), res.source.c_str());
+                            }
+
                             refresh_all_dui_artwork_panels();
                             refresh_all_cui_artwork_panels();
                         } else {
-                            artwork_manager::on_stream_metadata_changed(g_last_stream_artist.c_str(), g_last_stream_title.c_str());
+                            artwork_manager::on_stream_metadata_changed(artist.c_str(), title.c_str());
                         }
                     });
                 } else {
@@ -2739,13 +2755,34 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
 }
 
 void artwork_manager::download_image_async(const char* url, artwork_callback callback) {
-    // This would be called by API implementations after parsing JSON responses
-    // For now, placeholder implementation
-    async_io_manager::instance().post_to_main_thread([callback]() {
+    if (!url || strlen(url) == 0) {
         artwork_result result;
         result.success = false;
-        result.error_message = "Image download not implemented";
-        callback(result);
+        result.error_message = "Empty image URL";
+        async_io_manager::instance().post_to_main_thread([callback, result]() {
+            callback(result);
+        });
+        return;
+    }
+
+    pfc::string8 download_url = url;
+    async_io_manager::instance().http_get_binary_async(download_url, [callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+        if (success && data.get_size() > 0 && is_valid_image_data(data.get_ptr(), data.get_size())) {
+            artwork_result result;
+            result.data = data;
+            result.mime_type = detect_mime_type(data.get_ptr(), data.get_size());
+            result.success = true;
+            async_io_manager::instance().post_to_main_thread([callback, result]() {
+                callback(result);
+            });
+        } else {
+            artwork_result result;
+            result.success = false;
+            result.error_message = error.is_empty() ? pfc::string8("Invalid or empty image data downloaded") : error;
+            async_io_manager::instance().post_to_main_thread([callback, result]() {
+                callback(result);
+            });
+        }
     });
 }
 
