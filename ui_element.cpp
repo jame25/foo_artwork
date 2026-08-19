@@ -309,13 +309,18 @@ private:
         }
         
         void on_playback_stop(play_control::t_stop_reason p_reason) override {
-            // Only clear artwork if the preference is enabled (like CUI)
-            if (m_parent && cfg_clear_panel_when_not_playing) {
-                m_parent->clear_artwork();
+            if (m_parent) {
+                m_parent->KillTimer(9);
+                m_parent->KillTimer(101);
+                m_parent->m_current_track.release();
+                // Only clear artwork if the preference is enabled (like CUI)
+                if (cfg_clear_panel_when_not_playing) {
+                    m_parent->clear_artwork();
+                }
+                m_parent->clear_infobar();
+                m_parent->clear_dinfo();
+                m_parent->reset_m_counter();
             }
-            m_parent->clear_infobar();
-            m_parent->clear_dinfo();
-            m_parent->reset_m_counter();
         }
         
         // Required by play_callback base class
@@ -326,6 +331,8 @@ private:
         void on_playback_dynamic_info(const file_info& p_info) override {
         }
         void on_playback_dynamic_info_track(const file_info& p_info) override {
+            static_api_ptr_t<playback_control> pc;
+            if (!pc->is_playing() && !pc->is_paused()) return;
             if (m_parent) m_parent->on_dynamic_info_track(p_info);
         }
         void on_playback_time(double p_time) override {}
@@ -468,16 +475,12 @@ artwork_ui_element::~artwork_ui_element() {
     }
 }
 
-// Re-trigger artwork lookup on all DUI panels using the now-playing track
+// Repaint all DUI panels
 void refresh_all_dui_artwork_panels() {
-    static_api_ptr_t<playback_control> pc;
-    metadb_handle_ptr track;
-    if (!pc->get_now_playing(track) || !track.is_valid()) return;
-
     for (t_size i = 0; i < g_dui_artwork_panels.get_count(); i++) {
         artwork_ui_element* panel = g_dui_artwork_panels[i];
         if (panel && panel->m_hWnd) {
-            panel->on_playback_new_track(track);
+            InvalidateRect(panel->m_hWnd, NULL, FALSE);
         }
     }
 }
