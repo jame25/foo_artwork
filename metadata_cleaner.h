@@ -63,6 +63,8 @@ private:
     
     // UTF-8 character detection and preservation
     static bool contains_cyrillic(const std::string& str);
+    static bool contains_non_latin(const std::string& str);
+    static bool has_non_ascii(const std::string& str);
     static bool is_multibyte_utf8_sequence(const std::string& str, size_t pos);
     static std::string preserve_important_characters(const std::string& str);
     
