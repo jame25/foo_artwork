@@ -17,20 +17,27 @@ static pfc::string8 g_tf_track_path;
 void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track, const char* artist, const char* title, const char* cover_path, const char* source) {
     if (core_api::is_shutting_down()) return;
 
+    bool changed = false;
     {
         std::lock_guard<std::mutex> lock(g_tf_mutex);
-        if (track.is_valid()) {
-            g_tf_track_path = track->get_path();
-        } else {
-            g_tf_track_path.reset();
+        pfc::string8 new_path = track.is_valid() ? track->get_path() : "";
+        pfc::string8 new_artist = artist ? artist : "";
+        pfc::string8 new_title = title ? title : "";
+        pfc::string8 new_cover = cover_path ? cover_path : "";
+        pfc::string8 new_source = source ? source : "";
+
+        if (g_tf_track_path != new_path || g_tf_artist != new_artist || g_tf_title != new_title ||
+            g_tf_cover != new_cover || g_tf_source != new_source) {
+            changed = true;
+            g_tf_track_path = new_path;
+            g_tf_artist = new_artist;
+            g_tf_title = new_title;
+            g_tf_cover = new_cover;
+            g_tf_source = new_source;
         }
-        if (artist) g_tf_artist = artist;
-        if (title) g_tf_title = title;
-        if (cover_path) g_tf_cover = cover_path;
-        if (source) g_tf_source = source;
     }
 
-    if (track.is_valid() && core_api::is_main_thread() && !core_api::is_shutting_down()) {
+    if (changed && track.is_valid() && core_api::is_main_thread() && !core_api::is_shutting_down()) {
         try {
             metadb_io::get()->dispatch_refresh(track);
         } catch (...) {}
