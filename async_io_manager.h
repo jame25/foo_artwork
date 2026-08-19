@@ -13,6 +13,7 @@
 
 // Forward declarations
 struct artwork_result;
+extern std::atomic<bool> g_is_shutting_down;
 
 class async_io_manager {
 public:
