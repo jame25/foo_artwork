@@ -158,50 +158,62 @@ void async_io_manager::shutdown() {
 
 void async_io_manager::read_file_async(const pfc::string8& file_path, file_read_callback callback) {
     ASSERT_MAIN_THREAD();
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !thread_pool_) return;
     
     thread_pool_->enqueue([this, file_path, callback]() {
+        if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
         perform_overlapped_read(file_path, callback);
     });
 }
 
 void async_io_manager::write_file_async(const pfc::string8& file_path, const pfc::array_t<t_uint8>& data, file_write_callback callback) {
     ASSERT_MAIN_THREAD();
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !thread_pool_) return;
     
     thread_pool_->enqueue([this, file_path, data, callback]() {
+        if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
         perform_overlapped_write(file_path, data, callback);
     });
 }
 
 void async_io_manager::scan_directory_async(const pfc::string8& directory, const pfc::string8& pattern, directory_scan_callback callback) {
     ASSERT_MAIN_THREAD();
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !thread_pool_) return;
     
     thread_pool_->enqueue([this, directory, pattern, callback]() {
+        if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
         perform_directory_scan(directory, pattern, callback);
     });
 }
 
 void async_io_manager::http_get_async(const pfc::string8& url, http_request_callback callback) {
     ASSERT_MAIN_THREAD();
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !thread_pool_) return;
     
     thread_pool_->enqueue([this, url, callback]() {
+        if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
         perform_http_get(url, callback);
     });
 }
 
 void async_io_manager::http_get_binary_async(const pfc::string8& url, file_read_callback callback) {
     ASSERT_MAIN_THREAD();
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !thread_pool_) return;
     
     thread_pool_->enqueue([this, url, callback]() {
+        if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
         perform_http_get_binary(url, callback);
     });
 }
 
 void async_io_manager::cache_get_async(const pfc::string8& key, file_read_callback callback) {
     ASSERT_MAIN_THREAD();
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !cache_) return;
     cache_->get_async(key, callback);
 }
 
 void async_io_manager::cache_set_async(const pfc::string8& key, const pfc::array_t<t_uint8>& data, file_write_callback callback) {
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !cache_) return;
     cache_->set_async(key, data, callback);
 }
 
@@ -225,8 +237,11 @@ pfc::string8 async_io_manager::get_cache_file_path(const pfc::string8& key) cons
 }
 
 void async_io_manager::post_to_main_thread(main_thread_callback callback) {
+    if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
+
     // Simple approach: use fb2k_async which is a common pattern in foobar2000 components
     fb2k::inMainThread([callback]() {
+        if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
         try {
             callback();
         } catch (const std::exception& e) {
@@ -239,6 +254,7 @@ void async_io_manager::post_to_main_thread(main_thread_callback callback) {
 
 void async_io_manager::submit_task(std::function<void()> task) {
     ASSERT_MAIN_THREAD();
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !thread_pool_) return;
     
     thread_pool_->enqueue(task);
 }
@@ -1100,7 +1116,7 @@ static bool perform_http_get_internal(const pfc::string8& url, pfc::string8& res
         }
 
         buffer[dwDownloaded] = 0;
-        temp_response << buffer.get_ptr();
+        temp_response.add_string(buffer.get_ptr(), dwDownloaded);
 
     } while (dwSize > 0);
 
