@@ -45,15 +45,18 @@ public:
     // External Stream APIs (AzuraCast & RadioReg), In-Stream Broadcast Artwork & URL Modifiers
     static bool has_url_flag(const char* url, const char* flag);
     static pfc::string8 get_url_param_value(const char* url, const char* param_name);
+    static pfc::string8 extract_station_slug_from_url(const char* url);
     static pfc::string8 extract_broadcast_artwork_url(metadb_handle_ptr track);
     static void start_external_stream_api_poller(const pfc::string8& stream_url);
     static void stop_external_stream_api_poller();
+    static void probe_external_stream_api(const pfc::string8& stream_url, uint64_t session_token);
     static void poll_external_stream_api(const pfc::string8& endpoint_url, uint64_t session_token);
     static void search_broadcast_artwork_async(const pfc::string8& cover_url, const pfc::string8& cache_key, artwork_callback callback);
 
-    // Initialize/shutdown async I/O system
+    // Initialize/shutdown async I/O system & playback stop
     static void initialize();
     static void shutdown();
+    static void on_playback_stop();
     
     // Utility functions
     static pfc::string8 detect_mime_type(const t_uint8* data, size_t size);
