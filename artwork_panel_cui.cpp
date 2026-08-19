@@ -358,16 +358,12 @@ void update_all_cui_clear_panel_timers() {
     }
 }
 
-// Re-trigger artwork lookup on all CUI panels using the now-playing track
+// Repaint all CUI panels
 void refresh_all_cui_artwork_panels() {
-    static_api_ptr_t<playback_control> pc;
-    metadb_handle_ptr track;
-    if (!pc->get_now_playing(track) || !track.is_valid()) return;
-
     for (t_size i = 0; i < g_cui_artwork_panels.get_count(); i++) {
         CUIArtworkPanel* panel = g_cui_artwork_panels[i];
         if (panel && panel->get_wnd()) {
-            panel->on_playback_new_track(track);
+            InvalidateRect(panel->get_wnd(), NULL, FALSE);
         }
     }
 }
@@ -1297,6 +1293,10 @@ void CUIArtworkPanel::clear_dinfo() {
 
 void CUIArtworkPanel::on_playback_stop(play_control::t_stop_reason p_reason) {
     if (!m_hWnd) return;
+    KillTimer(m_hWnd, 100);
+    KillTimer(m_hWnd, 101);
+    m_delayed_search_artist.clear();
+    m_delayed_search_title.clear();
     
     // Clear artwork if option is enabled
     if (cfg_clear_panel_when_not_playing) {
@@ -1314,6 +1314,8 @@ void CUIArtworkPanel::on_playback_stop(play_control::t_stop_reason p_reason) {
 
 void CUIArtworkPanel::on_playback_dynamic_info_track(const file_info& p_info) {
     if (!m_hWnd) return;
+    static_api_ptr_t<playback_control> pc;
+    if (!pc->is_playing() && !pc->is_paused()) return;
     
     // Extract metadata from dynamic info
     std::string artist, title;
