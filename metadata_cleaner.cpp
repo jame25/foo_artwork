@@ -3,6 +3,46 @@
 #include <algorithm>
 #include <cctype>
 
+// Locale-independent ASCII case conversion helpers
+// Operates exclusively on ASCII characters [A-Za-z] to protect multi-byte UTF-8 sequences
+inline char ascii_tolower(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + ('a' - 'A')) : c;
+}
+
+inline char ascii_toupper(char c) {
+    return (c >= 'a' && c <= 'z') ? static_cast<char>(c - ('a' - 'A')) : c;
+}
+
+inline void to_lower_ascii(std::string& s) {
+    for (char& c : s) {
+        if (c >= 'A' && c <= 'Z') c += ('a' - 'A');
+    }
+}
+
+inline void to_upper_ascii(std::string& s) {
+    for (char& c : s) {
+        if (c >= 'a' && c <= 'z') c -= ('a' - 'A');
+    }
+}
+
+bool MetadataCleaner::has_non_ascii(const std::string& str) {
+    for (unsigned char c : str) {
+        if (c >= 0x80) return true;
+    }
+    return false;
+}
+
+bool MetadataCleaner::contains_non_latin(const std::string& str) {
+    // Check for non-Latin UTF-8 sequences (Greek U+0370+, Cyrillic U+0400+, Hebrew, Arabic, CJK, etc.)
+    for (size_t i = 0; i < str.length(); ++i) {
+        unsigned char byte = static_cast<unsigned char>(str[i]);
+        if (byte >= 0xCD) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool MetadataCleaner::is_minor_word(const std::string& word) {
     static const std::vector<std::string> minor_words = {
         "a", "an", "the", "and", "but", "or", "nor", "for", "yet", "so",
@@ -11,7 +51,7 @@ bool MetadataCleaner::is_minor_word(const std::string& word) {
         "und", "von", "van", "der", "die", "das", "d'", "l'"
     };
     std::string lower = word;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    to_lower_ascii(lower);
     for (const auto& w : minor_words) {
         if (lower == w) return true;
     }
@@ -21,7 +61,7 @@ bool MetadataCleaner::is_minor_word(const std::string& word) {
 bool MetadataCleaner::is_roman_numeral(const std::string& word) {
     if (word.empty()) return false;
     std::string upper = word;
-    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    to_upper_ascii(upper);
     if (upper == "I" || upper == "II" || upper == "III" || upper == "IV" || upper == "V" ||
         upper == "VI" || upper == "VII" || upper == "VIII" || upper == "IX" || upper == "X" ||
         upper == "XI" || upper == "XII" || upper == "XIII" || upper == "XIV" || upper == "XV" ||
@@ -36,7 +76,7 @@ bool MetadataCleaner::is_known_acronym(const std::string& word) {
         "DJ", "MC", "TV", "AC/DC", "ZZ", "ELO", "ABBA", "EP", "LP", "BOM", "UK", "USA", "FM", "AM", "OK", "ID", "R&B", "OST", "VIP", "BPM", "HQ"
     };
     std::string upper = word;
-    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    to_upper_ascii(upper);
     for (const auto& a : acronyms) {
         if (upper == a) return true;
     }
@@ -45,13 +85,15 @@ bool MetadataCleaner::is_known_acronym(const std::string& word) {
 
 std::string MetadataCleaner::to_title_case(const std::string& str) {
     if (str.empty()) return "";
-    if (contains_cyrillic(str)) return str;
+    // If the string contains non-ASCII characters (Cyrillic, Greek, accented Latin, etc.),
+    // leave it as-is to avoid corrupting multi-byte UTF-8 sequences.
+    if (has_non_ascii(str)) return str;
 
     size_t upper_count = 0;
     size_t lower_count = 0;
     for (char c : str) {
-        if (std::isupper(static_cast<unsigned char>(c))) upper_count++;
-        else if (std::islower(static_cast<unsigned char>(c))) lower_count++;
+        if (c >= 'A' && c <= 'Z') upper_count++;
+        else if (c >= 'a' && c <= 'z') lower_count++;
     }
 
     bool should_normalize = (lower_count == 0 && upper_count > 2) || (upper_count == 0 && lower_count > 0);
@@ -79,24 +121,24 @@ std::string MetadataCleaner::to_title_case(const std::string& str) {
 
         if (is_roman_numeral(word)) {
             std::string upper = word;
-            std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+            to_upper_ascii(upper);
             result += upper;
         } else if (is_known_acronym(word)) {
             std::string upper = word;
-            std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+            to_upper_ascii(upper);
             result += upper;
         } else {
             std::string lower = word;
-            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            to_lower_ascii(lower);
 
             if (word_index > 0 && i < str.length() && is_minor_word(lower)) {
                 result += lower;
             } else {
                 if (!lower.empty()) {
-                    lower[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(lower[0])));
+                    lower[0] = ascii_toupper(lower[0]);
                     size_t apo = lower.find('\'');
                     if (apo != std::string::npos && apo + 1 < lower.length() && apo <= 2) {
-                        lower[apo + 1] = static_cast<char>(std::toupper(static_cast<unsigned char>(lower[apo + 1])));
+                        lower[apo + 1] = ascii_toupper(lower[apo + 1]);
                     }
                 }
                 result += lower;
@@ -112,7 +154,7 @@ std::string MetadataCleaner::strip_track_numbers(const std::string& str) {
     if (str.empty()) return "";
 
     std::string lower = str;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    to_lower_ascii(lower);
 
     // Whitelist check: known bands starting with numbers/digits that should never be stripped
     static const std::vector<std::string> protected_num_artists = {
@@ -131,15 +173,15 @@ std::string MetadataCleaner::strip_track_numbers(const std::string& str) {
 
     // Pattern 1: Leading "Track 01 - ", "Track 05: ", "Faixa 02 - ", "Pista 03. ", "#01 - "
     result = std::regex_replace(result,
-        std::regex("^\\s*(?:track|faixa|pista|traccia|titel|#)\\s*\\d{1,3}\\s*[:\\.\\-–—]\\s*", std::regex_constants::icase), "");
+        std::regex("^\\s*(?:track|faixa|pista|traccia|titel|#)\\s*\\d{1,3}\\s*(?:[:\\.\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*", std::regex_constants::icase), "");
 
     // Pattern 2: Leading track number with separator: "06. ", "01 - ", "001. ", "1. ", "02: "
     result = std::regex_replace(result,
-        std::regex("^\\s*\\d{1,3}\\s*[\\.\\-–—:]\\s+"), "");
+        std::regex("^\\s*\\d{1,3}\\s*(?:[\\.\\-:]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s+"), "");
 
-    // Pattern 3: Leading 2 or 3 digits followed by a space (e.g. "06 Karma Police" -> "Karma Police")
+    // Pattern 3: Leading 2 or 3 digits followed by a space (e.g. "06 Karma Police" -> "Karma Police", "01 Μανταλένα" -> "Μανταλένα")
     result = std::regex_replace(result,
-        std::regex("^\\s*0\\d{1,2}\\s+([A-Za-zА-Яа-я])"), "$1");
+        std::regex("^\\s*0\\d{1,2}\\s+"), "");
 
     return trim(result);
 }
@@ -168,15 +210,15 @@ std::string MetadataCleaner::filter_multilingual_keywords(const std::string& str
 
     // Strip leading label tags like "Artist: ...", "Artista: ...", "Track - ...", "Faixa: ..."
     result = std::regex_replace(result,
-        std::regex("^\\s*(?:artist|artista|artiste|künstler|interprete|interprète|interpret|title|titel|track|piste|traccia|faixa|song)\\s*[:\\-–—]\\s*", std::regex_constants::icase), "");
+        std::regex("^\\s*(?:artist|artista|artiste|k\\xC3\\xBCnstler|interprete|interpr\\xC3\\xA8te|interpret|title|titel|track|piste|traccia|faixa|song)\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*", std::regex_constants::icase), "");
 
     // Strip inline album / media noise tags like "- Album: OK Computer", "/ CD: Greatest Hits", "• Disco: ..."
     result = std::regex_replace(result,
-        std::regex("\\s*[\\-\\/\\|\\•~]\\s*(?:album|álbum|disco|disque|cd\\d*|dvd|vinyl|disc\\s*\\d*|disk\\s*\\d*)\\s*[:\\-–—]\\s*[^-\\/\\|\\•~]+", std::regex_constants::icase), "");
+        std::regex("\\s*(?:[\\-\\/\\|~]|\\xE2\\x80\\xA2)\\s*(?:album|\\xC3\\xA1lbum|disco|disque|cd\\d*|dvd|vinyl|disc\\s*\\d*|disk\\s*\\d*)\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*[^-\\/\\|~]+", std::regex_constants::icase), "");
 
     // Strip standalone leading album labels e.g. "Album: ..."
     result = std::regex_replace(result,
-        std::regex("^\\s*(?:album|álbum|disco|disque|cd\\d*|dvd|vinyl|disc\\s*\\d*|disk\\s*\\d*)\\s*[:\\-–—]\\s*", std::regex_constants::icase), "");
+        std::regex("^\\s*(?:album|\\xC3\\xA1lbum|disco|disque|cd\\d*|dvd|vinyl|disc\\s*\\d*|disk\\s*\\d*)\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*", std::regex_constants::icase), "");
 
     return trim(result);
 }
@@ -190,7 +232,7 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
 
     if (str.length() > 100) str.resize(100);
 
-    // Normalize quotes and apostrophes
+    // Normalize quotes and apostrophes using UTF-8 byte sequences
     str = normalize_quotes_and_apostrophes(str);
 
     // Remove UTF-8 BOM
@@ -218,7 +260,7 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
 
     // 6. Remove delimiter noise (| , • , ~ , [+])
     str = std::regex_replace(str, std::regex("\\|.*"), "");
-    str = std::regex_replace(str, std::regex("\\•.*"), "");
+    str = std::regex_replace(str, std::regex("\\xE2\\x80\\xA2.*"), ""); // UTF-8 bullet •
 
     std::regex pattern("^(([^~]*~){1}[^~]*)");
     std::smatch match;
@@ -242,9 +284,10 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
     }
 
     // 7. Remove common prefixes and suffixes
-    std::vector<std::string> prefixes = {
+    static const std::vector<std::string> prefixes = {
         "Now Playing: ", "Now Playing:", "Live: ", "Live:", "Playing: ", "Playing:",
-        "Current: ", "Current:", "On Air: ", "On Air:", "♪ ", "♫ ", "🎵 ", "🎶 "
+        "Current: ", "Current:", "On Air: ", "On Air:",
+        "\xE2\x99\xAA ", "\xE2\x99\xAB ", "\xF0\x9F\x8E\xB5 ", "\xF0\x9F\x8E\xB6 "
     };
     for (const auto& prefix : prefixes) {
         if (str.substr(0, prefix.length()) == prefix) {
@@ -253,7 +296,7 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
         }
     }
 
-    std::vector<std::string> suffixes = {
+    static const std::vector<std::string> suffixes = {
         "*** www.ipmusic.ch", "Classic Vinyl on walmradio.com", "Adroit Jazz Underground on walmradio.com",
         "OTR on walmradio.com", "Christmas Vinyl on walmradio.com", "walmradio.com"
     };
@@ -292,20 +335,20 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
 
     // Rule 3: Block advertisement breaks
     std::string title_lower = title_str;
-    std::transform(title_lower.begin(), title_lower.end(), title_lower.begin(), ::tolower);
+    to_lower_ascii(title_lower);
     if (title_lower.find("adbreak") != std::string::npos || title_lower.find("ad_break") != std::string::npos || title_lower.find("advertisement") != std::string::npos) {
         return false;
     }
 
     // Rule 4: Block "Unknown" and standalone media blacklist keywords
     static const std::vector<std::string> blacklist_terms = {
-        "cd", "cd1", "cd2", "dvd", "album", "álbum", "disco", "disque", "disc", "disk",
-        "artista", "artiste", "artist", "künstler", "interprete", "interprète", "interpret",
+        "cd", "cd1", "cd2", "dvd", "album", "\xC3\xA1lbum", "disco", "disque", "disc", "disk",
+        "artista", "artiste", "artist", "k\xC3\xBCnstler", "interprete", "interpr\xC3\xA8te", "interpret",
         "track", "faixa", "pista", "traccia", "titel", "song", "vinyl", "ep", "lp",
         "unknown", "unknown artist", "unknown track"
     };
     std::string artist_lower = artist_str;
-    std::transform(artist_lower.begin(), artist_lower.end(), artist_lower.begin(), ::tolower);
+    to_lower_ascii(artist_lower);
 
     for (const auto& bl : blacklist_terms) {
         if (artist_lower == bl || title_lower == bl) {
@@ -341,20 +384,18 @@ std::string MetadataCleaner::remove_timestamps(const std::string& str) {
 }
 
 std::string MetadataCleaner::remove_parenthetical_content(const std::string& str, bool preserve_cyrillic) {
-    // Auto-detect Cyrillic if preserve_cyrillic is true
-    bool use_conservative = preserve_cyrillic && contains_cyrillic(str);
+    // Auto-detect non-Latin (Cyrillic, Greek, etc.) if preserve_cyrillic is true
+    bool use_conservative = preserve_cyrillic && (contains_cyrillic(str) || contains_non_latin(str));
     
     if (!preserve_cyrillic || !use_conservative) {
         // Standard removal for Latin scripts
         std::string result = str;
         
         // Remove common remix/version patterns (case insensitive)
-        // Pattern 1: (word remix) - like "(Lemongrass Remix)"
         result = std::regex_replace(result,
             std::regex("\\s*\\([^)]*\\s+(?:remix|remaster|demo|mix|version|edit|cut|rmx)\\)\\s*",
             std::regex_constants::icase), " ");
         
-        // Pattern 2: (remix word) - like "(Remix by Artist)" 
         result = std::regex_replace(result, 
             std::regex("\\s*\\((?:live|acoustic|unplugged|remix|remaster|demo|instrumental|explicit|clean|radio edit|extended|single version|album version|rmx)(?:\\s+[^)]*)?\\)\\s*", 
             std::regex_constants::icase), " ");
@@ -369,21 +410,17 @@ std::string MetadataCleaner::remove_parenthetical_content(const std::string& str
         
         return result;
     } else {
-        // Conservative removal for Cyrillic scripts - only remove common patterns
+        // Conservative removal for non-Latin scripts - only remove common patterns
         std::string result = str;
         
-        // Only remove very common English patterns that are safe to remove
-        // Pattern 1: (word remix) - like "(Lemongrass Remix)"
         result = std::regex_replace(result,
             std::regex("\\s*\\([^)]*\\s+(?:remix|remaster|demo|mix|version|edit|cut|rmx)\\)\\s*",
             std::regex_constants::icase), " ");
         
-        // Pattern 2: (remix word) - like "(Remix by Artist)"
         result = std::regex_replace(result,
             std::regex("\\s*\\((?:remix|remaster|demo|radio edit|extended|rmx)\\)\\s*",
             std::regex_constants::icase), " ");
         
-        // Remove explicit/clean markers (safe for all languages)
         result = std::regex_replace(result,
             std::regex("\\s*\\((?:explicit|clean)\\)\\s*",
             std::regex_constants::icase), " ");
@@ -393,19 +430,17 @@ std::string MetadataCleaner::remove_parenthetical_content(const std::string& str
 }
 
 std::string MetadataCleaner::remove_bracketed_content(const std::string& str, bool preserve_cyrillic) {
-    // Auto-detect Cyrillic if preserve_cyrillic is true
-    bool use_conservative = preserve_cyrillic && contains_cyrillic(str);
+    // Auto-detect non-Latin if preserve_cyrillic is true
+    bool use_conservative = preserve_cyrillic && (contains_cyrillic(str) || contains_non_latin(str));
     
     if (!preserve_cyrillic || !use_conservative) {
         // Standard removal for Latin scripts
         std::string result = str;
         
-        // Pattern 1: [word remix] - like "[Lemongrass Remix]"
         result = std::regex_replace(result,
             std::regex("\\s*\\[[^\\]]*\\s+(?:remix|remaster|demo|mix|version|edit|cut|rmx)\\]\\s*",
             std::regex_constants::icase), " ");
         
-        // Pattern 2: [remix word] - like "[Remix by Artist]"
         result = std::regex_replace(result,
             std::regex("\\s*\\[(?:remix|remaster|demo|radio edit|extended|rmx)[^\\]]*\\]\\s*",
             std::regex_constants::icase), " ");
@@ -415,15 +450,13 @@ std::string MetadataCleaner::remove_bracketed_content(const std::string& str, bo
         
         return result;
     } else {
-        // Conservative removal for Cyrillic scripts
+        // Conservative removal for non-Latin scripts
         std::string result = str;
         
-        // Pattern 1: [word remix] - like "[Lemongrass Remix]"
         result = std::regex_replace(result,
             std::regex("\\s*\\[[^\\]]*\\s+(?:remix|remaster|demo|mix|version|edit|cut|rmx)\\]\\s*",
             std::regex_constants::icase), " ");
         
-        // Pattern 2: [remix word] - like "[Remix by Artist]"
         result = std::regex_replace(result,
             std::regex("\\s*\\[(?:remix|remaster|demo|radio edit|extended|rmx)\\]\\s*",
             std::regex_constants::icase), " ");
@@ -435,16 +468,27 @@ std::string MetadataCleaner::remove_bracketed_content(const std::string& str, bo
 std::string MetadataCleaner::normalize_quotes_and_apostrophes(const std::string& str) {
     std::string result = str;
     
-    // UTF-8 safe quote normalization
-    std::vector<std::pair<std::string, std::string>> quote_patterns = {
-        // Left and right single quotation marks
-        {"\u2018", "'"}, {"\u2019", "'"}, {"\u201A", "'"},
-        // Left and right double quotation marks  
-        {"\u201C", "\""}, {"\u201D", "\""}, {"\u201E", "\""},
-        // Other quote-like characters
-        {"\u2039", "<"}, {"\u203A", ">"},
-        // Prime marks (often confused with quotes)
-        {"\u2032", "'"}, {"\u2033", "\""}
+    // Explicit UTF-8 byte sequences for quote normalization (safe across all compilers & code pages)
+    static const std::vector<std::pair<std::string, std::string>> quote_patterns = {
+        // Single quotation marks
+        {"\xE2\x80\x98", "'"},  // U+2018 left single quote ‘
+        {"\xE2\x80\x99", "'"},  // U+2019 right single quote ’
+        {"\xE2\x80\x9A", "'"},  // U+201A single low-9 quote ‚
+        {"\xE2\x80\x9B", "'"},  // U+201B single high-reversed-9 quote ‛
+        {"\xE2\x80\xB2", "'"},  // U+2032 prime ′
+        {"\xC2\xB4", "'"},      // U+00B4 acute accent ´
+        {"`", "'"},             // U+0060 backtick `
+        // Double quotation marks  
+        {"\xE2\x80\x9C", "\""}, // U+201C left double quote “
+        {"\xE2\x80\x9D", "\""}, // U+201D right double quote ”
+        {"\xE2\x80\x9E", "\""}, // U+201E double low-9 quote „
+        {"\xE2\x80\x9F", "\""}, // U+201F double high-reversed-9 quote ‟
+        {"\xE2\x80\xB3", "\""}, // U+2033 double prime ″
+        {"\xC2\xAB", "\""},     // U+00AB left guillemet «
+        {"\xC2\xBB", "\""},     // U+00BB right guillemet »
+        // Angle quotes
+        {"\xE2\x80\xB9", "<"},  // U+2039 single left-pointing angle ‹
+        {"\xE2\x80\xBA", ">"}   // U+203A single right-pointing angle ›
     };
     
     for (const auto& pattern : quote_patterns) {
@@ -462,7 +506,7 @@ std::string MetadataCleaner::normalize_collaborations(const std::string& str) {
     std::string result = str;
     
     // Normalize featuring patterns (preserve case for Cyrillic names)
-    std::vector<std::pair<std::string, std::string>> feat_patterns = {
+    static const std::vector<std::pair<std::string, std::string>> feat_patterns = {
         {" ft. ", " feat. "}, {" ft ", " feat. "}, {" featuring ", " feat. "},
         {" Ft. ", " feat. "}, {" Ft ", " feat. "}, {" Featuring ", " feat. "},
         {" FT. ", " feat. "}, {" FT ", " feat. "}, {" FEATURING ", " feat. "}
@@ -489,8 +533,8 @@ std::string MetadataCleaner::normalize_whitespace(const std::string& str) {
 }
 
 bool MetadataCleaner::contains_cyrillic(const std::string& str) {
-    // Check for Cyrillic Unicode range (U+0400 to U+04FF)
-    // In UTF-8, this is encoded as 0xD0 0x80 to 0xD3 0xBF
+    // Check for Cyrillic Unicode range (U+0400 to U+052F)
+    // In UTF-8, this is encoded as 0xD0 0x80 to 0xD4 0xAF
     for (size_t i = 0; i < str.length() - 1; ++i) {
         unsigned char byte1 = static_cast<unsigned char>(str[i]);
         unsigned char byte2 = static_cast<unsigned char>(str[i + 1]);
@@ -499,7 +543,8 @@ bool MetadataCleaner::contains_cyrillic(const std::string& str) {
         if ((byte1 == 0xD0 && byte2 >= 0x80) ||  // U+0400-U+047F
             (byte1 == 0xD1 && byte2 <= 0xBF) ||  // U+0480-U+04FF  
             (byte1 == 0xD2 && byte2 <= 0xBF) ||  // U+0500-U+052F (Cyrillic Supplement)
-            (byte1 == 0xD3 && byte2 <= 0xBF)) {  // Extended Cyrillic
+            (byte1 == 0xD3 && byte2 <= 0xBF) ||  // Extended Cyrillic
+            (byte1 == 0xD4 && byte2 <= 0xAF)) {  // Cyrillic Supplement continuation
             return true;
         }
     }
@@ -516,14 +561,7 @@ bool MetadataCleaner::is_multibyte_utf8_sequence(const std::string& str, size_t 
 }
 
 std::string MetadataCleaner::preserve_important_characters(const std::string& str) {
-    // For Cyrillic and other non-Latin scripts, preserve important punctuation
-    // that might be essential for accurate searches
-    std::string result = str;
-    
-    // Don't remove certain punctuation that might be important for Cyrillic titles
-    // This is a conservative approach to prevent over-cleaning
-    
-    return result;
+    return str;
 }
 
 std::string MetadataCleaner::trim(const std::string& str) {
@@ -538,7 +576,7 @@ std::string MetadataCleaner::trim(const std::string& str) {
 
 bool MetadataCleaner::is_common_remix_term(const std::string& term) {
     std::string lower = term;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    to_lower_ascii(lower);
     
     return (lower == "remix" || lower == "remaster" || lower == "demo" ||
             lower == "live" || lower == "acoustic" || lower == "unplugged" ||
@@ -547,7 +585,7 @@ bool MetadataCleaner::is_common_remix_term(const std::string& term) {
 
 bool MetadataCleaner::is_featuring_pattern(const std::string& term) {
     std::string lower = term;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    to_lower_ascii(lower);
     
     return (lower == "feat." || lower == "featuring" || lower == "ft." || lower == "with" ||
             lower == "pres." || lower == "pres" || lower == "presents" || lower == "presenting" ||
@@ -562,7 +600,7 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
     std::string artist_str(artist);
     
     // High-confidence multi-artist separators (clearly indicate collaborations across multiple languages)
-    std::vector<std::string> high_confidence_separators = {
+    static const std::vector<std::string> high_confidence_separators = {
         " feat. ", " ft. ", " featuring ", " feat ", " ft ",
         " / ", " // ", " /// ", "/",
         " vs. ", " vs ", " versus ",
@@ -571,25 +609,25 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
         " pres. ", " pres ", " presents ", " presenting ",
         " meets ", " intro. ", " introduces ",
         " aka ", " a.k.a. ", " pka ", " p.k.a. ",
-        " part. ", " part ", " part. esp. ", " part. especial ", " participação ", " participacao ",
+        " part. ", " part ", " part. esp. ", " part. especial ",
+        " parti\xC3\xA7\xC3\xA3o ", " participacao ",
         " con ", " avec ", " und ",
         ", ", "; ", ";", ","
     };
     
     // Contextual separators that need additional validation
-    std::vector<std::string> contextual_separators = {
+    static const std::vector<std::string> contextual_separators = {
         " & ", " and ", " y ", " e "
     };
     
-    // Create lowercase version of artist string for case-insensitive separator search
     std::string artist_lower = artist_str;
-    std::transform(artist_lower.begin(), artist_lower.end(), artist_lower.begin(), ::tolower);
+    to_lower_ascii(artist_lower);
 
     // First, check high-confidence separators
     size_t earliest_pos = std::string::npos;
     for (const auto& separator : high_confidence_separators) {
         std::string sep_lower = separator;
-        std::transform(sep_lower.begin(), sep_lower.end(), sep_lower.begin(), ::tolower);
+        to_lower_ascii(sep_lower);
         
         // Protect band names containing slashes like "AC/DC"
         if (sep_lower == "/" && artist_lower.find("ac/dc") != std::string::npos) {
@@ -606,7 +644,7 @@ std::string MetadataCleaner::extract_first_artist(const char* artist) {
     if (earliest_pos == std::string::npos) {
         for (const auto& separator : contextual_separators) {
             std::string sep_lower = separator;
-            std::transform(sep_lower.begin(), sep_lower.end(), sep_lower.begin(), ::tolower);
+            to_lower_ascii(sep_lower);
             size_t pos = artist_lower.find(sep_lower);
             if (pos != std::string::npos) {
                 // Validate if this is likely a collaboration vs. a band name
@@ -635,9 +673,9 @@ std::string MetadataCleaner::extract_second_artist(const char* artist) {
     
     std::string artist_str(artist);
     std::string artist_lower = artist_str;
-    std::transform(artist_lower.begin(), artist_lower.end(), artist_lower.begin(), ::tolower);
+    to_lower_ascii(artist_lower);
 
-    std::vector<std::string> high_confidence_separators = {
+    static const std::vector<std::string> high_confidence_separators = {
         " feat. ", " ft. ", " featuring ", " feat ", " ft ",
         " / ", " // ", " /// ", "/",
         " vs. ", " vs ", " versus ",
@@ -646,7 +684,8 @@ std::string MetadataCleaner::extract_second_artist(const char* artist) {
         " pres. ", " pres ", " presents ", " presenting ",
         " meets ", " intro. ", " introduces ",
         " aka ", " a.k.a. ", " pka ", " p.k.a. ",
-        " part. ", " part ", " part. esp. ", " part. especial ", " participação ", " participacao ",
+        " part. ", " part ", " part. esp. ", " part. especial ",
+        " parti\xC3\xA7\xC3\xA3o ", " participacao ",
         " con ", " avec ", " und ",
         ", ", "; ", ";", ","
     };
@@ -655,7 +694,7 @@ std::string MetadataCleaner::extract_second_artist(const char* artist) {
     size_t sep_len = 0;
     for (const auto& separator : high_confidence_separators) {
         std::string sep_lower = separator;
-        std::transform(sep_lower.begin(), sep_lower.end(), sep_lower.begin(), ::tolower);
+        to_lower_ascii(sep_lower);
         
         // Protect band names containing slashes like "AC/DC"
         if (sep_lower == "/" && artist_lower.find("ac/dc") != std::string::npos) {
@@ -671,10 +710,10 @@ std::string MetadataCleaner::extract_second_artist(const char* artist) {
 
     // Also check contextual separators for second artist extraction
     if (earliest_pos == std::string::npos) {
-        std::vector<std::string> contextual_separators = { " & ", " and ", " y ", " e " };
+        static const std::vector<std::string> contextual_separators = { " & ", " and ", " y ", " e " };
         for (const auto& separator : contextual_separators) {
             std::string sep_lower = separator;
-            std::transform(sep_lower.begin(), sep_lower.end(), sep_lower.begin(), ::tolower);
+            to_lower_ascii(sep_lower);
             size_t pos = artist_lower.find(sep_lower);
             if (pos != std::string::npos && is_likely_collaboration(artist_str, separator, pos)) {
                 if (pos < earliest_pos) {
@@ -699,7 +738,7 @@ bool MetadataCleaner::is_station_name_or_url(const char* text) {
 
     std::string str(text);
     std::string lower_str = str;
-    std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(), ::tolower);
+    to_lower_ascii(lower_str);
 
     // 1. Check URLs, streams, protocols, and stream playlist file extensions
     if (lower_str.find("http://") != std::string::npos ||
@@ -752,7 +791,13 @@ std::string MetadataCleaner::extract_primary_title(const char* title) {
     std::string str(title);
 
     // Split at common track version or extra tag delimiters
-    std::vector<std::string> delimiters = { " - ", " / ", " ~ " };
+    static const std::vector<std::string> delimiters = {
+        " - ", " / ", " ~ ",
+        " \xE2\x80\x93 ", // en-dash " – "
+        " \xE2\x80\x94 ", // em-dash " — "
+        " \xCB\x97 ",     // modifier letter minus " ˗ "
+        " \xE2\x88\x92 "  // minus sign " − "
+    };
     for (const auto& delim : delimiters) {
         size_t pos = str.find(delim);
         if (pos != std::string::npos && pos > 2) {
@@ -791,7 +836,7 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
     // Helper lambda to split combined metadata like "Artist - Title", "Title by Artist", or "artist-title"
     auto try_split_combined = [](const std::string& combined, std::string& out_artist, std::string& out_title) -> bool {
         std::string lower = combined;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        to_lower_ascii(lower);
 
         // Check " by " delimiter first (e.g. "Jail House Rock by Elvis Presley")
         size_t by_pos = lower.find(" by ");
@@ -801,8 +846,15 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
             return !out_artist.empty() && !out_title.empty();
         }
 
-        // Check delimiters in order of confidence: " - ", " / ", " ~ ", " ˗ ", "-", "/"
-        std::vector<std::string> delims = { " - ", " / ", " ~ ", " ˗ ", "-", "/" };
+        // Check delimiters in order of confidence
+        static const std::vector<std::string> delims = {
+            " - ", " / ", " ~ ",
+            " \xE2\x80\x93 ", // en-dash " – "
+            " \xE2\x80\x94 ", // em-dash " — "
+            " \xCB\x97 ",     // modifier letter minus " ˗ "
+            " \xE2\x88\x92 ", // minus sign " − "
+            "-", "/"
+        };
         for (const auto& delim : delims) {
             size_t pos = combined.find(delim);
             if (pos != std::string::npos && pos > 0 && pos + delim.length() < combined.length()) {
@@ -861,7 +913,7 @@ bool MetadataCleaner::is_likely_collaboration(const std::string& artist_str, con
     }
     
     std::string artist_lower = artist_str;
-    std::transform(artist_lower.begin(), artist_lower.end(), artist_lower.begin(), ::tolower);
+    to_lower_ascii(artist_lower);
 
     // Protected band names that include connectors:
     static const std::vector<std::string> protected_bands = {
@@ -881,7 +933,7 @@ bool MetadataCleaner::is_likely_collaboration(const std::string& artist_str, con
     }
 
     // Known band name patterns - these should NOT be split
-    std::vector<std::string> band_name_indicators = {
+    static const std::vector<std::string> band_name_indicators = {
         "sons", "daughters", "brothers", "sisters",
         "boys", "girls", "men", "women",
         "band", "group", "orchestra", "ensemble",
@@ -890,7 +942,7 @@ bool MetadataCleaner::is_likely_collaboration(const std::string& artist_str, con
     
     // Convert to lowercase for comparison
     std::string after_lower = after;
-    std::transform(after_lower.begin(), after_lower.end(), after_lower.begin(), ::tolower);
+    to_lower_ascii(after_lower);
     
     // If the part after separator is a common band name indicator, likely NOT a collaboration
     for (const auto& indicator : band_name_indicators) {
@@ -900,9 +952,13 @@ bool MetadataCleaner::is_likely_collaboration(const std::string& artist_str, con
     }
     
     // Additional heuristics for legitimate collaborations:
-    // 1. Both parts look like complete artist names (have capital letters)
-    bool before_has_capitals = std::any_of(before.begin(), before.end(), ::isupper);
-    bool after_has_capitals = std::any_of(after.begin(), after.end(), ::isupper);
+    // 1. Both parts look like complete artist names (have capital letters or non-ASCII characters)
+    bool before_has_capitals = std::any_of(before.begin(), before.end(), [](char c) {
+        return (c >= 'A' && c <= 'Z') || static_cast<unsigned char>(c) >= 0x80;
+    });
+    bool after_has_capitals = std::any_of(after.begin(), after.end(), [](char c) {
+        return (c >= 'A' && c <= 'Z') || static_cast<unsigned char>(c) >= 0x80;
+    });
     
     // 2. Both parts are reasonably long (not just single words)
     bool before_substantial = before.length() > 3 && before.find(' ') != std::string::npos;
@@ -921,3 +977,4 @@ bool MetadataCleaner::is_likely_collaboration(const std::string& artist_str, con
     // Conservative default: don't split unless we're confident it's a collaboration
     return false;
 }
+
