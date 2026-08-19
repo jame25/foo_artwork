@@ -204,11 +204,24 @@ public:
         m_listeners.erase(std::remove(m_listeners.begin(), m_listeners.end(), listener), m_listeners.end());
     }
     
-    void notify(const ArtworkEvent& event) {
+    void clear() {
         std::lock_guard<std::mutex> lock(m_listeners_mutex);
-        for (auto* listener : m_listeners) {
+        m_listeners.clear();
+    }
+    
+    void notify(const ArtworkEvent& event) {
+        if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
+        std::vector<IArtworkEventListener*> listeners_copy;
+        {
+            std::lock_guard<std::mutex> lock(m_listeners_mutex);
+            listeners_copy = m_listeners;
+        }
+        for (auto* listener : listeners_copy) {
+            if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
             try {
-                listener->on_artwork_event(event);
+                if (listener) {
+                    listener->on_artwork_event(event);
+                }
             } catch (...) {
                 // Continue notifying other listeners even if one fails
             }
@@ -1457,6 +1470,8 @@ public:
     }
     
     void on_quit() override {
+        ArtworkEventManager::get().clear();
+
         // Clean up artwork component
         artwork_manager::shutdown();
 
@@ -5233,27 +5248,27 @@ public:
     }
     
     void on_playback_stop(play_control::t_stop_reason p_reason) override {
-        artwork_manager::stop_rms_silence_detector();
-        artwork_manager::cancel_acrcloud_tasks();
-        titleformat_provider::clear_track_artwork_info();
+        artwork_manager::on_playback_stop();
         
         // Clear artwork from all UI elements when playback stops (if option is enabled)
         for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
-            if (cfg_clear_panel_when_not_playing) {
-                if (cfg_use_noart_image) {
-                    // Load and display noart image instead of clearing
-                    g_artwork_ui_elements[i]->load_noart_image();
-                } else {
-                    // Just clear the panel
-                    g_artwork_ui_elements[i]->force_clear_artwork_bitmap();
+            auto* element = g_artwork_ui_elements[i];
+            if (element && element->m_hWnd) {
+                KillTimer(element->m_hWnd, 9);
+                KillTimer(element->m_hWnd, 10);
+                if (cfg_clear_panel_when_not_playing) {
+                    if (cfg_use_noart_image) {
+                        // Load and display noart image instead of clearing
+                        element->load_noart_image();
+                    } else {
+                        // Just clear the panel
+                        element->force_clear_artwork_bitmap();
+                    }
+                    // Don't show status text - keep the panel clean
                 }
-                // Don't show status text - keep the panel clean
-            } else {
-            }
-            g_artwork_ui_elements[i]->m_current_track.release();
-            g_artwork_ui_elements[i]->m_playback_stopped = true;  // Mark playback as stopped
-            if (g_artwork_ui_elements[i]->m_hWnd) {
-                InvalidateRect(g_artwork_ui_elements[i]->m_hWnd, NULL, TRUE);
+                element->m_current_track.release();
+                element->m_playback_stopped = true;  // Mark playback as stopped
+                InvalidateRect(element->m_hWnd, NULL, TRUE);
             }
         }
     }
@@ -5265,6 +5280,9 @@ public:
         // This callback is for bitrate changes and other non-essential info
     }
     void on_playback_dynamic_info_track(const file_info& p_info) override {
+        static_api_ptr_t<playback_control> pc_check;
+        if (!pc_check->is_playing() && !pc_check->is_paused()) return;
+
         // Reset ACRCloud cooldown when new stream metadata arrives
         artwork_manager::reset_acrcloud_cooldown();
         try {
