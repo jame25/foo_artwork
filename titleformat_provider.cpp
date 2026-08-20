@@ -26,6 +26,13 @@ void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track, const
         pfc::string8 new_cover = cover_path ? cover_path : "";
         pfc::string8 new_source = source ? source : "";
 
+        // If this is the same track/metadata and we already have a resolved non-Cache provider,
+        // do not let a subsequent "Cache" source downgrade it.
+        if (g_tf_track_path == new_path && g_tf_artist == new_artist && g_tf_title == new_title &&
+            !g_tf_source.is_empty() && g_tf_source != "Cache" && new_source == "Cache") {
+            new_source = g_tf_source;
+        }
+
         if (g_tf_track_path != new_path || g_tf_artist != new_artist || g_tf_title != new_title ||
             g_tf_cover != new_cover || g_tf_source != new_source) {
             changed = true;
@@ -111,7 +118,7 @@ public:
                 if (h_path && strcmp(h_path, current_path.c_str()) == 0) {
                     is_current_track = true;
                 }
-            } else if (handle == nullptr || current_path.is_empty()) {
+            } else if (handle == nullptr) {
                 is_current_track = true;
             }
 
@@ -151,11 +158,6 @@ public:
                     pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(key);
                     if (PathFileExistsA(cache_file.c_str())) {
                         field_val = cache_file;
-                    } else if (cfg_single_file_cache) {
-                        pfc::string8 cur = async_io_manager::instance().get_cache_file_path("current");
-                        if (PathFileExistsA(cur.c_str())) {
-                            field_val = cur;
-                        }
                     }
                 } else if (index == field_source) {
                     pfc::string8 key = artwork_manager::generate_cache_key_for_track(handle);
@@ -163,32 +165,6 @@ public:
                     if (PathFileExistsA(cache_file.c_str())) {
                         field_val = "Cache";
                     }
-                }
-            }
-
-            // 3. Fallback for Preferences Preview formatting when stopped or testing with sample handles
-            if (field_val.is_empty()) {
-                switch (index) {
-                    case field_artist:
-                        if (!current_artist.is_empty()) field_val = current_artist;
-                        else field_val = "Artist";
-                        break;
-                    case field_title:
-                        if (!current_title.is_empty()) field_val = current_title;
-                        else field_val = "Title";
-                        break;
-                    case field_cover:
-                    case field_path:
-                        if (!current_cover.is_empty()) field_val = current_cover;
-                        else {
-                            pfc::string8 cur = async_io_manager::instance().get_cache_file_path("current");
-                            field_val = cur;
-                        }
-                        break;
-                    case field_source:
-                        if (!current_source.is_empty()) field_val = current_source;
-                        else field_val = "Artwork";
-                        break;
                 }
             }
 
