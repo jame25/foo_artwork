@@ -329,6 +329,7 @@ private:
         void on_playback_pause(bool p_state) override {}
         void on_playback_edited(metadb_handle_ptr p_track) override {}
         void on_playback_dynamic_info(const file_info& p_info) override {
+            on_playback_dynamic_info_track(p_info);
         }
         void on_playback_dynamic_info_track(const file_info& p_info) override {
             static_api_ptr_t<playback_control> pc;
@@ -2086,6 +2087,12 @@ void artwork_ui_element::start_delayed_search() {
     
     // Check if we have delayed metadata to use
     if (m_has_delayed_metadata && !m_delayed_title.empty()) {
+        if (!MetadataCleaner::is_valid_for_search(m_delayed_artist.c_str(), m_delayed_title.c_str())) {
+            m_has_delayed_metadata = false;
+            m_delayed_artist.clear();
+            m_delayed_title.clear();
+            return;
+        }
         // Use the main component trigger function for proper API fallback (results come via event system)
         trigger_main_component_search_with_metadata(m_delayed_artist, m_delayed_title);
         
