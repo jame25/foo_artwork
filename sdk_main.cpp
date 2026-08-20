@@ -341,7 +341,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.7",
+    "1.6.8",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -358,7 +358,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.7",
+    "1.6.8",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -2332,19 +2332,31 @@ void unsubscribe_from_artwork_events(IArtworkEventListener* listener) {
 }
 
 // Function to trigger main component search from CUI panels with metadata
+static std::atomic<uint64_t> g_main_search_generation{0};
+
 void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title) {
 	
     // Use artwork manager directly instead of bridge functions
     g_artwork_loading = true;
+    uint64_t gen = ++g_main_search_generation;
     
     // Call artwork manager from main thread
-    auto callback = [](const artwork_manager::artwork_result& result) {
+    auto callback = [gen, artist, title](const artwork_manager::artwork_result& result) {
+        if (gen != g_main_search_generation.load()) {
+            // Stale callback from previous track/metadata - discard it!
+            return;
+        }
         g_artwork_loading = false;
         
         if (result.success && result.data.get_size() > 0) {
             
             // Store the artwork source
-            g_current_artwork_source = result.source.c_str();
+            pfc::string8 resolved = artwork_manager::get_active_resolved_provider();
+            if (!resolved.is_empty() && resolved != "Cache") {
+                g_current_artwork_source = resolved.c_str();
+            } else {
+                g_current_artwork_source = result.source.c_str();
+            }
             
             // Convert pfc::array_t<t_uint8> to std::vector<BYTE> for existing bitmap creation function
             std::vector<BYTE> image_data;
@@ -5131,7 +5143,15 @@ public:
             // Handle both local files and internet streams
             if (p_track.is_valid()) {
                 pfc::string8 track_path = p_track->get_path();
-                artwork_manager::reset_acrcloud_cooldown();
+                artwork_manager::on_playback_new_track(p_track);
+
+                // Reset shared artwork bitmap and path for external listeners (e.g. foo_nowbar)
+                if (g_shared_artwork_bitmap) {
+                    DeleteObject(g_shared_artwork_bitmap);
+                    g_shared_artwork_bitmap = NULL;
+                }
+                g_current_artwork_path.clear();
+                g_current_artwork_source.reset();
 
                 // Initialize title formatting variables for the new track
                 try {
@@ -5143,8 +5163,21 @@ public:
                         pfc::string8 clean_art = art ? MetadataCleaner::clean_for_search(art, true).c_str() : "";
                         pfc::string8 clean_tit = tit ? MetadataCleaner::clean_for_search(tit, true).c_str() : "";
                         titleformat_provider::set_track_artwork_info(p_track, clean_art.c_str(), clean_tit.c_str(), "", "");
+                    } else {
+                        titleformat_provider::set_track_artwork_info(p_track, "", "", "", "");
                     }
-                } catch (...) {}
+                } catch (...) {
+                    titleformat_provider::set_track_artwork_info(p_track, "", "", "", "");
+                }
+
+                // Notify event listeners to clear stale artwork
+                ArtworkEventManager::get().notify(ArtworkEvent(
+                    ArtworkEventType::ARTWORK_FAILED,
+                    nullptr,
+                    "",
+                    "",
+                    ""
+                ));
 
                 // Reset artwork state for ALL UI elements before processing new track
                 for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
@@ -5250,6 +5283,22 @@ public:
     void on_playback_stop(play_control::t_stop_reason p_reason) override {
         artwork_manager::on_playback_stop();
         
+        if (g_shared_artwork_bitmap) {
+            DeleteObject(g_shared_artwork_bitmap);
+            g_shared_artwork_bitmap = NULL;
+        }
+        g_current_artwork_path.clear();
+        g_current_artwork_source.reset();
+        titleformat_provider::clear_track_artwork_info();
+
+        ArtworkEventManager::get().notify(ArtworkEvent(
+            ArtworkEventType::ARTWORK_FAILED,
+            nullptr,
+            "",
+            "",
+            ""
+        ));
+        
         // Clear artwork from all UI elements when playback stops (if option is enabled)
         for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
             auto* element = g_artwork_ui_elements[i];
@@ -5276,8 +5325,7 @@ public:
     void on_playback_pause(bool p_state) override {}
     void on_playback_edited(metadb_handle_ptr p_track) override {}
     void on_playback_dynamic_info(const file_info& p_info) override {
-        // Empty implementation - not needed for artwork component
-        // This callback is for bitrate changes and other non-essential info
+        on_playback_dynamic_info_track(p_info);
     }
     void on_playback_dynamic_info_track(const file_info& p_info) override {
         static_api_ptr_t<playback_control> pc_check;
