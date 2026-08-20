@@ -327,20 +327,25 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
         return false;
     }
 
-    // Rule 2: Block common invalid patterns
+    // Rule 2: Block station names, stream URLs, and broadcast taglines
+    if (is_station_name_or_url(artist_str.c_str()) || is_station_name_or_url(title_str.c_str())) {
+        return false;
+    }
+
+    // Rule 3: Block common invalid patterns
     if (title_str == "?" || artist_str == "?" ||
         title_str == "? - ?" || artist_str == "? - ?") {
         return false;
     }
 
-    // Rule 3: Block advertisement breaks
+    // Rule 4: Block advertisement breaks
     std::string title_lower = title_str;
     to_lower_ascii(title_lower);
     if (title_lower.find("adbreak") != std::string::npos || title_lower.find("ad_break") != std::string::npos || title_lower.find("advertisement") != std::string::npos) {
         return false;
     }
 
-    // Rule 4: Block "Unknown" and standalone media blacklist keywords
+    // Rule 5: Block "Unknown" and standalone media blacklist keywords
     static const std::vector<std::string> blacklist_terms = {
         "cd", "cd1", "cd2", "dvd", "album", "\xC3\xA1lbum", "disco", "disque", "disc", "disk",
         "artista", "artiste", "artist", "k\xC3\xBCnstler", "interprete", "interpr\xC3\xA8te", "interpret",
@@ -356,7 +361,7 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
         }
     }
 
-    // Rule 5: Block known problematic station names
+    // Rule 6: Block known problematic station names
     if (artist_str == "RADIO BOB") {
         return false;
     }
@@ -744,6 +749,7 @@ bool MetadataCleaner::is_station_name_or_url(const char* text) {
     if (lower_str.find("http://") != std::string::npos ||
         lower_str.find("https://") != std::string::npos ||
         lower_str.find("www.") != std::string::npos ||
+        lower_str.find("://") != std::string::npos ||
         lower_str.find(".m3u") != std::string::npos ||
         lower_str.find(".pls") != std::string::npos ||
         lower_str.find(".aac") != std::string::npos ||
@@ -765,15 +771,23 @@ bool MetadataCleaner::is_station_name_or_url(const char* text) {
         }
     }
 
-    // 3. Known station directory / streaming networks (exact or whole-token word matches)
+    // 3. Known station directory / streaming networks & domains (exact or whole-token word matches)
     static const std::vector<std::regex> station_network_regexes = {
-        std::regex("\\b(?:webradio|hitradio|somafm|tunein|radioparadise|walmradio|ipmusic|live365|di\\.fm|accuradio|iheartradio)\\b", std::regex_constants::icase),
+        // Station networks
+        std::regex("\\b(?:webradio|hitradio|somafm|tunein|radioparadise|walmradio|ipmusic|live365|di\\.fm|accuradio|iheartradio|laut\\.fm|1\\.fm|101\\.ru|trancebase|technobase|hardbase|housetime|coretime|clubtime|teatime|zenofm|azuracast|zeno\\.fm|zeno\\.live)\\b", std::regex_constants::icase),
+        // Domain suffix patterns for radio stations (.fm, .radio, .stream, .audio, etc.)
+        std::regex("\\b[a-z0-9_-]+\\.(?:fm|radio|stream|audio|digital|live|club|party|cc|to)\\b", std::regex_constants::icase),
+        // Station names ending in "radio" (e.g. "Metal Lab radio", "Rock Radio", "Chillout Radio")
+        std::regex("\\b[a-z0-9_-]+\\s+radio\\b", std::regex_constants::icase),
         // Radio frequency patterns: "98.5 FM", "101.1 FM", "FM 104", "106.7 FM", "89.3 FM"
         std::regex("\\b\\d{2,3}(?:\\.\\d+)?\\s*(?:fm|am|mhz|khz)\\b", std::regex_constants::icase),
         std::regex("\\b(?:fm|am)\\s*\\d{2,3}(?:\\.\\d+)?\\b", std::regex_constants::icase),
-        // Station broadcast markers
-        std::regex("^radio\\s+\\d{1,3}\\b", std::regex_constants::icase),
-        std::regex("\\b(?:on\\s+air|now\\s+on\\s+air|live\\s+broadcast|streaming\\s+live)\\b", std::regex_constants::icase)
+        // Station broadcast markers & taglines
+        std::regex("^radio\\s+[a-z0-9_-]+\\b", std::regex_constants::icase),
+        std::regex("\\b(?:on\\s+air|now\\s+on\\s+air|live\\s+broadcast|streaming\\s+live|web\\s*radio|internet\\s*radio|online\\s*radio|radio\\s*station|radio\\s*stream)\\b", std::regex_constants::icase),
+        // 24h / 24/7 / non-stop slogans & genre taglines
+        std::regex("\\b(?:24h|24/7|non-stop|non stop|commercial free)\\b", std::regex_constants::icase),
+        std::regex("\\b(?:and more|the best of|the best music|all the hits)\\b", std::regex_constants::icase)
     };
 
     for (const auto& rx : station_network_regexes) {
@@ -897,8 +911,14 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
         res.primary_title = res.clean_title;
     }
 
-    // Stage 4: Search Validation
-    res.is_valid_search = is_valid_for_search(res.clean_artist.c_str(), res.clean_title.c_str());
+    // Stage 4: Search Validation & Comprehensive Station/URL Detection
+    res.is_station_or_url = res.is_station_or_url ||
+                            is_station_name_or_url(res.clean_artist.c_str()) ||
+                            is_station_name_or_url(res.clean_title.c_str()) ||
+                            is_station_name_or_url(res.first_artist.c_str()) ||
+                            is_station_name_or_url(res.primary_title.c_str());
+
+    res.is_valid_search = is_valid_for_search(res.clean_artist.c_str(), res.clean_title.c_str()) && !res.is_station_or_url;
 
     return res;
 }
