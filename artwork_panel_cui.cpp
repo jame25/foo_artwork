@@ -218,7 +218,7 @@ public:
     void on_playback_seek(double p_time) override {}
     void on_playback_pause(bool p_state) override {}
     void on_playback_edited(metadb_handle_ptr p_track) override {}
-    void on_playback_dynamic_info(const file_info& p_info) override {}
+    void on_playback_dynamic_info(const file_info& p_info) override { on_playback_dynamic_info_track(p_info); }
     void on_playback_dynamic_info_track(const file_info& p_info) override;
     void on_playback_time(double p_time) override {}
     void on_volume_change(float p_new_val) override {}
@@ -741,7 +741,12 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 std::string final_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
                 std::string final_title = MetadataCleaner::clean_for_search(m_delayed_search_title.c_str(), true);
                 
-                
+                if (!MetadataCleaner::is_valid_for_search(final_artist.c_str(), final_title.c_str())) {
+                    m_delayed_search_artist.clear();
+                    m_delayed_search_title.clear();
+                    return 0;
+                }
+
                 extern void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title);
                 trigger_main_component_search_with_metadata(final_artist, final_title);
                 
