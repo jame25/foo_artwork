@@ -40,5 +40,8 @@ extern cfg_string cfg_cache_folder;
 extern cfg_string cfg_noart_folder;
 extern cfg_int cfg_noart_cycle_mode; // 0 = Single / Disabled, 1 = Sequential, 2 = Random
 
+// Miscellaneous settings
+extern cfg_bool cfg_disable_instream_artwork;
+
 // Function to get API search order based on user preferences
 std::vector<ApiType> get_api_search_order();
