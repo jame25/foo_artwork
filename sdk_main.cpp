@@ -68,6 +68,7 @@ static constexpr GUID guid_cfg_logos_folder = { 0x1234568a, 0x1234, 0x1234, { 0x
 static constexpr GUID guid_cfg_clear_panel_when_not_playing = { 0x1234568b, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfb } };
 static constexpr GUID guid_cfg_use_noart_image = { 0x1234568c, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfc } };
 static constexpr GUID guid_cfg_infobar = { 0x59b0b41b, 0x2d12, 0x4965, { 0xaa, 0x4a, 0xb5, 0x80, 0x5, 0x55, 0x2e, 0xf7 } };
+static constexpr GUID guid_cfg_disable_instream_artwork = { 0x7c2d91b4, 0x8a3e, 0x4f52, { 0x9b, 0x6e, 0x1d, 0x3f, 0x7a, 0x5c, 0x92, 0xe1 } };
 static constexpr GUID guid_cfg_http_timeout = { 0x1234568d, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfd } };
 static constexpr GUID guid_cfg_retry_count = { 0x1234568e, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
 static constexpr GUID guid_cfg_enable_disk_cache = { 0x1234568f, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xff } };
@@ -125,6 +126,7 @@ cfg_string cfg_noart_folder(guid_cfg_noart_folder, "");  // Custom noart placeho
 cfg_int cfg_noart_cycle_mode(guid_cfg_noart_cycle_mode, 0);  // 0 = Single / Disabled, 1 = Sequential, 2 = Random
 
 cfg_bool cfg_infobar(guid_cfg_infobar, false);  // DUI infobar (default disabled)
+cfg_bool cfg_disable_instream_artwork(guid_cfg_disable_instream_artwork, false);  // Disable in-stream artwork detection (default false)
 
 // Network settings
 cfg_int cfg_http_timeout(guid_cfg_http_timeout, 15);  // HTTP timeout in seconds (default 15)
@@ -5313,13 +5315,23 @@ public:
 
             if (stream_artist.is_empty() && !stream_title.is_empty()) {
                 std::string t_str = stream_title.c_str();
-                std::string delimiters[] = { " - ", " ˗ ", " / ", " by " };
-                for (const auto& delim : delimiters) {
-                    size_t pos = t_str.find(delim);
-                    if (pos != std::string::npos) {
-                        stream_artist = t_str.substr(0, pos).c_str();
-                        stream_title = t_str.substr(pos + delim.length()).c_str();
-                        break;
+                size_t tilde_pos = t_str.find('~');
+                if (tilde_pos != std::string::npos && tilde_pos > 0) {
+                    stream_artist = t_str.substr(0, tilde_pos).c_str();
+                    size_t next_tilde = t_str.find('~', tilde_pos + 1);
+                    std::string part2 = (next_tilde != std::string::npos)
+                        ? t_str.substr(tilde_pos + 1, next_tilde - tilde_pos - 1)
+                        : t_str.substr(tilde_pos + 1);
+                    stream_title = part2.c_str();
+                } else {
+                    std::string delimiters[] = { " - ", " ˗ ", " / ", " by " };
+                    for (const auto& delim : delimiters) {
+                        size_t pos = t_str.find(delim);
+                        if (pos != std::string::npos) {
+                            stream_artist = t_str.substr(0, pos).c_str();
+                            stream_title = t_str.substr(pos + delim.length()).c_str();
+                            break;
+                        }
                     }
                 }
             }
