@@ -341,7 +341,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.8",
+    "1.6.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -358,7 +358,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.8",
+    "1.6.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -4795,7 +4795,7 @@ void artwork_ui_element::process_downloaded_image_data() {
         complete_artwork_search();
         m_artwork_source = source;  // Store the source of successful artwork
         g_current_artwork_source = source;  // Update global source for logging
-        // Removed status text to prevent white screen when artwork loads
+        titleformat_provider::set_status((pfc::string8("Artwork loaded from ") + source).c_str());
         
         // Notify event system that artwork was loaded successfully
         ArtworkEventManager::get().notify(ArtworkEvent(
@@ -5160,9 +5160,12 @@ public:
                         const file_info& info = info_cont->info();
                         const char* art = info.meta_get("ARTIST", 0);
                         const char* tit = info.meta_get("TITLE", 0);
+                        const char* alb = info.meta_get("ALBUM", 0);
                         pfc::string8 clean_art = art ? MetadataCleaner::clean_for_search(art, true).c_str() : "";
                         pfc::string8 clean_tit = tit ? MetadataCleaner::clean_for_search(tit, true).c_str() : "";
-                        titleformat_provider::set_track_artwork_info(p_track, clean_art.c_str(), clean_tit.c_str(), "", "");
+                        pfc::string8 clean_art_full = art ? art : "";
+                        pfc::string8 clean_alb = alb ? alb : "";
+                        titleformat_provider::set_track_artwork_info(p_track, clean_art.c_str(), clean_tit.c_str(), "", "", clean_art_full.c_str(), clean_alb.c_str(), "");
                     } else {
                         titleformat_provider::set_track_artwork_info(p_track, "", "", "", "");
                     }
@@ -5225,37 +5228,12 @@ public:
                         }
                     }
                 } else {
-                    // For local files, start API search immediately
-                    for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
-                        auto* element = g_artwork_ui_elements[i];
-                            if (element && element->m_hWnd) {
-                                // Start API search immediately for internet streams with no delay
-                                pfc::string8 artist, title;
-                                element->extract_metadata_for_search(p_track, artist, title);
-                                
-                                if (!artist.is_empty() && !title.is_empty()) {
-                                    element->m_last_search_artist = artist;
-                                    element->m_last_search_title = title;
-                                    element->search_next_api_in_priority(artist, title, 0);
-                                }
-                                
-                                InvalidateRect(element->m_hWnd, NULL, TRUE);
-                            }
-                        }
-                    }
-                } else {
                     // Handle local files - load local artwork
                     for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
                         auto* element = g_artwork_ui_elements[i];
                         if (element && element->m_hWnd) {
-                            // Don't show loading text - causes white screen
-                            // element->m_status_text = "Loading local artwork...";
-                            
                             // Try local artwork search first
-                            if (element->search_local_artwork()) {
-                                // Local artwork found, no need for API search - no status text needed
-                                // element->m_status_text = "Local artwork loaded";
-                            } else {
+                            if (!element->search_local_artwork()) {
                                 // No local artwork, extract metadata and search APIs if needed
                                 pfc::string8 artist, title;
                                 element->extract_metadata_for_search(p_track, artist, title);
@@ -5264,9 +5242,6 @@ public:
                                     element->m_last_search_artist = artist;
                                     element->m_last_search_title = title;
                                     element->search_next_api_in_priority(artist, title, 0);
-                                } else {
-                                    // Don't show status text - causes white screen
-                                    // element->m_status_text = "No local artwork found";
                                 }
                             }
                             
@@ -5324,9 +5299,7 @@ public:
     void on_playback_seek(double p_time) override {}
     void on_playback_pause(bool p_state) override {}
     void on_playback_edited(metadb_handle_ptr p_track) override {}
-    void on_playback_dynamic_info(const file_info& p_info) override {
-        on_playback_dynamic_info_track(p_info);
-    }
+    void on_playback_dynamic_info(const file_info& p_info) override {}
     void on_playback_dynamic_info_track(const file_info& p_info) override {
         static_api_ptr_t<playback_control> pc_check;
         if (!pc_check->is_playing() && !pc_check->is_paused()) return;
@@ -5352,137 +5325,12 @@ public:
             }
 
             if (!stream_artist.is_empty() && !stream_title.is_empty()) {
-                artwork_manager::on_stream_metadata_changed(stream_artist.c_str(), stream_title.c_str());
-                static_api_ptr_t<playback_control> pc_tf;
-                metadb_handle_ptr now_track;
-                if (pc_tf->get_now_playing(now_track)) {
-                    pfc::string8 clean_art = MetadataCleaner::clean_for_search(stream_artist.c_str(), true).c_str();
-                    pfc::string8 clean_tit = MetadataCleaner::clean_for_search(stream_title.c_str(), true).c_str();
-                    titleformat_provider::set_track_artwork_info(now_track, clean_art.c_str(), clean_tit.c_str(), "", "");
-                }
-            }
-
-            static_api_ptr_t<playback_control> pc;
-            metadb_handle_ptr current_track;
-            if (pc->get_now_playing(current_track)) {
-                for (t_size i = 0; i < g_artwork_ui_elements.get_count(); i++) {
-                    auto* element = g_artwork_ui_elements[i];
-                    if (element && element->m_hWnd) {
-                        // Extract metadata safely from info
-                        pfc::string8 artist, title;
-                        element->extract_metadata_from_info(p_info, artist, title);
-                        
-                        if (!artist.is_empty() || !title.is_empty()) {
-                            // Don't show dynamic metadata - causes white screen
-                            // element->m_status_text = "Dynamic metadata: ";
-                            // element->m_status_text += artist.c_str();
-                            // element->m_status_text += " - ";
-                            // element->m_status_text += title.c_str();
-                            
-                            // CRASH-SAFE: Use basic update_track instead of complex metadata version
-                            pfc::string8 fresh_content = artist.c_str();
-                            fresh_content += "|";
-                            fresh_content += title.c_str();
-                            
-                            // SIMPLIFIED: Always search for valid metadata to ensure updates work
-                            // Only require both artist and title to be present
-                            if (!artist.is_empty() && !title.is_empty() && 
-                                artist.get_length() > 0 && title.get_length() > 0) {
-                                
-                                // Check if content actually changed
-                                bool content_changed = (fresh_content != element->m_last_update_content);
-                                
-                                // Removed status text to prevent white screen during metadata detection
-                                
-                                // Store the safe metadata for use by extract_metadata_for_search
-                                {
-                                    std::lock_guard<std::mutex> lock(element->m_safe_metadata_mutex);
-                                    element->m_safe_artist = artist;
-                                    element->m_safe_title = title;
-                                }
-                                element->m_last_update_content = fresh_content;
-                                
-                                // BYPASS update_track - Call start_priority_search directly
-                                // Don't show search message - causes white screen
-                                // element->m_status_text = "Starting priority search directly";
-                                // InvalidateRect(element->m_hWnd, NULL, TRUE);
-                                
-                                // Update tracking variables that update_track would normally set
-                                element->m_current_track = current_track;
-                                
-                                // BYPASS start_priority_search - Call search_next_api_in_priority directly
-                                try {
-                                    // Clear any existing search state to force new search
-                                    {
-                                        std::lock_guard<std::mutex> lock(element->m_artwork_found_mutex);
-                                        element->m_last_search_key = "";
-                                        element->m_current_search_key = "";
-                                        element->m_artwork_found = false;
-                                    }
-                                    element->m_last_search_timestamp = 0;
-                                    
-                                    // Set search metadata for the API calls
-                                    element->m_last_search_artist = artist;
-                                    element->m_last_search_title = title;
-                                    
-                                    // Start search immediately since delay has been removed
-                                    element->search_next_api_in_priority(artist, title, 0);
-                                    
-                                    // Update content AFTER successful search trigger
-                                    element->m_last_update_content = fresh_content;
-                                } catch (...) {
-                                    // Don't show error message - causes white screen
-                                    // element->m_status_text = "CRASH CAUGHT in search_next_api_in_priority!";
-                                    // InvalidateRect(element->m_hWnd, NULL, TRUE);
-                                }
-                            } else {
-                                // BAD METADATA: Don't trigger artwork search for stations with empty artist
-                                // Don't show metadata message - causes white screen
-                                // element->m_status_text = "Skipping search - incomplete metadata (artist: '";
-                                // element->m_status_text += artist.c_str();
-                                // element->m_status_text += "', title: '";
-                                // element->m_status_text += title.c_str();
-                                // element->m_status_text += "')";
-                            }
-                        } else {
-                            // Don't show metadata message - causes white screen
-                            // element->m_status_text = "Dynamic metadata received - no artist/title";
-                            
-                            // For stations with no/invalid metadata, load station logo as fallback
-                            if (current_track.is_valid()) {
-                                pfc::string8 path = current_track->get_path();
-                                bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
-                                
-                                if (is_internet_stream) {
-                                    // Load station logo as immediate fallback for internet streams
-                                    HBITMAP logo_bitmap = load_station_logo(current_track);
-                                    if (logo_bitmap) {
-                                    // Clean up any existing bitmap
-                                    if (element->m_artwork_bitmap) {
-                                        DeleteObject(element->m_artwork_bitmap);
-                                    }
-                                    
-                                    element->m_artwork_bitmap = logo_bitmap;
-                                    // Don't show station logo status - not needed
-                                    // element->m_status_text = "Station logo loaded (no metadata)";
-                                    
-                                    // Mark that artwork has been found
-                                    {
-                                        std::lock_guard<std::mutex> lock(element->m_artwork_found_mutex);
-                                        element->m_artwork_found = true;
-                                    }
-                                    
-                                    // Don't notify event system for station logos (no OSD needed)
-                                    }
-                                }
-                            }
-                        }
-                        InvalidateRect(element->m_hWnd, NULL, TRUE);
-                    }
-                }
+                const char* alb = p_info.meta_get("ALBUM", 0);
+                StreamMetadataResult smr = MetadataCleaner::sanitize_stream_metadata(stream_artist.c_str(), stream_title.c_str());
+                artwork_manager::on_stream_metadata_changed(stream_artist.c_str(), stream_title.c_str(), smr.clean_artist.c_str(), alb ? alb : "", "");
             }
         } catch (...) {
-            // Silently catch any crashes in callback
+            // Silently handle any exceptions
         }
     }
     void on_playback_time(double p_time) override {}
@@ -5798,7 +5646,7 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
                     }
                     
                     m_artwork_bitmap = fallback_bitmap;
-                    // Removed status text to prevent white screen when fallback image loads
+                    titleformat_provider::set_status((pfc::string8("Artwork loaded from ") + fallback_source.c_str()).c_str());
                     
                     // Mark that artwork has been found (fallback counts as found)
                     {
@@ -5824,8 +5672,7 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
         
         // No fallback available - mark search as complete
         complete_artwork_search();
-        // Don't show "no artwork" message - causes white screen
-        // m_status_text = "No artwork found";
+        titleformat_provider::set_status("No artwork found");
         
         // Notify event system that artwork search failed (for CUI panel)
         ArtworkEventManager::get().notify(ArtworkEvent(
@@ -5867,18 +5714,16 @@ void artwork_ui_element::search_next_api_in_priority(const pfc::string8& artist,
     switch (current_api) {
         case ApiType::iTunes: api_name = "iTunes"; break;
         case ApiType::Deezer: api_name = "Deezer"; break;
-        case ApiType::LastFm: api_name = "LastFm"; break;
+        case ApiType::LastFm: api_name = "Last.fm"; break;
         case ApiType::MusicBrainz: api_name = "MusicBrainz"; break;
         case ApiType::Discogs: api_name = "Discogs"; break;
     }
-    
     
     if (api_enabled) {
         // Store current position for fallback
         m_current_priority_position = current_position;
         
-        pfc::string8 debug_status = "Searching ";
-        // Removed status text to prevent white screen during API searches
+        titleformat_provider::set_status((pfc::string8("Querying ") + api_name + "...").c_str());
         
         // Start the API search (all in background threads to prevent UI freezing)
         switch (current_api) {
@@ -7649,6 +7494,15 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
                         DeleteObject(::g_shared_artwork_bitmap);
                     }
                     ::g_shared_artwork_bitmap = hBitmap;
+
+                    // Notify event system that artwork was loaded successfully
+                    ArtworkEventManager::get().notify(ArtworkEvent(
+                        ArtworkEventType::ARTWORK_LOADED,
+                        hBitmap,
+                        g_current_artwork_source.c_str(),
+                        "",
+                        ""
+                    ));
                     return true;
                 }
                 delete webp_bitmap;
