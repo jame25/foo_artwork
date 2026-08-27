@@ -295,6 +295,7 @@ extern cfg_bool cfg_enable_acrcloud;
 extern cfg_string cfg_acrcloud_host;
 extern cfg_string cfg_acrcloud_access_key;
 extern cfg_string cfg_acrcloud_access_secret;
+extern cfg_bool cfg_disable_instream_artwork;
 
 // Static member initialization
 std::atomic<bool> artwork_manager::initialized_(false);
@@ -484,7 +485,22 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
         pfc::string8 artist_str = artist ? artist : "Unknown Artist";
         pfc::string8 track_str = track ? track : "Unknown Track";
         
-        pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist_str, track_str);
+        pfc::string8 yt_video_id;
+        bool is_stream = !g_current_stream_url.is_empty();
+        if (is_stream) {
+            yt_video_id = extract_youtube_video_id(g_current_stream_url.c_str());
+        }
+        if (yt_video_id.is_empty() && g_active_playing_track.is_valid()) {
+            yt_video_id = extract_youtube_video_id(g_active_playing_track->get_path());
+        }
+        bool is_youtube = !yt_video_id.is_empty();
+
+        pfc::string8 cache_key;
+        if (is_youtube) {
+            cache_key = pfc::string8("yt_") + yt_video_id;
+        } else {
+            cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist_str, track_str);
+        }
 
         uint64_t gen = g_search_generation.load();
         auto original_callback = callback;
@@ -523,12 +539,13 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
 
         // Extract broadcast artwork if currently playing an internet stream
         pfc::string8 broadcast_art_url;
-        bool is_stream = !g_current_stream_url.is_empty();
         if (is_stream) {
             broadcast_art_url = extract_broadcast_artwork_url();
         }
         bool try_broadcast_artwork = !broadcast_art_url.is_empty() &&
             (g_rejected_providers_for_current_track.find("Broadcast Artwork") == g_rejected_providers_for_current_track.end());
+        bool try_youtube_thumbnail = is_youtube && !yt_video_id.is_empty() &&
+            (g_rejected_providers_for_current_track.find("YouTube Thumbnail") == g_rejected_providers_for_current_track.end());
 
         if (try_broadcast_artwork) {
             foo_artwork::log_printf("foo_artwork: In-stream broadcast artwork URL detected: '%s'", broadcast_art_url.c_str());
@@ -538,9 +555,25 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
         // return the previous track's artwork). Go directly to broadcast -> API search, still write to cache.
         if (cfg_single_file_cache) {
             if (try_broadcast_artwork) {
-                search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist_str, track_str, cache_key, callback](const artwork_result& res) {
+                search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist_str, track_str, cache_key, callback, try_youtube_thumbnail, yt_video_id](const artwork_result& res) {
                     if (res.success) {
                         callback(res);
+                    } else if (try_youtube_thumbnail) {
+                        search_youtube_thumbnail_async(yt_video_id, cache_key, [artist_str, track_str, cache_key, callback](const artwork_result& yt_res) {
+                            if (yt_res.success) {
+                                callback(yt_res);
+                            } else {
+                                search_apis_async_metadata(artist_str, track_str, cache_key, callback);
+                            }
+                        });
+                    } else {
+                        search_apis_async_metadata(artist_str, track_str, cache_key, callback);
+                    }
+                });
+            } else if (try_youtube_thumbnail) {
+                search_youtube_thumbnail_async(yt_video_id, cache_key, [artist_str, track_str, cache_key, callback](const artwork_result& yt_res) {
+                    if (yt_res.success) {
+                        callback(yt_res);
                     } else {
                         search_apis_async_metadata(artist_str, track_str, cache_key, callback);
                     }
@@ -773,6 +806,8 @@ static pfc::string8 sanitize_broadcast_url(const char* url_str) {
 }
 
 pfc::string8 artwork_manager::extract_broadcast_artwork_url_from_info(const file_info& info) {
+    if (cfg_disable_instream_artwork) return "";
+
     // 1. Check direct info_get fields (technical/stream info)
     const char* info_field_names[] = {
         "cover_url", "COVER_URL", "artwork_url", "ARTWORK_URL", "art_url", "ART_URL",
@@ -858,6 +893,8 @@ pfc::string8 artwork_manager::extract_broadcast_artwork_url_from_info(const file
 }
 
 pfc::string8 artwork_manager::extract_broadcast_artwork_url(metadb_handle_ptr track) {
+    if (cfg_disable_instream_artwork) return "";
+
     // 1. Extract from track file_info if valid
     if (track.is_valid()) {
         try {
@@ -1172,6 +1209,8 @@ void artwork_manager::stop_external_stream_api_poller() {
     g_external_api_session_token++;
 }
 
+static void extract_track_metadata_dynamic(metadb_handle_ptr track, pfc::string8& out_artist, pfc::string8& out_title);
+
 static void add_unique_candidate(std::vector<pfc::string8>& list, const pfc::string8& url) {
     if (url.is_empty()) return;
     for (const auto& existing : list) {
@@ -1221,6 +1260,18 @@ static void probe_candidates_async(const pfc::string8& stream_url, const std::ve
         }
 
         if (validated) {
+            // Guard: Check if native ICY metadata has already arrived on the stream
+            metadb_handle_ptr track;
+            if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+                pfc::string8 art, tit;
+                extract_track_metadata_dynamic(track, art, tit);
+                StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
+                if (meta.is_valid_search && !meta.is_station_or_url) {
+                    // Native ICY metadata is active on the stream - do not launch auto-probed poller
+                    return;
+                }
+            }
+
             {
                 std::lock_guard<std::mutex> lock(g_probe_cache_mutex);
                 g_probed_stream_endpoints_cache[stream_url.c_str()] = { StreamProbeStatus::SUCCESS, target };
@@ -1251,6 +1302,16 @@ void artwork_manager::probe_external_stream_api(const pfc::string8& stream_url, 
         auto it = g_probed_stream_endpoints_cache.find(stream_url.c_str());
         if (it != g_probed_stream_endpoints_cache.end()) {
             if (it->second.first == StreamProbeStatus::SUCCESS) {
+                // If stream already has metadata, do not poll cached endpoint
+                metadb_handle_ptr track;
+                if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+                    pfc::string8 art, tit;
+                    extract_track_metadata_dynamic(track, art, tit);
+                    StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
+                    if (meta.is_valid_search && !meta.is_station_or_url) {
+                        return;
+                    }
+                }
                 pfc::string8 endpoint = it->second.second;
                 foo_artwork::log_printf("foo_artwork: Using cached external now-playing endpoint: %s", endpoint.c_str());
                 poll_external_stream_api(endpoint, session_token);
@@ -1343,7 +1404,18 @@ void artwork_manager::start_external_stream_api_poller(const pfc::string8& strea
     uint64_t current_token = ++g_external_api_session_token;
 
     if (!is_azura && !is_radioreg) {
-        // Automatic server probing for AzuraCast / RadioReg now-playing endpoints
+        // Check if stream metadata is already valid and not a placeholder/station URL
+        metadb_handle_ptr track;
+        if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+            pfc::string8 art, tit;
+            extract_track_metadata_dynamic(track, art, tit);
+            StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
+            if (meta.is_valid_search && !meta.is_station_or_url) {
+                // Native ICY stream metadata exists - do not auto-probe external server endpoints
+                return;
+            }
+        }
+        // Automatic server probing for AzuraCast / RadioReg now-playing endpoints on untagged streams
         probe_external_stream_api(stream_url, current_token);
         return;
     }
@@ -1520,8 +1592,16 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                             std::swap(artist, title);
                         }
 
-                        bool is_different_from_last = (artist != g_last_stream_artist.c_str() || title != g_last_stream_title.c_str());
-                        bool is_different_from_pending = (artist != g_pending_external_api_artist.c_str() || title != g_pending_external_api_title.c_str());
+                        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), title.c_str());
+                        pfc::string8 clean_art = meta.first_artist.c_str();
+                        pfc::string8 clean_tit = meta.clean_title.c_str();
+                        pfc::string8 clean_art_full = meta.clean_artist.c_str();
+
+                        // Case-insensitive comparison against last stream track and pending cue
+                        bool is_different_from_last = (pfc::stricmp_ascii(clean_art.c_str(), g_last_stream_artist.c_str()) != 0 ||
+                                                       pfc::stricmp_ascii(clean_tit.c_str(), g_last_stream_title.c_str()) != 0);
+                        bool is_different_from_pending = (pfc::stricmp_ascii(clean_art.c_str(), g_pending_external_api_artist.c_str()) != 0 ||
+                                                          pfc::stricmp_ascii(clean_tit.c_str(), g_pending_external_api_title.c_str()) != 0);
 
                         if (is_different_from_last && is_different_from_pending) {
                             auto apply_cue = [session_token](std::string artist_c, std::string title_c, std::string art_url_c, std::string album_c, std::string listeners_c) {
@@ -1547,7 +1627,7 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                                     titleformat_provider::set_track_artwork_info(track, clean_art.c_str(), clean_tit.c_str(), "", "", clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str());
                                 }
 
-                                if (!art_url_c.empty() && (art_url_c.find("http://") == 0 || art_url_c.find("https://") == 0) &&
+                                if (!cfg_disable_instream_artwork && !art_url_c.empty() && (art_url_c.find("http://") == 0 || art_url_c.find("https://") == 0) &&
                                     (g_rejected_providers_for_current_track.find("Broadcast Artwork") == g_rejected_providers_for_current_track.end())) {
                                     pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art.c_str(), clean_tit.c_str());
                                     search_broadcast_artwork_async(art_url_c.c_str(), cache_key, [clean_art, clean_tit, clean_art_full, album_c, listeners_c, cache_key](const artwork_result& res) {
@@ -1591,22 +1671,22 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                             pc_resp->get_now_playing(cur_track);
                             int sync_delay_sec = extract_coversync_seconds(cur_track);
                             if (sync_delay_sec > 0) {
-                                g_pending_external_api_artist = artist.c_str();
-                                g_pending_external_api_title = title.c_str();
+                                g_pending_external_api_artist = clean_art.c_str();
+                                g_pending_external_api_title = clean_tit.c_str();
                                 uint64_t cue_token = ++g_coversync_cue_token;
                                 foo_artwork::log_printf("foo_artwork: Applying coversync delay of %d seconds for external API track cue '%s - %s'", 
-                                                       sync_delay_sec, artist.c_str(), title.c_str());
+                                                       sync_delay_sec, clean_art.c_str(), clean_tit.c_str());
                                 char status_buf[128];
-                                snprintf(status_buf, sizeof(status_buf), "Next cue in %ds: %s - %s", sync_delay_sec, artist.c_str(), title.c_str());
+                                snprintf(status_buf, sizeof(status_buf), "Next cue in %ds: %s - %s", sync_delay_sec, clean_art.c_str(), clean_tit.c_str());
                                 titleformat_provider::set_status(status_buf);
 
-                                async_io_manager::instance().submit_task([artist, title, art_url, album, listeners, session_token, cue_token, sync_delay_sec, apply_cue]() {
+                                async_io_manager::instance().submit_task([clean_art, clean_tit, art_url, album, listeners, session_token, cue_token, sync_delay_sec, apply_cue]() {
                                     for (int s = sync_delay_sec; s > 0; --s) {
                                         if (g_is_shutting_down.load() || g_external_api_session_token != session_token || g_coversync_cue_token != cue_token) {
                                             return;
                                         }
                                         char status_buf[128];
-                                        snprintf(status_buf, sizeof(status_buf), "Next cue in %ds: %s - %s", s, artist.c_str(), title.c_str());
+                                        snprintf(status_buf, sizeof(status_buf), "Next cue in %ds: %s - %s", s, clean_art.c_str(), clean_tit.c_str());
                                         titleformat_provider::set_status(status_buf);
                                         std::this_thread::sleep_for(std::chrono::seconds(1));
                                     }
@@ -1614,15 +1694,21 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                                         return;
                                     }
 
-                                    async_io_manager::instance().post_to_main_thread([artist, title, art_url, album, listeners, session_token, cue_token, apply_cue]() {
+                                    async_io_manager::instance().post_to_main_thread([clean_art, clean_tit, art_url, album, listeners, session_token, cue_token, apply_cue]() {
                                         if (g_is_shutting_down.load() || g_external_api_session_token != session_token || g_coversync_cue_token != cue_token) {
                                             return;
                                         }
-                                        apply_cue(artist, title, art_url, album, listeners);
+                                        apply_cue(clean_art.c_str(), clean_tit.c_str(), art_url, album, listeners);
                                     });
                                 });
                             } else {
-                                apply_cue(artist, title, art_url, album, listeners);
+                                apply_cue(clean_art.c_str(), clean_tit.c_str(), art_url, album, listeners);
+                            }
+                        } else if (!listeners.empty()) {
+                            metadb_handle_ptr cur_track;
+                            if (pc_resp->get_now_playing(cur_track) && cur_track.is_valid()) {
+                                pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(generate_cache_key(g_last_stream_artist.c_str(), g_last_stream_title.c_str()));
+                                titleformat_provider::set_track_artwork_info(cur_track, g_last_stream_artist.c_str(), g_last_stream_title.c_str(), cache_file.c_str(), g_active_source.c_str(), "", album.c_str(), listeners.c_str());
                             }
                         }
                     }
@@ -2006,6 +2092,14 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
     // Stop acoustic shift detector since valid song metadata is now available
     stop_rms_silence_detector();
 
+    // If external stream API was auto-probed (not explicitly configured via ?azuracast_api or ?radioreg_api),
+    // stop the background poller since valid native ICY stream metadata is actively arriving
+    pfc::string8 az_param = get_url_param_value(g_current_stream_url.c_str(), "azuracast_api");
+    pfc::string8 rr_param = get_url_param_value(g_current_stream_url.c_str(), "radioreg_api");
+    if (az_param.is_empty() && rr_param.is_empty()) {
+        stop_external_stream_api_poller();
+    }
+
     // Reset ACRCloud cooldown on fresh dynamic track update
     reset_acrcloud_cooldown();
 
@@ -2018,11 +2112,27 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         titleformat_provider::set_track_artwork_info(track, clean_art.c_str(), clean_tit.c_str(), "", "", clean_art_full.c_str(), clean_album.c_str(), clean_listeners.c_str());
     }
 
-    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art, clean_tit);
+    pfc::string8 yt_video_id;
+    if (track.is_valid()) {
+        yt_video_id = extract_youtube_video_id(track->get_path());
+    }
+    if (yt_video_id.is_empty()) {
+        yt_video_id = extract_youtube_video_id(g_current_stream_url.c_str());
+    }
+    bool is_youtube = !yt_video_id.is_empty();
+
+    pfc::string8 cache_key;
+    if (is_youtube) {
+        cache_key = pfc::string8("yt_") + yt_video_id;
+    } else {
+        cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art, clean_tit);
+    }
 
     pfc::string8 broadcast_art_url = extract_broadcast_artwork_url(track);
     bool try_broadcast_artwork = !broadcast_art_url.is_empty() &&
         (g_rejected_providers_for_current_track.find("Broadcast Artwork") == g_rejected_providers_for_current_track.end());
+    bool try_youtube_thumbnail = is_youtube && !yt_video_id.is_empty() &&
+        (g_rejected_providers_for_current_track.find("YouTube Thumbnail") == g_rejected_providers_for_current_track.end());
 
     auto apply_success_result = [gen, clean_art, clean_tit, clean_art_full, clean_album, clean_listeners, cache_key](const artwork_result& res) {
         if (gen != g_search_generation.load() || clean_art != g_last_stream_artist || clean_tit != g_last_stream_title) {
@@ -2068,11 +2178,35 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
 
     if (cfg_single_file_cache) {
         if (try_broadcast_artwork) {
-            search_broadcast_artwork_async(broadcast_art_url, cache_key, [clean_art, clean_tit, cache_key, apply_success_result](const artwork_result& res) {
+            search_broadcast_artwork_async(broadcast_art_url, cache_key, [clean_art, clean_tit, cache_key, apply_success_result, try_youtube_thumbnail, yt_video_id](const artwork_result& res) {
                 if (res.success && res.data.get_size() > 0) {
                     apply_success_result(res);
+                } else if (try_youtube_thumbnail) {
+                    search_youtube_thumbnail_async(yt_video_id, cache_key, [clean_art, clean_tit, cache_key, apply_success_result](const artwork_result& yt_res) {
+                        if (yt_res.success && yt_res.data.get_size() > 0) {
+                            apply_success_result(yt_res);
+                        } else {
+                            search_apis_async(clean_art, clean_tit, cache_key, [apply_success_result](const artwork_result& api_res) {
+                                if (api_res.success && api_res.data.get_size() > 0) {
+                                    apply_success_result(api_res);
+                                }
+                            });
+                        }
+                    });
                 } else {
                     foo_artwork::log_printf("foo_artwork: Broadcast artwork download failed. Falling back to online APIs...");
+                    search_apis_async(clean_art, clean_tit, cache_key, [apply_success_result](const artwork_result& api_res) {
+                        if (api_res.success && api_res.data.get_size() > 0) {
+                            apply_success_result(api_res);
+                        }
+                    });
+                }
+            });
+        } else if (try_youtube_thumbnail) {
+            search_youtube_thumbnail_async(yt_video_id, cache_key, [clean_art, clean_tit, cache_key, apply_success_result](const artwork_result& yt_res) {
+                if (yt_res.success && yt_res.data.get_size() > 0) {
+                    apply_success_result(yt_res);
+                } else {
                     search_apis_async(clean_art, clean_tit, cache_key, [apply_success_result](const artwork_result& api_res) {
                         if (api_res.success && api_res.data.get_size() > 0) {
                             apply_success_result(api_res);
@@ -2089,7 +2223,7 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         }
     } else {
         // Multi-file cache mode: check disk cache first for this specific song
-        async_io_manager::instance().cache_get_async(cache_key, [broadcast_art_url, try_broadcast_artwork, clean_art, clean_tit, cache_key, apply_success_result](bool cache_hit, const pfc::array_t<t_uint8>& data, const pfc::string8& err) {
+        async_io_manager::instance().cache_get_async(cache_key, [broadcast_art_url, try_broadcast_artwork, try_youtube_thumbnail, yt_video_id, clean_art, clean_tit, cache_key, apply_success_result](bool cache_hit, const pfc::array_t<t_uint8>& data, const pfc::string8& err) {
             if (cache_hit && data.get_size() > 0) {
                 pfc::string8 effective_source = (!g_active_resolved_provider.is_empty() && g_active_resolved_provider != "Cache") ? g_active_resolved_provider : pfc::string8("Cache");
                 if (effective_source == "Cache") {
@@ -2102,11 +2236,35 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
                 cache_res.mime_type = detect_mime_type(data.get_ptr(), data.get_size());
                 apply_success_result(cache_res);
             } else if (try_broadcast_artwork) {
-                search_broadcast_artwork_async(broadcast_art_url, cache_key, [clean_art, clean_tit, cache_key, apply_success_result](const artwork_result& res) {
+                search_broadcast_artwork_async(broadcast_art_url, cache_key, [clean_art, clean_tit, cache_key, apply_success_result, try_youtube_thumbnail, yt_video_id](const artwork_result& res) {
                     if (res.success && res.data.get_size() > 0) {
                         apply_success_result(res);
+                    } else if (try_youtube_thumbnail) {
+                        search_youtube_thumbnail_async(yt_video_id, cache_key, [clean_art, clean_tit, cache_key, apply_success_result](const artwork_result& yt_res) {
+                            if (yt_res.success && yt_res.data.get_size() > 0) {
+                                apply_success_result(yt_res);
+                            } else {
+                                search_apis_async(clean_art, clean_tit, cache_key, [apply_success_result](const artwork_result& api_res) {
+                                    if (api_res.success && api_res.data.get_size() > 0) {
+                                        apply_success_result(api_res);
+                                    }
+                                });
+                            }
+                        });
                     } else {
                         foo_artwork::log_printf("foo_artwork: Broadcast artwork download failed. Falling back to online APIs...");
+                        search_apis_async(clean_art, clean_tit, cache_key, [apply_success_result](const artwork_result& api_res) {
+                            if (api_res.success && api_res.data.get_size() > 0) {
+                                apply_success_result(api_res);
+                            }
+                        });
+                    }
+                });
+            } else if (try_youtube_thumbnail) {
+                search_youtube_thumbnail_async(yt_video_id, cache_key, [clean_art, clean_tit, cache_key, apply_success_result](const artwork_result& yt_res) {
+                    if (yt_res.success && yt_res.data.get_size() > 0) {
+                        apply_success_result(yt_res);
+                    } else {
                         search_apis_async(clean_art, clean_tit, cache_key, [apply_success_result](const artwork_result& api_res) {
                             if (api_res.success && api_res.data.get_size() > 0) {
                                 apply_success_result(api_res);
@@ -2550,10 +2708,36 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
         // In single-file cache mode, skip cache reads (key is always "current" so it would
         // return the previous track's artwork). Go directly to broadcast -> API search, still write to cache.
         if (cfg_single_file_cache) {
+            pfc::string8 yt_video_id;
+            if (is_youtube) {
+                yt_video_id = extract_youtube_video_id(track->get_path());
+                if (yt_video_id.is_empty()) {
+                    yt_video_id = extract_youtube_video_id(g_current_stream_url.c_str());
+                }
+            }
+            bool try_youtube_thumbnail = is_youtube && !yt_video_id.is_empty() &&
+                (g_rejected_providers_for_current_track.find("YouTube Thumbnail") == g_rejected_providers_for_current_track.end());
+
             if (try_broadcast_artwork) {
-                search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track_name, cache_key, callback](const artwork_result& res) {
+                search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track_name, cache_key, callback, try_youtube_thumbnail, yt_video_id](const artwork_result& res) {
                     if (res.success) {
                         callback(res);
+                    } else if (try_youtube_thumbnail) {
+                        search_youtube_thumbnail_async(yt_video_id, cache_key, [artist, track_name, cache_key, callback](const artwork_result& yt_res) {
+                            if (yt_res.success) {
+                                callback(yt_res);
+                            } else {
+                                search_apis_async(artist, track_name, cache_key, callback);
+                            }
+                        });
+                    } else {
+                        search_apis_async(artist, track_name, cache_key, callback);
+                    }
+                });
+            } else if (try_youtube_thumbnail) {
+                search_youtube_thumbnail_async(yt_video_id, cache_key, [artist, track_name, cache_key, callback](const artwork_result& yt_res) {
+                    if (yt_res.success) {
+                        callback(yt_res);
                     } else {
                         search_apis_async(artist, track_name, cache_key, callback);
                     }
@@ -2573,11 +2757,30 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
                 cancel_acrcloud_tasks(); // Cancel pending 10s initial stream monitor & acoustic shift detector on cache hit!
                 callback(cache_res);
             } else {
+                pfc::string8 yt_video_id;
+                if (is_youtube) {
+                    yt_video_id = extract_youtube_video_id(track->get_path());
+                    if (yt_video_id.is_empty()) {
+                        yt_video_id = extract_youtube_video_id(g_current_stream_url.c_str());
+                    }
+                }
+                bool try_youtube_thumbnail = is_youtube && !yt_video_id.is_empty() &&
+                    (g_rejected_providers_for_current_track.find("YouTube Thumbnail") == g_rejected_providers_for_current_track.end());
+
                 if (try_broadcast_artwork) {
-                    search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track_name, cache_key, track, callback, is_youtube, is_reject_station_covers](const artwork_result& bcast_res) {
+                    search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track_name, cache_key, track, callback, is_youtube, is_reject_station_covers, try_youtube_thumbnail, yt_video_id](const artwork_result& bcast_res) {
                         if (bcast_res.success) {
                             cancel_acrcloud_tasks();
                             callback(bcast_res);
+                        } else if (try_youtube_thumbnail) {
+                            search_youtube_thumbnail_async(yt_video_id, cache_key, [artist, track_name, cache_key, callback](const artwork_result& yt_res) {
+                                if (yt_res.success) {
+                                    cancel_acrcloud_tasks();
+                                    callback(yt_res);
+                                } else {
+                                    search_apis_async(artist, track_name, cache_key, callback);
+                                }
+                            });
                         } else if (cfg_skip_local_artwork || is_youtube || is_reject_station_covers) {
                             search_apis_async(artist, track_name, cache_key, callback);
                         } else {
@@ -2592,6 +2795,15 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
                                     search_apis_async(artist, track_name, cache_key, callback);
                                 }
                             });
+                        }
+                    });
+                } else if (try_youtube_thumbnail) {
+                    search_youtube_thumbnail_async(yt_video_id, cache_key, [artist, track_name, cache_key, callback](const artwork_result& yt_res) {
+                        if (yt_res.success) {
+                            cancel_acrcloud_tasks();
+                            callback(yt_res);
+                        } else {
+                            search_apis_async(artist, track_name, cache_key, callback);
                         }
                     });
                 } else if (cfg_skip_local_artwork || is_youtube || is_reject_station_covers) {
@@ -2719,17 +2931,45 @@ void artwork_manager::check_cache_async_metadata(const pfc::string8& cache_key, 
                 // Cache hit - validate and return
                 validate_and_complete_result(data, callback);
             } else {
-                // Cache miss - check broadcast artwork before online APIs
+                // Cache miss - check broadcast artwork and YouTube thumbnail before online APIs
+                pfc::string8 yt_video_id;
+                if (!g_current_stream_url.is_empty()) {
+                    yt_video_id = extract_youtube_video_id(g_current_stream_url.c_str());
+                }
+                if (yt_video_id.is_empty() && g_active_playing_track.is_valid()) {
+                    yt_video_id = extract_youtube_video_id(g_active_playing_track->get_path());
+                }
+                bool is_youtube = !yt_video_id.is_empty();
+
                 pfc::string8 broadcast_art_url = extract_broadcast_artwork_url();
                 bool try_broadcast_artwork = !broadcast_art_url.is_empty() &&
                     (g_rejected_providers_for_current_track.find("Broadcast Artwork") == g_rejected_providers_for_current_track.end());
+                bool try_youtube_thumbnail = is_youtube && !yt_video_id.is_empty() &&
+                    (g_rejected_providers_for_current_track.find("YouTube Thumbnail") == g_rejected_providers_for_current_track.end());
+
                 if (try_broadcast_artwork) {
                     foo_artwork::log_printf("foo_artwork: In-stream broadcast artwork URL detected: '%s'", broadcast_art_url.c_str());
-                    search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track, cache_key, callback](const artwork_result& res) {
+                    search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track, cache_key, callback, try_youtube_thumbnail, yt_video_id](const artwork_result& res) {
                         if (res.success) {
                             callback(res);
+                        } else if (try_youtube_thumbnail) {
+                            search_youtube_thumbnail_async(yt_video_id, cache_key, [artist, track, cache_key, callback](const artwork_result& yt_res) {
+                                if (yt_res.success) {
+                                    callback(yt_res);
+                                } else {
+                                    search_apis_async_metadata(artist, track, cache_key, callback);
+                                }
+                            });
                         } else {
                             foo_artwork::log_printf("foo_artwork: Broadcast artwork download failed. Falling back to online APIs...");
+                            search_apis_async_metadata(artist, track, cache_key, callback);
+                        }
+                    });
+                } else if (try_youtube_thumbnail) {
+                    search_youtube_thumbnail_async(yt_video_id, cache_key, [artist, track, cache_key, callback](const artwork_result& yt_res) {
+                        if (yt_res.success) {
+                            callback(yt_res);
+                        } else {
                             search_apis_async_metadata(artist, track, cache_key, callback);
                         }
                     });
@@ -4047,10 +4287,18 @@ pfc::string8 artwork_manager::generate_cache_key_for_track(metadb_handle_ptr tra
 
     pfc::string8 artist, track_name;
     pfc::string8 file_path = track->get_path();
-    bool is_youtube = !extract_youtube_video_id(file_path.c_str()).is_empty() || 
-                      !extract_youtube_video_id(g_current_stream_url.c_str()).is_empty();
-    bool is_internet_stream = is_youtube ||
-                              (strstr(file_path.c_str(), "://") && !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
+    pfc::string8 yt_video_id = extract_youtube_video_id(file_path.c_str());
+    if (yt_video_id.is_empty()) {
+        yt_video_id = extract_youtube_video_id(g_current_stream_url.c_str());
+    }
+    if (!yt_video_id.is_empty()) {
+        pfc::string8 key = "yt_";
+        key << yt_video_id;
+        return key;
+    }
+
+    bool is_youtube = false;
+    bool is_internet_stream = (strstr(file_path.c_str(), "://") && !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
 
     extract_track_metadata_dynamic(track, artist, track_name);
 
