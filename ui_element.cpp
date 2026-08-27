@@ -2021,7 +2021,8 @@ bool artwork_ui_element::is_stream_with_possible_artwork(metadb_handle_ptr track
         
         // YouTube videos (can have embedded thumbnails)
         if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") || 
-            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com")) {
+            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com") ||
+            strstr(path_str, "3dyd://") || strstr(path_str, "fy://") || strstr(path_str, "fy+")) {
             return true;
         }
         
@@ -2068,7 +2069,8 @@ bool artwork_ui_element::is_youtube_stream(metadb_handle_ptr track) {
         
         // YouTube videos
         if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") || 
-            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com")) {
+            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com") ||
+            strstr(path_str, "3dyd://") || strstr(path_str, "fy://") || strstr(path_str, "fy+")) {
             return true;
         }
         
