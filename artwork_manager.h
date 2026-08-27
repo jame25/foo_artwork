@@ -33,7 +33,8 @@ public:
     static void force_acrcloud_lookup();
     static void reset_acrcloud_cooldown();
     static void cancel_acrcloud_tasks();
-    static void on_stream_metadata_changed(const char* artist, const char* title);
+    static void on_stream_metadata_changed(const char* artist, const char* title, const char* artist_full = nullptr, const char* album = nullptr, const char* listeners = nullptr);
+    static int extract_coversync_seconds(metadb_handle_ptr track = nullptr);
     
     // Reject artwork and cycle to next provider
     static void reject_current_artwork();
