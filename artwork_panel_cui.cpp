@@ -2546,9 +2546,10 @@ bool CUIArtworkPanel::is_stream_with_possible_artwork(metadb_handle_ptr track) {
         // YouTube videos and similar services can have embedded thumbnails
         const char* path_str = path.c_str();
         
-        // YouTube videos (can have embedded thumbnails)
+        // YouTube videos
         if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") || 
             strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com") ||
+            strstr(path_str, "3dyd://") || strstr(path_str, "fy://") || strstr(path_str, "fy+") ||
             strstr(path_str, "rutube.ru")) {
             return true;
         }
@@ -2582,7 +2583,8 @@ bool CUIArtworkPanel::is_stream_with_possible_artwork(metadb_handle_ptr track) {
             // Allow .aac from known platforms that provide artwork
             if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") ||
                 strstr(path_str, "googlevideo.com") || strstr(path_str, "soundcloud.com") ||
-                strstr(path_str, "bandcamp.com") || strstr(path_str, "spotify.com")) {
+                strstr(path_str, "bandcamp.com") || strstr(path_str, "spotify.com") ||
+                strstr(path_str, "3dyd://") || strstr(path_str, "fy://") || strstr(path_str, "fy+")) {
                 return true;
             }
             // Exclude streaming radio URLs (they don't have embedded artwork)
@@ -2594,7 +2596,8 @@ bool CUIArtworkPanel::is_stream_with_possible_artwork(metadb_handle_ptr track) {
             // Allow .mp3 from known platforms that provide artwork
             if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") ||
                 strstr(path_str, "googlevideo.com") || strstr(path_str, "soundcloud.com") ||
-                strstr(path_str, "bandcamp.com") || strstr(path_str, "spotify.com")) {
+                strstr(path_str, "bandcamp.com") || strstr(path_str, "spotify.com") ||
+                strstr(path_str, "3dyd://") || strstr(path_str, "fy://") || strstr(path_str, "fy+")) {
                 return true;
             }
             // Exclude streaming radio URLs (they don't have embedded artwork)
@@ -2623,7 +2626,8 @@ bool CUIArtworkPanel::is_youtube_stream(metadb_handle_ptr track) {
         
         // YouTube videos
         if (strstr(path_str, "youtube.com") || strstr(path_str, "youtu.be") || 
-            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com")) {
+            strstr(path_str, "ytimg.com") || strstr(path_str, "googlevideo.com") ||
+            strstr(path_str, "3dyd://") || strstr(path_str, "fy://") || strstr(path_str, "fy+")) {
             return true;
         }
         
