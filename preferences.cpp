@@ -16,6 +16,7 @@ extern cfg_bool cfg_enable_custom_logos;
 extern cfg_string cfg_logos_folder;
 extern cfg_bool cfg_clear_panel_when_not_playing;
 extern cfg_bool cfg_infobar;
+extern cfg_bool cfg_disable_instream_artwork;
 extern cfg_bool cfg_use_noart_image;
 extern cfg_string cfg_noart_folder;
 extern cfg_int cfg_noart_cycle_mode;
@@ -608,6 +609,9 @@ bool artwork_advanced_preferences::has_changed() {
     // Check if infobar checkbox changed
     bool infobar_changed = (IsDlgButtonChecked(m_hwnd, IDC_INFOBAR) == BST_CHECKED) != cfg_infobar;
 
+    // Check if Disable in-stream artwork checkbox changed
+    bool disable_instream_artwork_changed = (IsDlgButtonChecked(m_hwnd, IDC_DISABLE_INSTREAM_ARTWORK) == BST_CHECKED) != cfg_disable_instream_artwork;
+
     // Check if Use noart image checkbox changed
     bool use_noart_changed = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED) != cfg_use_noart_image;
 
@@ -620,7 +624,8 @@ bool artwork_advanced_preferences::has_changed() {
     bool retry_changed = current_retry != cfg_retry_count;
 
     return enable_logos_changed || folder_changed || noart_folder_changed || cycle_mode_changed ||
-           clear_panel_changed || use_noart_changed || infobar_changed || timeout_changed || retry_changed;
+           clear_panel_changed || use_noart_changed || infobar_changed || disable_instream_artwork_changed ||
+           timeout_changed || retry_changed;
 }
 
 void artwork_advanced_preferences::apply_settings() {
@@ -651,6 +656,9 @@ void artwork_advanced_preferences::apply_settings() {
     // Apply infobar setting
     cfg_infobar = (IsDlgButtonChecked(m_hwnd, IDC_INFOBAR) == BST_CHECKED);
 
+    // Apply Disable in-stream artwork setting
+    cfg_disable_instream_artwork = (IsDlgButtonChecked(m_hwnd, IDC_DISABLE_INSTREAM_ARTWORK) == BST_CHECKED);
+
     // Apply Use noart image setting
     cfg_use_noart_image = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED);
 
@@ -680,6 +688,7 @@ void artwork_advanced_preferences::reset_settings() {
     cfg_noart_cycle_mode = 0; // Default disabled (single image)
     cfg_clear_panel_when_not_playing = false;  // Default disabled
     cfg_infobar = false;  // Default disabled
+    cfg_disable_instream_artwork = false;  // Default disabled
     cfg_use_noart_image = false;  // Default disabled
     cfg_http_timeout = 15;  // Default 15 seconds
     cfg_retry_count = 2;  // Default 2 retries
@@ -712,6 +721,9 @@ void artwork_advanced_preferences::update_controls() {
 
     // Update infobar checkbox
     CheckDlgButton(m_hwnd, IDC_INFOBAR, cfg_infobar ? BST_CHECKED : BST_UNCHECKED);
+
+    // Update Disable in-stream artwork checkbox
+    CheckDlgButton(m_hwnd, IDC_DISABLE_INSTREAM_ARTWORK, cfg_disable_instream_artwork ? BST_CHECKED : BST_UNCHECKED);
 
     // Update Use noart image checkbox
     CheckDlgButton(m_hwnd, IDC_USE_NOART_IMAGE, cfg_use_noart_image ? BST_CHECKED : BST_UNCHECKED);
@@ -809,6 +821,12 @@ INT_PTR CALLBACK artwork_advanced_preferences::AdvancedConfigProc(HWND hwnd, UIN
                 if (HIWORD(wp) == BN_CLICKED) {
                     pThis->on_changed();
                     pThis->update_control_states();  // Update control states when clear panel checkbox changes
+                }
+                break;
+
+            case IDC_DISABLE_INSTREAM_ARTWORK:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->on_changed();
                 }
                 break;
 
