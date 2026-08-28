@@ -10,6 +10,7 @@
 extern cfg_bool cfg_enable_itunes, cfg_enable_discogs, cfg_enable_lastfm, cfg_enable_deezer, cfg_enable_musicbrainz, cfg_enable_acrcloud;
 extern cfg_string cfg_discogs_key, cfg_discogs_consumer_key, cfg_discogs_consumer_secret, cfg_lastfm_key;
 extern cfg_string cfg_acrcloud_host, cfg_acrcloud_access_key, cfg_acrcloud_access_secret;
+extern cfg_string cfg_acrcloud_host2, cfg_acrcloud_access_key2, cfg_acrcloud_access_secret2;
 extern cfg_int cfg_search_order_1, cfg_search_order_2, cfg_search_order_3, cfg_search_order_4, cfg_search_order_5;
 extern cfg_bool cfg_show_osd;
 extern cfg_bool cfg_enable_custom_logos;
@@ -985,6 +986,15 @@ private:
         cfg_acrcloud_host = host;
         cfg_acrcloud_access_key = key;
         cfg_acrcloud_access_secret = secret;
+
+        char host2[256] = {0}, key2[256] = {0}, secret2[256] = {0};
+        GetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_HOST2, host2, sizeof(host2));
+        GetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY2, key2, sizeof(key2));
+        GetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET2, secret2, sizeof(secret2));
+
+        cfg_acrcloud_host2 = host2;
+        cfg_acrcloud_access_key2 = key2;
+        cfg_acrcloud_access_secret2 = secret2;
     }
 
     void reset_settings() {
@@ -994,6 +1004,9 @@ private:
         cfg_acrcloud_host = "";
         cfg_acrcloud_access_key = "";
         cfg_acrcloud_access_secret = "";
+        cfg_acrcloud_host2 = "";
+        cfg_acrcloud_access_key2 = "";
+        cfg_acrcloud_access_secret2 = "";
 
         update_controls();
     }
@@ -1005,6 +1018,9 @@ private:
         SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_HOST, cfg_acrcloud_host.get_ptr());
         SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY, cfg_acrcloud_access_key.get_ptr());
         SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET, cfg_acrcloud_access_secret.get_ptr());
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_HOST2, cfg_acrcloud_host2.get_ptr());
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY2, cfg_acrcloud_access_key2.get_ptr());
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET2, cfg_acrcloud_access_secret2.get_ptr());
 
         update_control_states();
     }
@@ -1016,6 +1032,9 @@ private:
         EnableWindow(GetDlgItem(m_hwnd, IDC_ACRCLOUD_HOST), enabled);
         EnableWindow(GetDlgItem(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY), enabled);
         EnableWindow(GetDlgItem(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET), enabled);
+        EnableWindow(GetDlgItem(m_hwnd, IDC_ACRCLOUD_HOST2), enabled);
+        EnableWindow(GetDlgItem(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY2), enabled);
+        EnableWindow(GetDlgItem(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET2), enabled);
     }
 };
 
@@ -1048,6 +1067,9 @@ INT_PTR CALLBACK acrcloud_preferences::ACRCloudConfigProc(HWND hwnd, UINT msg, W
             case IDC_ACRCLOUD_HOST:
             case IDC_ACRCLOUD_ACCESS_KEY:
             case IDC_ACRCLOUD_ACCESS_SECRET:
+            case IDC_ACRCLOUD_HOST2:
+            case IDC_ACRCLOUD_ACCESS_KEY2:
+            case IDC_ACRCLOUD_ACCESS_SECRET2:
                 if (HIWORD(wp) == EN_CHANGE) {
                     pThis->on_changed();
                 }
