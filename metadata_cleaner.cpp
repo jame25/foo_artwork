@@ -43,12 +43,50 @@ bool MetadataCleaner::contains_non_latin(const std::string& str) {
     return false;
 }
 
+static std::wstring utf8_to_wstring(const std::string& str) {
+    if (str.empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.length(), NULL, 0);
+    if (len <= 0) return L"";
+    std::wstring wstr(len, 0);
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.length(), &wstr[0], len);
+    return wstr;
+}
+
+static std::string wstring_to_utf8(const std::wstring& wstr) {
+    if (wstr.empty()) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), NULL, 0, NULL, NULL);
+    if (len <= 0) return "";
+    std::string str(len, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.length(), &str[0], len, NULL, NULL);
+    return str;
+}
+
+static inline std::wstring wide_to_lower(const std::wstring& wstr) {
+    std::wstring res(wstr.length(), 0);
+    int ret = LCMapStringEx(LOCALE_NAME_USER_DEFAULT, LCMAP_LOWERCASE, wstr.c_str(), (int)wstr.length(), &res[0], (int)res.length(), NULL, NULL, 0);
+    if (ret <= 0) {
+        res = wstr;
+        for (wchar_t& c : res) c = towlower(c);
+    }
+    return res;
+}
+
+static inline std::wstring wide_to_upper(const std::wstring& wstr) {
+    std::wstring res(wstr.length(), 0);
+    int ret = LCMapStringEx(LOCALE_NAME_USER_DEFAULT, LCMAP_UPPERCASE, wstr.c_str(), (int)wstr.length(), &res[0], (int)res.length(), NULL, NULL, 0);
+    if (ret <= 0) {
+        res = wstr;
+        for (wchar_t& c : res) c = towupper(c);
+    }
+    return res;
+}
+
 bool MetadataCleaner::is_minor_word(const std::string& word) {
     static const std::vector<std::string> minor_words = {
         "a", "an", "the", "and", "but", "or", "nor", "for", "yet", "so",
         "at", "by", "in", "of", "on", "to", "with", "as", "into", "like", "over",
         "de", "del", "la", "le", "el", "los", "las", "du", "des", "y", "e", "o", "da", "do", "das", "dos",
-        "und", "von", "van", "der", "die", "das", "d'", "l'"
+        "und", "von", "van", "der", "die", "das", "d'", "l'", "à", "au", "aux", "por", "para", "com", "em"
     };
     std::string lower = word;
     to_lower_ascii(lower);
@@ -85,15 +123,15 @@ bool MetadataCleaner::is_known_acronym(const std::string& word) {
 
 std::string MetadataCleaner::to_title_case(const std::string& str) {
     if (str.empty()) return "";
-    // If the string contains non-ASCII characters (Cyrillic, Greek, accented Latin, etc.),
-    // leave it as-is to avoid corrupting multi-byte UTF-8 sequences.
-    if (has_non_ascii(str)) return str;
+
+    std::wstring wstr = utf8_to_wstring(str);
+    if (wstr.empty()) return str;
 
     size_t upper_count = 0;
     size_t lower_count = 0;
-    for (char c : str) {
-        if (c >= 'A' && c <= 'Z') upper_count++;
-        else if (c >= 'a' && c <= 'z') lower_count++;
+    for (wchar_t wc : wstr) {
+        if (iswupper(wc)) upper_count++;
+        else if (iswlower(wc)) lower_count++;
     }
 
     bool should_normalize = (lower_count == 0 && upper_count > 2) || (upper_count == 0 && lower_count > 0);
@@ -101,53 +139,57 @@ std::string MetadataCleaner::to_title_case(const std::string& str) {
         return str;
     }
 
-    std::string result;
-    result.reserve(str.length());
+    std::wstring result;
+    result.reserve(wstr.length());
 
     size_t i = 0;
     size_t word_index = 0;
 
-    while (i < str.length()) {
-        while (i < str.length() && (str[i] == ' ' || str[i] == '\t')) {
-            result += str[i++];
+    while (i < wstr.length()) {
+        while (i < wstr.length() && (wstr[i] == L' ' || wstr[i] == L'\t')) {
+            result += wstr[i++];
         }
-        if (i >= str.length()) break;
+        if (i >= wstr.length()) break;
 
         size_t start = i;
-        while (i < str.length() && str[i] != ' ' && str[i] != '\t') {
+        while (i < wstr.length() && wstr[i] != L' ' && wstr[i] != L'\t') {
             i++;
         }
-        std::string word = str.substr(start, i - start);
+        std::wstring word = wstr.substr(start, i - start);
+        std::string word_utf8 = wstring_to_utf8(word);
 
-        if (is_roman_numeral(word)) {
-            std::string upper = word;
-            to_upper_ascii(upper);
-            result += upper;
-        } else if (is_known_acronym(word)) {
-            std::string upper = word;
-            to_upper_ascii(upper);
-            result += upper;
+        if (is_roman_numeral(word_utf8)) {
+            result += wide_to_upper(word);
+        } else if (is_known_acronym(word_utf8)) {
+            result += wide_to_upper(word);
         } else {
-            std::string lower = word;
-            to_lower_ascii(lower);
+            std::wstring lower_word = wide_to_lower(word);
+            std::string lower_utf8 = wstring_to_utf8(lower_word);
 
-            if (word_index > 0 && i < str.length() && is_minor_word(lower)) {
-                result += lower;
+            if (word_index > 0 && i < wstr.length() && is_minor_word(lower_utf8)) {
+                result += lower_word;
             } else {
-                if (!lower.empty()) {
-                    lower[0] = ascii_toupper(lower[0]);
-                    size_t apo = lower.find('\'');
-                    if (apo != std::string::npos && apo + 1 < lower.length() && apo <= 2) {
-                        lower[apo + 1] = ascii_toupper(lower[apo + 1]);
+                if (!lower_word.empty()) {
+                    wchar_t first_char = lower_word[0];
+                    wchar_t upper_char = first_char;
+                    LCMapStringEx(LOCALE_NAME_USER_DEFAULT, LCMAP_UPPERCASE, &first_char, 1, &upper_char, 1, NULL, NULL, 0);
+                    lower_word[0] = (upper_char != 0) ? upper_char : towupper(first_char);
+
+                    size_t apo = lower_word.find(L'\'');
+                    if (apo != std::wstring::npos && apo + 1 < lower_word.length() && apo <= 2) {
+                        wchar_t after_apo = lower_word[apo + 1];
+                        wchar_t upper_after_apo = after_apo;
+                        LCMapStringEx(LOCALE_NAME_USER_DEFAULT, LCMAP_UPPERCASE, &after_apo, 1, &upper_after_apo, 1, NULL, NULL, 0);
+                        lower_word[apo + 1] = (upper_after_apo != 0) ? upper_after_apo : towupper(after_apo);
                     }
                 }
-                result += lower;
+                result += lower_word;
             }
         }
         word_index++;
     }
 
-    return result;
+    return wstring_to_utf8(result);
 }
 
 std::string MetadataCleaner::strip_track_numbers(const std::string& str) {
@@ -223,7 +265,7 @@ std::string MetadataCleaner::filter_multilingual_keywords(const std::string& str
     return trim(result);
 }
 
-std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserve_cyrillic) {
+std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserve_cyrillic, bool apply_title_case) {
     if (!metadata || strlen(metadata) == 0) {
         return "";
     }
@@ -308,8 +350,10 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
         }
     }
 
-    // 8. Title Case normalization
-    str = to_title_case(str);
+    // 8. Title Case normalization (only applied if explicitly requested for queries)
+    if (apply_title_case) {
+        str = to_title_case(str);
+    }
 
     // 9. Clean up whitespace
     str = std::regex_replace(str, std::regex("\\s{2,}"), " ");
@@ -858,6 +902,22 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
             out_title = clean_for_search(combined.substr(0, by_pos).c_str(), true);
             out_artist = clean_for_search(combined.substr(by_pos + 4).c_str(), true);
             return !out_artist.empty() && !out_title.empty();
+        }
+
+        // Check tilde delimiter (e.g. "Title~Artist~Album~Year..." or "Artist~Title")
+        size_t tilde_pos = combined.find('~');
+        if (tilde_pos != std::string::npos && tilde_pos > 0) {
+            std::string part1 = clean_for_search(combined.substr(0, tilde_pos).c_str(), true);
+            size_t next_tilde = combined.find('~', tilde_pos + 1);
+            std::string part2_raw = (next_tilde != std::string::npos) 
+                ? combined.substr(tilde_pos + 1, next_tilde - tilde_pos - 1)
+                : combined.substr(tilde_pos + 1);
+            std::string part2 = clean_for_search(part2_raw.c_str(), true);
+            if (!part1.empty() && !part2.empty()) {
+                out_artist = part1;
+                out_title = part2;
+                return true;
+            }
         }
 
         // Check delimiters in order of confidence
