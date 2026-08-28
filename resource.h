@@ -51,6 +51,9 @@
 #define IDC_STATIC_LOGOS_DESC3          1046
 #define IDC_STATIC_LOGOS_DESC4          1047
 #define IDC_DISABLE_INSTREAM_ARTWORK    1048
+#define IDC_ACRCLOUD_HOST2              1049
+#define IDC_ACRCLOUD_ACCESS_KEY2        1050
+#define IDC_ACRCLOUD_ACCESS_SECRET2     1051
 
 // Next default values for new objects
 //
@@ -58,7 +61,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        104
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1049
+#define _APS_NEXT_CONTROL_VALUE         1052
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
