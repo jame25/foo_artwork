@@ -113,6 +113,7 @@ ACRCloudClient::RecognitionResult ACRCloudClient::parse_response_json(const std:
             int code = j["status"]["code"].get<int>();
             std::string msg = j["status"].contains("msg") ? j["status"]["msg"].get<std::string>() : "Unknown";
 
+            res.status_code = code;
             foo_artwork::log_printf("foo_artwork: ACRCloud Response Status Code: %d (%s)", code, msg.c_str());
 
             if (code == 0 && j.contains("metadata") && j["metadata"].contains("music")) {
