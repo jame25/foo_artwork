@@ -80,6 +80,9 @@ static constexpr GUID guid_cfg_enable_acrcloud = { 0x12345695, 0x1234, 0x1234, {
 static constexpr GUID guid_cfg_acrcloud_host = { 0x12345696, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x05 } };
 static constexpr GUID guid_cfg_acrcloud_access_key = { 0x12345697, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x06 } };
 static constexpr GUID guid_cfg_acrcloud_access_secret = { 0x12345698, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x07 } };
+static constexpr GUID guid_cfg_acrcloud_host2 = { 0x1234569c, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x0b } };
+static constexpr GUID guid_cfg_acrcloud_access_key2 = { 0x1234569d, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x0c } };
+static constexpr GUID guid_cfg_acrcloud_access_secret2 = { 0x1234569e, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x0d } };
 static constexpr GUID guid_cfg_console_logging_mode = { 0x12345699, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x08 } };
 static constexpr GUID guid_cfg_noart_folder = { 0x1234569a, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x09 } };
 static constexpr GUID guid_cfg_noart_cycle_mode = { 0x1234569b, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x0a } };
@@ -98,6 +101,9 @@ cfg_string cfg_lastfm_key(guid_cfg_lastfm_key, "");
 cfg_string cfg_acrcloud_host(guid_cfg_acrcloud_host, "");
 cfg_string cfg_acrcloud_access_key(guid_cfg_acrcloud_access_key, "");
 cfg_string cfg_acrcloud_access_secret(guid_cfg_acrcloud_access_secret, "");
+cfg_string cfg_acrcloud_host2(guid_cfg_acrcloud_host2, "");
+cfg_string cfg_acrcloud_access_key2(guid_cfg_acrcloud_access_key2, "");
+cfg_string cfg_acrcloud_access_secret2(guid_cfg_acrcloud_access_secret2, "");
 cfg_bool cfg_fill_mode(guid_cfg_fill_mode, false);  // true = fill window (crop), false = fit window (letterbox)
 
 // API Priority order (0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs)
@@ -343,7 +349,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.9",
+    "1.7.0",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -360,7 +366,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.6.9",
+    "1.7.0",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -532,7 +538,7 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
         else if (result[i] == '|') {result.set_char(i, '-');} 
         else if (result[i] == ':') {result.set_char(i, '-');}
         else if (result[i] == '*') {result.set_char(i, 'x');}
-        else if (result[i] == '"') { result.set_char(i, '\'\''); }
+        else if (result[i] == '"') { result.set_char(i, '\''); }
         else if (result[i] == '<') { result.set_char(i, '_'); }
         else if (result[i] == '>') { result.set_char(i, '_'); }
         else if (result[i] == '?') { result.set_char(i, '_'); }
@@ -5163,9 +5169,9 @@ public:
                         const char* art = info.meta_get("ARTIST", 0);
                         const char* tit = info.meta_get("TITLE", 0);
                         const char* alb = info.meta_get("ALBUM", 0);
-                        pfc::string8 clean_art = art ? MetadataCleaner::clean_for_search(art, true).c_str() : "";
-                        pfc::string8 clean_tit = tit ? MetadataCleaner::clean_for_search(tit, true).c_str() : "";
-                        pfc::string8 clean_art_full = art ? art : "";
+                        pfc::string8 clean_art = art ? MetadataCleaner::clean_for_search(art, true, false).c_str() : "";
+                        pfc::string8 clean_tit = tit ? MetadataCleaner::clean_for_search(tit, true, false).c_str() : "";
+                        pfc::string8 clean_art_full = art ? MetadataCleaner::clean_for_search(art, true, false).c_str() : "";
                         pfc::string8 clean_alb = alb ? alb : "";
                         titleformat_provider::set_track_artwork_info(p_track, clean_art.c_str(), clean_tit.c_str(), "", "", clean_art_full.c_str(), clean_alb.c_str(), "");
                     } else {
@@ -5301,8 +5307,7 @@ public:
     void on_playback_seek(double p_time) override {}
     void on_playback_pause(bool p_state) override {}
     void on_playback_edited(metadb_handle_ptr p_track) override {}
-    void on_playback_dynamic_info(const file_info& p_info) override {}
-    void on_playback_dynamic_info_track(const file_info& p_info) override {
+    void process_stream_dynamic_info(const file_info& p_info) {
         static_api_ptr_t<playback_control> pc_check;
         if (!pc_check->is_playing() && !pc_check->is_paused()) return;
 
@@ -5312,6 +5317,42 @@ public:
             // Global dynamic stream metadata extraction (independent of active UI panel count)
             pfc::string8 stream_artist = p_info.meta_get("ARTIST", 0) ? p_info.meta_get("ARTIST", 0) : "";
             pfc::string8 stream_title = p_info.meta_get("TITLE", 0) ? p_info.meta_get("TITLE", 0) : "";
+
+            const char* st = p_info.meta_get("STREAMTITLE", 0);
+            if (!st) st = p_info.meta_get("ICY_TITLE", 0);
+
+            if (st && st[0] != '\0') {
+                const char* tilde = strchr(st, '~');
+                if (tilde) {
+                    if (stream_artist.is_empty()) {
+                        stream_artist.set_string(st, tilde - st);
+                    }
+                    if (stream_title.is_empty()) {
+                        const char* next_tilde = strchr(tilde + 1, '~');
+                        if (next_tilde) {
+                            stream_title.set_string(tilde + 1, next_tilde - (tilde + 1));
+                        } else {
+                            stream_title.set_string(tilde + 1);
+                        }
+                    }
+                } else {
+                    const char* dash = strstr(st, " - ");
+                    if (!dash) dash = strstr(st, " ˗ ");
+                    if (!dash) dash = strstr(st, " – ");
+                    if (!dash) dash = strstr(st, " / ");
+                    if (dash) {
+                        if (stream_artist.is_empty()) {
+                            stream_artist.set_string(st, dash - st);
+                        }
+                        if (stream_title.is_empty()) {
+                            size_t delim_len = (strstr(st, " - ") == dash || strstr(st, " / ") == dash) ? 3 : 4;
+                            stream_title.set_string(dash + delim_len);
+                        }
+                    } else if (stream_title.is_empty()) {
+                        stream_title = st;
+                    }
+                }
+            }
 
             if (stream_artist.is_empty() && !stream_title.is_empty()) {
                 std::string t_str = stream_title.c_str();
@@ -5324,7 +5365,7 @@ public:
                         : t_str.substr(tilde_pos + 1);
                     stream_title = part2.c_str();
                 } else {
-                    std::string delimiters[] = { " - ", " ˗ ", " / ", " by " };
+                    std::string delimiters[] = { " - ", " ˗ ", " – ", " / ", " by " };
                     for (const auto& delim : delimiters) {
                         size_t pos = t_str.find(delim);
                         if (pos != std::string::npos) {
@@ -5336,6 +5377,18 @@ public:
                 }
             }
 
+            if (stream_artist.is_empty()) {
+                const char* val = p_info.meta_get("ALBUMARTIST", 0);
+                if (val) stream_artist = val;
+            }
+            if (stream_artist.is_empty()) {
+                const char* val = p_info.meta_get("PERFORMER", 0);
+                if (val) stream_artist = val;
+            }
+
+            stream_artist.trim(' ');
+            stream_title.trim(' ');
+
             if (!stream_artist.is_empty() && !stream_title.is_empty()) {
                 const char* alb = p_info.meta_get("ALBUM", 0);
                 StreamMetadataResult smr = MetadataCleaner::sanitize_stream_metadata(stream_artist.c_str(), stream_title.c_str());
@@ -5344,6 +5397,13 @@ public:
         } catch (...) {
             // Silently handle any exceptions
         }
+    }
+
+    void on_playback_dynamic_info(const file_info& p_info) override {
+        process_stream_dynamic_info(p_info);
+    }
+    void on_playback_dynamic_info_track(const file_info& p_info) override {
+        process_stream_dynamic_info(p_info);
     }
     void on_playback_time(double p_time) override {}
     void on_volume_change(float p_new_val) override {}
