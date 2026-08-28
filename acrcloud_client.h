@@ -7,6 +7,7 @@ class ACRCloudClient {
 public:
     struct RecognitionResult {
         bool success = false;
+        int status_code = 0;
         std::string artist;
         std::string title;
         std::string album;
