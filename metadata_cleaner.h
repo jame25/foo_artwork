@@ -28,7 +28,7 @@ public:
     static bool is_station_name_or_url(const char* text);
 
     // Main cleaning function - UTF-8 safe for Latin, Cyrillic, and other scripts
-    static std::string clean_for_search(const char* metadata, bool preserve_cyrillic = true);
+    static std::string clean_for_search(const char* metadata, bool preserve_cyrillic = true, bool apply_title_case = false);
     
     // Validation function to check if metadata is suitable for artwork search
     static bool is_valid_for_search(const char* artist, const char* title);
