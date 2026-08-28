@@ -100,43 +100,37 @@ struct ArtworkEventData {
     std::string title;
 };
 
-// For now, we'll create a simplified version without ATL dependencies
-// This creates a basic component that can be extended later
-class artwork_ui_element : public ui_element_instance, public CWindowImpl<artwork_ui_element>, public IArtworkEventListener {
+// Pure Win32 UI element implementation for Default UI
+class artwork_ui_element : public ui_element_instance, public IArtworkEventListener {
 public:
+    static GUID g_get_guid() {
+        return GUID { 0x12345690, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
+    }
+    static GUID g_get_subclass() {
+        return ui_element_subclass_utility;
+    }
+    static void g_get_name(pfc::string_base & out) {
+        out = "Artwork Display";
+    }
+    static const char * g_get_description() {
+        return "Artwork Display panel";
+    }
+    static ui_element_config::ptr g_get_default_configuration() {
+        return ui_element_config::g_create_empty(g_get_guid());
+    }
+
     artwork_ui_element(ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback);
     virtual ~artwork_ui_element();
 
-    DECLARE_WND_CLASS_EX(L"foo_artwork_ui_element", CS_DBLCLKS, NULL);
-
-    BEGIN_MSG_MAP(artwork_ui_element)
-        MESSAGE_HANDLER(WM_CREATE, OnCreate)
-        MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
-        MESSAGE_HANDLER(WM_PAINT, OnPaint)
-        MESSAGE_HANDLER(WM_SIZE, OnSize)
-        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
-        MESSAGE_HANDLER(WM_MOUSEMOVE, OnMouseMove)
-        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
-        MESSAGE_HANDLER(WM_SETCURSOR, OnSetCursor)
-        MESSAGE_HANDLER(WM_LBUTTONDOWN, OnLButtonDown)
-        MESSAGE_HANDLER(WM_LBUTTONDBLCLK, OnLButtonDblClk)
-        MESSAGE_HANDLER(WM_USER_ARTWORK_LOADED, OnArtworkLoaded)
-        MESSAGE_HANDLER(WM_USER_ARTWORK_EVENT, OnArtworkEvent)
-        MESSAGE_HANDLER(WM_TIMER, OnTimer)
-    END_MSG_MAP()
-
     // ui_element_instance methods
     HWND get_wnd() override { return m_hWnd; }
-    void set_configuration(ui_element_config::ptr cfg) override {}
+    void set_configuration(ui_element_config::ptr cfg) override { m_config = cfg; }
     ui_element_config::ptr get_configuration() override {
-        return ui_element_config::g_create_empty(get_guid());
+        if (m_config.is_valid()) return m_config;
+        return ui_element_config::g_create_empty(g_get_guid());
     }
-    GUID get_guid() override {
-        return GUID { 0x12345690, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
-    }
-    GUID get_subclass() override {
-        return ui_element_subclass_utility;
-    }
+    GUID get_guid() override { return g_get_guid(); }
+    GUID get_subclass() override { return g_get_subclass(); }
     void initialize_window(HWND parent);
     void shutdown();
     void notify(const GUID& p_what, t_size p_param1, const void* p_param2, t_size p_param2size) override;
@@ -146,36 +140,70 @@ public:
     
     // Getter for artwork source (for main component access)
     std::string get_artwork_source() const { return m_artwork_source; }
-    
-    // service_base implementation
-    int service_add_ref() throw() { return 1; }
-    int service_release() throw() { return 1; }
-    bool service_query(service_ptr & p_out, const GUID & p_guid) override {
-        if (p_guid == ui_element_instance::class_guid) {
-            p_out = this;
-            return true;
-        }
-        return false;
-    }
 
     // Artwork handling (public for external refresh)
     void on_playback_new_track(metadb_handle_ptr track);
 
 private:
+    static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+    LRESULT handle_message(UINT msg, WPARAM wp, LPARAM lp);
+    static const wchar_t* get_class_name();
+    static bool register_class();
+
+    void Invalidate(BOOL erase = FALSE) {
+        if (m_hWnd && ::IsWindow(m_hWnd)) {
+            ::InvalidateRect(m_hWnd, NULL, erase);
+        }
+    }
+    void InvalidateRect(const RECT* rect, BOOL erase = FALSE) {
+        if (m_hWnd && ::IsWindow(m_hWnd)) {
+            ::InvalidateRect(m_hWnd, rect, erase);
+        }
+    }
+    bool IsWindow() const {
+        return m_hWnd != NULL && ::IsWindow(m_hWnd);
+    }
+    UINT_PTR SetTimer(UINT_PTR id, UINT elapse) {
+        if (m_hWnd && ::IsWindow(m_hWnd)) {
+            return ::SetTimer(m_hWnd, id, elapse, NULL);
+        }
+        return 0;
+    }
+    BOOL KillTimer(UINT_PTR id) {
+        if (m_hWnd && ::IsWindow(m_hWnd)) {
+            return ::KillTimer(m_hWnd, id);
+        }
+        return FALSE;
+    }
+    BOOL GetClientRect(LPRECT lpRect) const {
+        if (m_hWnd) return ::GetClientRect(m_hWnd, lpRect);
+        return FALSE;
+    }
+    static BOOL GetClientRect(HWND hWnd, LPRECT lpRect) {
+        return ::GetClientRect(hWnd, lpRect);
+    }
+    BOOL PostMessage(UINT msg, WPARAM wp = 0, LPARAM lp = 0) {
+        if (m_hWnd) return ::PostMessage(m_hWnd, msg, wp, lp);
+        return FALSE;
+    }
+    static BOOL PostMessage(HWND hWnd, UINT msg, WPARAM wp = 0, LPARAM lp = 0) {
+        return ::PostMessage(hWnd, msg, wp, lp);
+    }
+
     // Message handlers
-    LRESULT OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnSetCursor(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
-    LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled);
+    LRESULT OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnSetCursor(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam);
     void on_dynamic_info_track(const file_info& p_info);
     void on_artwork_loaded(const artwork_manager::artwork_result& result);
     void start_artwork_search();
@@ -272,12 +300,11 @@ private:
     RECT m_download_icon_rect;
     BYTE m_download_fade_alpha;
     UINT_PTR m_download_fade_timer_id;
+    HWND m_hWnd = NULL;
+    ui_element_config::ptr m_config;
 
     // UI state
     RECT m_client_rect;
-    
-    // GDI+ token
-    ULONG_PTR m_gdiplus_token;
     
     // OSD (On-Screen Display) system
     bool m_show_osd;
@@ -437,24 +464,16 @@ static void draw_download_icon(HDC hdc, const RECT& client_rect, bool hovered, R
 }
 
 artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback)
-    : m_callback(callback), m_artwork_image(nullptr), m_artwork_stream(nullptr), m_infobar_stream(nullptr),
-      m_artwork_loading(false), m_gdiplus_token(0), m_playback_callback(this),
+    : m_config(cfg), m_callback(callback), m_artwork_image(nullptr), m_artwork_stream(nullptr), m_infobar_stream(nullptr),
+      m_artwork_loading(false), m_playback_callback(this),
       m_show_osd(true), m_osd_start_time(0), m_osd_slide_offset(OSD_SLIDE_DISTANCE),
       m_osd_timer_id(0), m_osd_visible(false), m_has_delayed_metadata(false), m_was_playing(false),
       m_mouse_hovering(false), m_hover_over_download(false), m_download_icon_rect{},
       m_download_fade_alpha(0), m_download_fade_timer_id(0) {
     
-    
-    // Initialize GDI+
-    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-    Gdiplus::GdiplusStartup(&m_gdiplus_token, &gdiplusStartupInput, NULL);
-    
     // Subscribe to artwork events for proper API fallback
     subscribe_to_artwork_events(this);
     g_dui_artwork_panels.add_item(this);
-    
-    // Start playback monitoring timer if clear panel option is enabled
-    // Note: We'll start the timer after window creation
     
     SetRect(&m_client_rect, 0, 0, 0, 0);
     
@@ -468,26 +487,128 @@ artwork_ui_element::~artwork_ui_element() {
     // Unsubscribe from artwork events
     unsubscribe_from_artwork_events(this);
 
+    // Unregister playback callbacks
+    static_api_ptr_t<play_callback_manager>()->unregister_callback(&m_playback_callback);
+    m_playback_callback.set_parent(nullptr);
+
+    if (m_hWnd) {
+        HWND wnd = m_hWnd;
+        m_hWnd = NULL;
+        SetWindowLongPtr(wnd, GWLP_USERDATA, 0);
+        ::DestroyWindow(wnd);
+    }
+
     cleanup_gdiplus_image();
     cleanup_gdiplus_infobar_image();
-
-    if (m_gdiplus_token) {
-        Gdiplus::GdiplusShutdown(m_gdiplus_token);
-    }
 }
 
 // Repaint all DUI panels
 void refresh_all_dui_artwork_panels() {
     for (t_size i = 0; i < g_dui_artwork_panels.get_count(); i++) {
         artwork_ui_element* panel = g_dui_artwork_panels[i];
-        if (panel && panel->m_hWnd) {
-            InvalidateRect(panel->m_hWnd, NULL, FALSE);
+        if (panel && panel->get_wnd() && ::IsWindow(panel->get_wnd())) {
+            ::InvalidateRect(panel->get_wnd(), NULL, FALSE);
         }
     }
 }
 
+const wchar_t* artwork_ui_element::get_class_name() {
+    return L"foo_artwork_ui_element";
+}
+
+bool artwork_ui_element::register_class() {
+    static bool registered = false;
+    if (registered) return true;
+    
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_DBLCLKS;
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = core_api::get_my_instance();
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = get_class_name();
+    
+    registered = (RegisterClassExW(&wc) != 0);
+    return registered;
+}
+
+LRESULT CALLBACK artwork_ui_element::WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_NCCREATE) {
+        CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        auto* pThis = reinterpret_cast<artwork_ui_element*>(cs->lpCreateParams);
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+        if (pThis) {
+            pThis->m_hWnd = hwnd;
+        }
+        return DefWindowProc(hwnd, msg, wp, lp);
+    }
+    
+    artwork_ui_element* pThis = reinterpret_cast<artwork_ui_element*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    if (pThis) {
+        return pThis->handle_message(msg, wp, lp);
+    }
+    
+    return DefWindowProc(hwnd, msg, wp, lp);
+}
+
+LRESULT artwork_ui_element::handle_message(UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_CREATE:
+        return OnCreate(msg, wp, lp);
+    case WM_DESTROY:
+        return OnDestroy(msg, wp, lp);
+    case WM_PAINT:
+        return OnPaint(msg, wp, lp);
+    case WM_SIZE:
+        return OnSize(msg, wp, lp);
+    case WM_ERASEBKGND:
+        return OnEraseBkgnd(msg, wp, lp);
+    case WM_MOUSEMOVE:
+        return OnMouseMove(msg, wp, lp);
+    case WM_MOUSELEAVE:
+        return OnMouseLeave(msg, wp, lp);
+    case WM_SETCURSOR: {
+        LRESULT res = OnSetCursor(msg, wp, lp);
+        if (res) return res;
+        return DefWindowProc(m_hWnd, msg, wp, lp);
+    }
+    case WM_LBUTTONDOWN:
+        return OnLButtonDown(msg, wp, lp);
+    case WM_LBUTTONDBLCLK:
+        return OnLButtonDblClk(msg, wp, lp);
+    case WM_USER_ARTWORK_LOADED:
+        return OnArtworkLoaded(msg, wp, lp);
+    case WM_USER_ARTWORK_EVENT:
+        return OnArtworkEvent(msg, wp, lp);
+    case WM_TIMER:
+        return OnTimer(msg, wp, lp);
+    case WM_NCDESTROY: {
+        if (m_hWnd) {
+            SetWindowLongPtr(m_hWnd, GWLP_USERDATA, 0);
+            m_hWnd = NULL;
+        }
+        return 0;
+    }
+    default:
+        return DefWindowProc(m_hWnd, msg, wp, lp);
+    }
+}
+
 void artwork_ui_element::initialize_window(HWND parent) {
-    Create(parent, NULL, NULL, WS_CHILD | WS_VISIBLE);
+    if (!register_class()) return;
+
+    m_hWnd = CreateWindowExW(
+        0,
+        get_class_name(),
+        L"",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+        0, 0, 0, 0,
+        parent,
+        nullptr,
+        core_api::get_my_instance(),
+        this
+    );
     
     // Register for playback callbacks including dynamic info
     m_playback_callback.set_parent(this);
@@ -510,8 +631,11 @@ void artwork_ui_element::shutdown() {
     static_api_ptr_t<play_callback_manager>()->unregister_callback(&m_playback_callback);
     m_playback_callback.set_parent(nullptr);
     
-    if (IsWindow()) {
-        DestroyWindow();
+    if (m_hWnd) {
+        HWND wnd = m_hWnd;
+        m_hWnd = NULL;
+        SetWindowLongPtr(wnd, GWLP_USERDATA, 0);
+        ::DestroyWindow(wnd);
     }
 }
 
@@ -525,20 +649,26 @@ void artwork_ui_element::notify(const GUID& p_what, t_size p_param1, const void*
     }
 }
 
-
-LRESULT artwork_ui_element::OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (m_download_fade_timer_id) {
         KillTimer(1002);
         m_download_fade_timer_id = 0;
     }
+    if (m_osd_timer_id) {
+        KillTimer(m_osd_timer_id);
+        m_osd_timer_id = 0;
+    }
+    KillTimer(100);
+    KillTimer(101);
+    KillTimer(102);
     cleanup_gdiplus_image();
-    bHandled = TRUE;
-    return 0;
+    cleanup_gdiplus_infobar_image();
+    return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 }
 
-LRESULT artwork_ui_element::OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(&ps);
+    HDC hdc = BeginPaint(m_hWnd, &ps);
     
     // Use double buffering to eliminate flicker during resizing
     RECT client_rect;
@@ -597,38 +727,34 @@ LRESULT artwork_ui_element::OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
     DeleteObject(memBitmap);
     DeleteDC(memDC);
 
-    EndPaint(&ps);
-    bHandled = TRUE;
+    EndPaint(m_hWnd, &ps);
     return 0;
 }
 
-LRESULT artwork_ui_element::OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     GetClientRect(&m_client_rect);
     
     // Use RedrawWindow for flicker-free resizing instead of Invalidate()
-    RedrawWindow(NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOCHILDREN);
-    bHandled = TRUE;
+    RedrawWindow(m_hWnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOCHILDREN);
     return 0;
 }
 
-LRESULT artwork_ui_element::OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     // Start the clear panel monitoring timer if enabled
     update_clear_panel_timer();
     
-    bHandled = FALSE;  // Let default processing continue
-    return 0;
+    return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 }
 
-LRESULT artwork_ui_element::OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
-    bHandled = TRUE;
+LRESULT artwork_ui_element::OnEraseBkgnd(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     return TRUE; // We handle all drawing in OnPaint
 }
 
-LRESULT artwork_ui_element::OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (!m_mouse_hovering) {
         m_mouse_hovering = true;
         TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, m_hWnd, 0 };
-        TrackMouseEvent(&tme);
+        ::TrackMouseEvent(&tme);
         Invalidate(FALSE);
     }
     POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
@@ -638,11 +764,10 @@ LRESULT artwork_ui_element::OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam,
         m_hover_over_download = over;
         InvalidateRect(&m_download_icon_rect, FALSE);
     }
-    bHandled = FALSE;
-    return 0;
+    return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 }
 
-LRESULT artwork_ui_element::OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     m_mouse_hovering = false;
     m_hover_over_download = false;
     // Start fade-out animation if icon was visible
@@ -652,21 +777,18 @@ LRESULT artwork_ui_element::OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam
     if (IsRectEmpty(&m_download_icon_rect)) {
         Invalidate(FALSE);
     }
-    bHandled = TRUE;
     return 0;
 }
 
-LRESULT artwork_ui_element::OnSetCursor(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnSetCursor(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (LOWORD(lParam) == HTCLIENT && m_hover_over_download) {
         SetCursor(LoadCursor(NULL, IDC_HAND));
-        bHandled = TRUE;
         return TRUE;
     }
-    bHandled = FALSE;
-    return 0;
+    return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 }
 
-LRESULT artwork_ui_element::OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
     if (!IsRectEmpty(&m_download_icon_rect) && PtInRect(&m_download_icon_rect, pt)) {
         typedef void (*pfn_open)(const char*, const char*, const char*);
@@ -681,14 +803,12 @@ LRESULT artwork_ui_element::OnLButtonDown(UINT uMsg, WPARAM wParam, LPARAM lPara
             pfc::string8 file_path = m_current_track->get_path();
             pOpen(artist.c_str(), album.c_str(), file_path.get_ptr());
         }
-        bHandled = TRUE;
         return 0;
     }
-    bHandled = FALSE;
-    return 0;
+    return DefWindowProc(m_hWnd, uMsg, wParam, lParam);
 }
 
-LRESULT artwork_ui_element::OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     // Open artwork viewer popup on double-click
     if (m_artwork_image) {
         try {
@@ -708,24 +828,19 @@ LRESULT artwork_ui_element::OnLButtonDblClk(UINT uMsg, WPARAM wParam, LPARAM lPa
             // Handle any errors silently
         }
     }
-    
-    bHandled = TRUE;
     return 0;
 }
 
-LRESULT artwork_ui_element::OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnArtworkLoaded(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     // Safely handle artwork loading completion on UI thread
-    bHandled = TRUE;
-    
     std::unique_ptr<artwork_manager::artwork_result> result(reinterpret_cast<artwork_manager::artwork_result*>(lParam));
     if (result) {
         on_artwork_loaded(*result);
     }
-    
     return 0;
 }
 
-LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (wParam == 1002) {
         // Download icon fade-out animation
         const BYTE fade_step = 20;  // ~200ms total fade at 60fps
@@ -738,12 +853,10 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
             m_download_fade_alpha -= fade_step;
         }
         Invalidate(FALSE);
-        bHandled = TRUE;
         return 0;
     } else if (wParam == m_osd_timer_id) {
         // OSD animation timer
         update_osd_animation();
-        bHandled = TRUE;
         return 0;
     } else if (wParam == 100) {
         // Metadata arrival timer - no metadata received within grace period
@@ -751,7 +864,6 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
         
         // CHECK: Only trigger fallback if we don't already have tagged artwork
         if (m_artwork_image && !m_artwork_source.empty() && m_artwork_source == "Local artwork") {
-            bHandled = TRUE;
             return 0;
         }
         
@@ -767,13 +879,11 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
             ));
         }
         
-        bHandled = TRUE;
         return 0;
     } else if (wParam == 101) {
         // Timer for delayed artwork search on radio streams
         KillTimer(101);
         start_delayed_search();
-        bHandled = TRUE;
         return 0;
     } else if (wParam == 102) {
         // Timer ID 102 - playback state monitoring for clear panel functionality
@@ -799,10 +909,8 @@ LRESULT artwork_ui_element::OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOO
             KillTimer(102);
         }
         
-        bHandled = TRUE;
         return 0;
     }
-    bHandled = FALSE;
     return 0;
 }
 
@@ -821,7 +929,7 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
             else if (result[i] == '|') { result.set_char(i, '-'); }
             else if (result[i] == ':') { result.set_char(i, '-'); }
             else if (result[i] == '*') { result.set_char(i, 'x'); }
-            else if (result[i] == '"') { result.set_char(i, '\'\''); }
+            else if (result[i] == '"') { result.set_char(i, '\''); }
             else if (result[i] == '<') { result.set_char(i, '_'); }
             else if (result[i] == '>') { result.set_char(i, '_'); }
             else if (result[i] == '?') { result.set_char(i, '_'); }
@@ -1862,7 +1970,7 @@ void artwork_ui_element::paint_osd(HDC hdc) {
     int saved_dc = SaveDC(hdc);
     
     RECT client_rect;
-    GetClientRect(&client_rect);
+    ::GetClientRect(m_hWnd, &client_rect);
     
     // Calculate OSD dimensions using actual text measurement (like CUI)
     SIZE text_size;
@@ -2129,15 +2237,14 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
     data->source = event.source;
     data->artist = event.artist;
     data->title = event.title;
-    if (!PostMessage(WM_USER_ARTWORK_EVENT, 0, reinterpret_cast<LPARAM>(data))) {
+    if (!::PostMessage(m_hWnd, WM_USER_ARTWORK_EVENT, 0, reinterpret_cast<LPARAM>(data))) {
         delete data; // PostMessage failed (window destroyed, etc.)
     }
 }
 
-LRESULT artwork_ui_element::OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled) {
+LRESULT artwork_ui_element::OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     auto* event = reinterpret_cast<ArtworkEventData*>(lParam);
     if (!event) {
-        bHandled = TRUE;
         return 0;
     }
 
@@ -2272,11 +2379,8 @@ LRESULT artwork_ui_element::OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lPar
                 break;
             }
             
-        case ArtworkEventType::ARTWORK_CLEARED:
-            break;
     }
 
-    bHandled = TRUE;
     return 0;
 }
 
@@ -2326,86 +2430,25 @@ bool artwork_ui_element::load_local_artwork_from_main_component() {
     return false;
 }
 
-// Minimal working UI element implementation
-class simple_artwork_element : public ui_element_instance {
+// UI element factory for Default UI
+class ui_element_artwork_factory : public ui_element {
 public:
-    simple_artwork_element(HWND parent, ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback) 
-        : m_callback(callback), m_parent(parent), m_hwnd(NULL) {
-        // Create a simple child window that just shows text
-        m_hwnd = CreateWindowEx(0, L"STATIC", L"Async Artwork System Active", 
-                               WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
-                               0, 0, 200, 100, parent, NULL, 
-                               GetModuleHandle(NULL), NULL);
-    }
-    
-    ~simple_artwork_element() {
-        if (m_hwnd && IsWindow(m_hwnd)) {
-            DestroyWindow(m_hwnd);
-        }
-    }
-    
-    // ui_element_instance implementation
-    HWND get_wnd() override { return m_hwnd; }
-    
-    void set_configuration(ui_element_config::ptr cfg) override {
-        // No configuration needed
-    }
-    
-    ui_element_config::ptr get_configuration() override {
-        return ui_element_config::g_create_empty(get_guid());
-    }
-    
     GUID get_guid() override {
-        return GUID { 0x12345690, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
+        return artwork_ui_element::g_get_guid();
+    }
+    
+    void get_name(pfc::string_base & p_out) override { 
+        artwork_ui_element::g_get_name(p_out); 
     }
     
     GUID get_subclass() override {
-        return ui_element_subclass_utility;
+        return artwork_ui_element::g_get_subclass();
     }
     
-    void initialize_window(HWND parent) {
-        // Already initialized in constructor
-    }
-    
-    void shutdown() {
-        if (m_hwnd && IsWindow(m_hwnd)) {
-            DestroyWindow(m_hwnd);
-            m_hwnd = NULL;
-        }
-    }
-    
-    void notify(const GUID& what, t_size param1, const void* param2, t_size param2size) override {
-        // Handle notifications if needed
-    }
-    
-    // service_base implementation
-    int service_add_ref() throw() { return 1; }
-    int service_release() throw() { return 1; }
-
-private:
-    ui_element_instance_callback::ptr m_callback;
-    HWND m_parent;
-    HWND m_hwnd;
-};
-
-// Simple UI element factory that just returns null to avoid abstract class issues
-class ui_element_artwork_factory : public ui_element {
-public:
-    GUID get_guid() {
-        return GUID { 0x12345690, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf8 } };
-    }
-    
-    void get_name(pfc::string_base & p_out) { 
-        p_out = "Artwork Display"; 
-    }
-    
-    GUID get_subclass() {
-        return ui_element_subclass_utility;
-    }
-    
-    ui_element_instance::ptr instantiate(HWND parent, ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback) {
+    ui_element_instance::ptr instantiate(HWND parent, ui_element_config::ptr cfg, ui_element_instance_callback::ptr callback) override {
+        PFC_ASSERT(cfg->get_guid() == get_guid());
         try {
-            artwork_ui_element* element = new artwork_ui_element(cfg, callback);
+            service_ptr_t<artwork_ui_element> element = new service_impl_t<artwork_ui_element>(cfg, callback);
             element->initialize_window(parent);
             return element;
         } catch (...) {
@@ -2413,17 +2456,18 @@ public:
         }
     }
     
-    ui_element_config::ptr get_default_configuration() {
-        return ui_element_config::g_create_empty(get_guid());
+    ui_element_config::ptr get_default_configuration() override {
+        return artwork_ui_element::g_get_default_configuration();
     }
     
-    ui_element_children_enumerator_ptr enumerate_children(ui_element_config::ptr cfg) {
+    ui_element_children_enumerator_ptr enumerate_children(ui_element_config::ptr cfg) override {
         return nullptr; // Not a container element
     }
-    
-    // service_base implementation
-    int service_add_ref() throw() { return 1; }
-    int service_release() throw() { return 1; }
+
+    bool get_description(pfc::string_base& out) override {
+        out = artwork_ui_element::g_get_description();
+        return true;
+    }
 };
 
 static service_factory_single_t<ui_element_artwork_factory> g_ui_element_artwork_factory;
