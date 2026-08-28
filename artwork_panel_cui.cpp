@@ -1158,7 +1158,7 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
             else if (result[i] == '|') { result.set_char(i, '-'); }
             else if (result[i] == ':') { result.set_char(i, '-'); }
             else if (result[i] == '*') { result.set_char(i, 'x'); }
-            else if (result[i] == '"') { result.set_char(i, '\'\''); }
+            else if (result[i] == '"') { result.set_char(i, '\''); }
             else if (result[i] == '<') { result.set_char(i, '_'); }
             else if (result[i] == '>') { result.set_char(i, '_'); }
             else if (result[i] == '?') { result.set_char(i, '_'); }
