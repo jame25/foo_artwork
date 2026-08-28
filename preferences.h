@@ -22,6 +22,9 @@ extern cfg_string cfg_lastfm_key;
 extern cfg_string cfg_acrcloud_host;
 extern cfg_string cfg_acrcloud_access_key;
 extern cfg_string cfg_acrcloud_access_secret;
+extern cfg_string cfg_acrcloud_host2;
+extern cfg_string cfg_acrcloud_access_key2;
+extern cfg_string cfg_acrcloud_access_secret2;
 extern cfg_uint cfg_cache_size;
 
 // Priority order configuration
