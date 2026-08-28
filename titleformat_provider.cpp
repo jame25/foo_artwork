@@ -208,17 +208,17 @@ public:
                         if (index == field_artist) {
                             const char* art = info.meta_get("ARTIST", 0);
                             if (art && strlen(art) > 0) {
-                                field_val = MetadataCleaner::clean_for_search(art, true).c_str();
+                                field_val = MetadataCleaner::clean_for_search(art, true, false).c_str();
                             }
                         } else if (index == field_artist_full) {
                             const char* art = info.meta_get("ARTIST", 0);
                             if (art && strlen(art) > 0) {
-                                field_val = art;
+                                field_val = MetadataCleaner::clean_for_search(art, true, false).c_str();
                             }
                         } else if (index == field_title) {
                             const char* tit = info.meta_get("TITLE", 0);
                             if (tit && strlen(tit) > 0) {
-                                field_val = MetadataCleaner::clean_for_search(tit, true).c_str();
+                                field_val = MetadataCleaner::clean_for_search(tit, true, false).c_str();
                             }
                         } else if (index == field_album) {
                             const char* alb = info.meta_get("ALBUM", 0);
@@ -231,15 +231,19 @@ public:
 
                 if (index == field_cover || index == field_path) {
                     pfc::string8 key = artwork_manager::generate_cache_key_for_track(handle);
-                    pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(key);
-                    if (PathFileExistsA(cache_file.c_str())) {
-                        field_val = cache_file;
+                    if (!key.is_empty()) {
+                        pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(key);
+                        if (PathFileExistsA(cache_file.c_str())) {
+                            field_val = cache_file;
+                        }
                     }
                 } else if (index == field_source) {
                     pfc::string8 key = artwork_manager::generate_cache_key_for_track(handle);
-                    pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(key);
-                    if (PathFileExistsA(cache_file.c_str())) {
-                        field_val = "Cache";
+                    if (!key.is_empty()) {
+                        pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(key);
+                        if (PathFileExistsA(cache_file.c_str())) {
+                            field_val = "Cache";
+                        }
                     }
                 }
             }
