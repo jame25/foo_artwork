@@ -90,25 +90,36 @@ BEGIN
     LTEXT           "Note: Retries use exponential backoff (1s, 2s, 4s...) for transient failures.",IDC_STATIC,20,268,290,10
 END
 
-IDD_PREFERENCES_ACRCLOUD DIALOGEX 0, 0, 350, 280
+IDD_PREFERENCES_ACRCLOUD DIALOGEX 0, 0, 350, 270
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
-    GROUPBOX        "ACRCloud Service Configuration",IDC_STATIC,10,10,320,165
+    CONTROL         "Enable ACRCloud Live Stream Recognition",IDC_ENABLE_ACRCLOUD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,15,8,250,12
 
-    CONTROL         "Enable ACRCloud Live Stream Recognition",IDC_ENABLE_ACRCLOUD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,30,220,12
+    GROUPBOX        "Primary Account",IDC_STATIC,10,24,320,85
 
-    LTEXT           "Host:",IDC_STATIC,20,55,85,10
-    EDITTEXT        IDC_ACRCLOUD_HOST,110,53,205,14,ES_AUTOHSCROLL
+    LTEXT           "Host:",IDC_STATIC,20,39,75,10
+    EDITTEXT        IDC_ACRCLOUD_HOST,98,37,205,14,ES_AUTOHSCROLL
 
-    LTEXT           "Access Key:",IDC_STATIC,20,77,85,10
-    EDITTEXT        IDC_ACRCLOUD_ACCESS_KEY,110,75,205,14,ES_AUTOHSCROLL
+    LTEXT           "Access Key:",IDC_STATIC,20,59,75,10
+    EDITTEXT        IDC_ACRCLOUD_ACCESS_KEY,98,57,205,14,ES_AUTOHSCROLL
 
-    LTEXT           "Access Secret:",IDC_STATIC,20,99,85,10
-    EDITTEXT        IDC_ACRCLOUD_ACCESS_SECRET,110,97,205,14,ES_AUTOHSCROLL | ES_PASSWORD
+    LTEXT           "Access Secret:",IDC_STATIC,20,79,75,10
+    EDITTEXT        IDC_ACRCLOUD_ACCESS_SECRET,98,77,205,14,ES_AUTOHSCROLL | ES_PASSWORD
 
-    LTEXT           "Note: ACRCloud is used to recognize live radio streams without track length.",IDC_STATIC,20,125,295,10
-    LTEXT           "Create a free developer account and project to get your credentials at:",IDC_STATIC,20,137,295,10
-    LTEXT           "https://console.acrcloud.com/",IDC_STATIC,20,149,200,10
+    GROUPBOX        "Secondary Account (Failover on Error 3001)",IDC_STATIC,10,116,320,85
+
+    LTEXT           "Host:",IDC_STATIC,20,131,75,10
+    EDITTEXT        IDC_ACRCLOUD_HOST2,98,129,205,14,ES_AUTOHSCROLL
+
+    LTEXT           "Access Key:",IDC_STATIC,20,151,75,10
+    EDITTEXT        IDC_ACRCLOUD_ACCESS_KEY2,98,149,205,14,ES_AUTOHSCROLL
+
+    LTEXT           "Access Secret:",IDC_STATIC,20,171,75,10
+    EDITTEXT        IDC_ACRCLOUD_ACCESS_SECRET2,98,169,205,14,ES_AUTOHSCROLL | ES_PASSWORD
+
+    LTEXT           "Note: Automatic failover switches to Secondary when Primary request limit is reached.",IDC_STATIC,15,210,310,10
+    LTEXT           "Create free developer accounts at: https://console.acrcloud.com/",IDC_STATIC,15,224,310,10
 END
+
 
