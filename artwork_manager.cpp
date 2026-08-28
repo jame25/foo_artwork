@@ -295,7 +295,16 @@ extern cfg_bool cfg_enable_acrcloud;
 extern cfg_string cfg_acrcloud_host;
 extern cfg_string cfg_acrcloud_access_key;
 extern cfg_string cfg_acrcloud_access_secret;
+extern cfg_string cfg_acrcloud_host2;
+extern cfg_string cfg_acrcloud_access_key2;
+extern cfg_string cfg_acrcloud_access_secret2;
 extern cfg_bool cfg_disable_instream_artwork;
+
+static inline bool is_acrcloud_configured() {
+    bool has_primary = !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty();
+    bool has_secondary = !cfg_acrcloud_host2.is_empty() && !cfg_acrcloud_access_key2.is_empty() && !cfg_acrcloud_access_secret2.is_empty();
+    return has_primary || has_secondary;
+}
 
 // Static member initialization
 std::atomic<bool> artwork_manager::initialized_(false);
@@ -351,6 +360,7 @@ static std::mutex g_in_flight_mutex;
 static std::map<std::string, std::vector<artwork_manager::artwork_callback>> g_in_flight_queries;
 static std::map<std::string, ApiDedupEntry> g_api_dedup_map;
 static visualisation_stream::ptr get_persistent_vis_stream();
+static void start_rms_silence_detector(const pfc::string8& stream_url);
 static void stop_rms_silence_detector(bool force = true);
 static void reset_acrcloud_cooldown();
 static void log_simplified_track_info(const char* artist, const char* title);
@@ -399,6 +409,12 @@ void artwork_manager::on_playback_new_track(metadb_handle_ptr track) {
         bool is_yt = !extract_youtube_video_id(path.c_str()).is_empty();
         if (is_yt || (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://")) || strstr(path.c_str(), "youtube.com") || strstr(path.c_str(), "youtu.be")) {
             g_current_stream_url = path;
+            bool force_acrcloud = has_url_flag(path.c_str(), "forceacr");
+            if (force_acrcloud) {
+                start_rms_silence_detector(path);
+            }
+            start_initial_stream_metadata_monitor(path);
+            start_external_stream_api_poller(path);
         } else {
             g_current_stream_url.reset();
         }
@@ -708,24 +724,43 @@ void artwork_manager::search_youtube_thumbnail_async(const pfc::string8& video_i
     });
 }
 
-bool artwork_manager::has_url_flag(const char* url, const char* flag) {
-    if (!url || !flag || strlen(url) == 0 || strlen(flag) == 0) return false;
+static bool check_url_string_has_flag(const char* url, const char* flag) {
+    if (!url || !flag || url[0] == '\0' || flag[0] == '\0') return false;
     std::string u(url);
-    std::transform(u.begin(), u.end(), u.begin(), ::tolower);
     std::string f(flag);
+    std::transform(u.begin(), u.end(), u.begin(), ::tolower);
     std::transform(f.begin(), f.end(), f.begin(), ::tolower);
 
-    std::string p1 = "?" + f;
-    std::string p2 = "&" + f;
-    std::string p3 = "#" + f;
-    return (u.find(p1) != std::string::npos || u.find(p2) != std::string::npos || u.find(p3) != std::string::npos);
+    const char* prefixes[] = { "?", "&", "#" };
+    for (const char* p : prefixes) {
+        std::string pattern = std::string(p) + f;
+        size_t pos = 0;
+        while ((pos = u.find(pattern, pos)) != std::string::npos) {
+            size_t next_char_idx = pos + pattern.length();
+            if (next_char_idx >= u.length()) {
+                return true;
+            }
+            char next_c = u[next_char_idx];
+            if (next_c == '&' || next_c == '#' || next_c == ' ' || next_c == '\t' || next_c == '\r' || next_c == '\n') {
+                return true;
+            }
+            if (next_c == '=') {
+                size_t val_end = u.find_first_of("&# \t\r\n", next_char_idx + 1);
+                std::string val = (val_end == std::string::npos) ? u.substr(next_char_idx + 1) : u.substr(next_char_idx + 1, val_end - (next_char_idx + 1));
+                if (val == "1" || val == "true" || val == "yes" || val == "on") {
+                    return true;
+                }
+            }
+            pos += pattern.length();
+        }
+    }
+    return false;
 }
 
-pfc::string8 artwork_manager::get_url_param_value(const char* url, const char* param_name) {
-    if (!url || !param_name || strlen(url) == 0 || strlen(param_name) == 0) return "";
+static pfc::string8 extract_param_value_from_url_string(const char* url, const char* param_name) {
+    if (!url || !param_name || url[0] == '\0' || param_name[0] == '\0') return "";
     std::string u(url);
     std::string p(param_name);
-    
     std::string u_lower = u;
     std::transform(u_lower.begin(), u_lower.end(), u_lower.begin(), ::tolower);
     std::string p_lower = p;
@@ -733,53 +768,147 @@ pfc::string8 artwork_manager::get_url_param_value(const char* url, const char* p
 
     std::string search1 = "?" + p_lower + "=";
     std::string search2 = "&" + p_lower + "=";
-    
+    std::string search3 = "#" + p_lower + "=";
+
     size_t pos = u_lower.find(search1);
     size_t offset = search1.length();
     if (pos == std::string::npos) {
         pos = u_lower.find(search2);
         offset = search2.length();
     }
-    
     if (pos == std::string::npos) {
-        if (has_url_flag(url, param_name)) {
+        pos = u_lower.find(search3);
+        offset = search3.length();
+    }
+
+    if (pos == std::string::npos) {
+        if (check_url_string_has_flag(url, param_name)) {
             return "1";
         }
         return "";
     }
-    
+
     size_t start = pos + offset;
     size_t end = u.find_first_of("&# \t\r\n", start);
     std::string val = (end == std::string::npos) ? u.substr(start) : u.substr(start, end - start);
     return val.c_str();
 }
 
-int artwork_manager::extract_coversync_seconds(metadb_handle_ptr track) {
-    pfc::string8 sync_val = artwork_manager::get_url_param_value(g_current_stream_url.c_str(), "coversync");
-    if (sync_val.is_empty()) {
-        if (!track.is_valid()) {
-            static_api_ptr_t<playback_control> pc;
-            pc->get_now_playing(track);
-        }
-        if (track.is_valid()) {
-            try {
-                metadb_info_container::ptr info_container = track->get_info_ref();
-                if (info_container.is_valid()) {
-                    const file_info& info = info_container->info();
-                    const char* cs_meta = info.meta_get("COVERSYNC", 0);
-                    if (!cs_meta) cs_meta = info.meta_get("coversync", 0);
-                    if (cs_meta && cs_meta[0] != '\0') sync_val = cs_meta;
-                    
-                    if (sync_val.is_empty()) {
-                        const char* at_meta = info.meta_get("@", 0);
-                        if (at_meta && at_meta[0] != '\0') {
-                            sync_val = artwork_manager::get_url_param_value(at_meta, "coversync");
-                        }
-                    }
-                }
-            } catch (...) {}
+bool artwork_manager::has_url_flag(const char* url, const char* flag) {
+    if (!flag || flag[0] == '\0') return false;
+
+    // 1. Check raw URL string if provided
+    if (url && url[0] != '\0' && check_url_string_has_flag(url, flag)) {
+        return true;
+    }
+
+    // 2. Check current stream URL if url was null/empty or didn't contain the flag
+    if ((!url || url[0] == '\0') && !g_current_stream_url.is_empty()) {
+        if (check_url_string_has_flag(g_current_stream_url.c_str(), flag)) {
+            return true;
         }
     }
+
+    // 3. Check m-tags and custom tag fields via active track or playback control
+    metadb_handle_ptr track = g_active_playing_track;
+    if (!track.is_valid() && core_api::is_main_thread()) {
+        playback_control::get()->get_now_playing(track);
+    }
+
+    if (track.is_valid()) {
+        try {
+            metadb_info_container::ptr info_container = track->get_info_ref();
+            if (info_container.is_valid()) {
+                const file_info& info = info_container->info();
+
+                // Check @ metadata tag (underlying target stream URL in .tags / m-tags files)
+                const char* at_meta = info.meta_get("@", 0);
+                if (at_meta && at_meta[0] != '\0') {
+                    if (check_url_string_has_flag(at_meta, flag)) {
+                        return true;
+                    }
+                }
+
+                // Check custom tag fields directly (case-insensitive)
+                std::string f_low(flag);
+                std::transform(f_low.begin(), f_low.end(), f_low.begin(), ::tolower);
+                std::string f_up(flag);
+                std::transform(f_up.begin(), f_up.end(), f_up.begin(), ::toupper);
+
+                const char* tag_val = info.meta_get(f_low.c_str(), 0);
+                if (!tag_val) tag_val = info.meta_get(f_up.c_str(), 0);
+                if (!tag_val) tag_val = info.meta_get(flag, 0);
+
+                if (tag_val && tag_val[0] != '\0') {
+                    std::string v(tag_val);
+                    std::transform(v.begin(), v.end(), v.begin(), ::tolower);
+                    if (v != "0" && v != "false" && v != "no" && v != "off" && v != "disabled") {
+                        return true;
+                    }
+                }
+            }
+        } catch (...) {}
+    }
+
+    return false;
+}
+
+pfc::string8 artwork_manager::get_url_param_value(const char* url, const char* param_name) {
+    if (!param_name || param_name[0] == '\0') return "";
+
+    // 1. Check raw URL string if provided
+    if (url && url[0] != '\0') {
+        pfc::string8 val = extract_param_value_from_url_string(url, param_name);
+        if (!val.is_empty()) return val;
+    }
+
+    // 2. Check current stream URL if url was null/empty or didn't contain the param
+    if ((!url || url[0] == '\0') && !g_current_stream_url.is_empty()) {
+        pfc::string8 val = extract_param_value_from_url_string(g_current_stream_url.c_str(), param_name);
+        if (!val.is_empty()) return val;
+    }
+
+    // 3. Check m-tags and custom tag fields via active track or playback control
+    metadb_handle_ptr track = g_active_playing_track;
+    if (!track.is_valid() && core_api::is_main_thread()) {
+        playback_control::get()->get_now_playing(track);
+    }
+
+    if (track.is_valid()) {
+        try {
+            metadb_info_container::ptr info_container = track->get_info_ref();
+            if (info_container.is_valid()) {
+                const file_info& info = info_container->info();
+
+                // Check custom tag fields directly (case-insensitive)
+                std::string p_low(param_name);
+                std::transform(p_low.begin(), p_low.end(), p_low.begin(), ::tolower);
+                std::string p_up(param_name);
+                std::transform(p_up.begin(), p_up.end(), p_up.begin(), ::toupper);
+
+                const char* tag_val = info.meta_get(p_low.c_str(), 0);
+                if (!tag_val) tag_val = info.meta_get(p_up.c_str(), 0);
+                if (!tag_val) tag_val = info.meta_get(param_name, 0);
+
+                if (tag_val && tag_val[0] != '\0') {
+                    return tag_val;
+                }
+
+                // Check @ metadata tag (underlying target stream URL in .tags / m-tags files)
+                const char* at_meta = info.meta_get("@", 0);
+                if (at_meta && at_meta[0] != '\0') {
+                    pfc::string8 at_val = extract_param_value_from_url_string(at_meta, param_name);
+                    if (!at_val.is_empty()) return at_val;
+                }
+            }
+        } catch (...) {}
+    }
+
+    return "";
+}
+
+int artwork_manager::extract_coversync_seconds(metadb_handle_ptr track) {
+    pfc::string8 sync_val = artwork_manager::get_url_param_value(g_current_stream_url.c_str(), "coversync");
     if (!sync_val.is_empty()) {
         try {
             return std::atoi(sync_val.c_str());
@@ -1260,15 +1389,18 @@ static void probe_candidates_async(const pfc::string8& stream_url, const std::ve
         }
 
         if (validated) {
-            // Guard: Check if native ICY metadata has already arrived on the stream
-            metadb_handle_ptr track;
-            if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
-                pfc::string8 art, tit;
-                extract_track_metadata_dynamic(track, art, tit);
-                StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
-                if (meta.is_valid_search && !meta.is_station_or_url) {
-                    // Native ICY metadata is active on the stream - do not launch auto-probed poller
-                    return;
+            bool force_autoprobe = artwork_manager::has_url_flag(stream_url.c_str(), "ext_api_autoprobe");
+            if (!force_autoprobe) {
+                // Guard: Check if native ICY metadata has already arrived on the stream
+                metadb_handle_ptr track;
+                if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+                    pfc::string8 art, tit;
+                    extract_track_metadata_dynamic(track, art, tit);
+                    StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
+                    if (meta.is_valid_search && !meta.is_station_or_url) {
+                        // Native ICY metadata is active on the stream - do not launch auto-probed poller
+                        return;
+                    }
                 }
             }
 
@@ -1289,6 +1421,26 @@ void artwork_manager::probe_external_stream_api(const pfc::string8& stream_url, 
     if (g_is_shutting_down.load() || g_external_api_session_token != session_token) return;
 
     std::string s = stream_url.c_str();
+
+    // If stream_url is a .tags file or file:// path, resolve underlying HTTP/HTTPS URL from @ tag if available
+    if (s.find("file://") == 0 || s.rfind(".tags") != std::string::npos) {
+        metadb_handle_ptr track = g_active_playing_track;
+        if (!track.is_valid() && core_api::is_main_thread()) {
+            playback_control::get()->get_now_playing(track);
+        }
+        if (track.is_valid()) {
+            try {
+                metadb_info_container::ptr info_container = track->get_info_ref();
+                if (info_container.is_valid()) {
+                    const char* at_meta = info_container->info().meta_get("@", 0);
+                    if (at_meta && at_meta[0] != '\0') {
+                        s = at_meta;
+                    }
+                }
+            } catch (...) {}
+        }
+    }
+
     size_t proto = s.find("://");
     if (proto == std::string::npos || s.find("file://") == 0) return;
 
@@ -1296,20 +1448,24 @@ void artwork_manager::probe_external_stream_api(const pfc::string8& stream_url, 
     std::string base = (host_end != std::string::npos) ? s.substr(0, host_end) : s;
     if (base.empty()) return;
 
+    bool force_autoprobe = has_url_flag(stream_url.c_str(), "ext_api_autoprobe");
+
     // Check probe cache
     {
         std::lock_guard<std::mutex> lock(g_probe_cache_mutex);
         auto it = g_probed_stream_endpoints_cache.find(stream_url.c_str());
         if (it != g_probed_stream_endpoints_cache.end()) {
             if (it->second.first == StreamProbeStatus::SUCCESS) {
-                // If stream already has metadata, do not poll cached endpoint
-                metadb_handle_ptr track;
-                if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
-                    pfc::string8 art, tit;
-                    extract_track_metadata_dynamic(track, art, tit);
-                    StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
-                    if (meta.is_valid_search && !meta.is_station_or_url) {
-                        return;
+                // If stream already has metadata, do not poll cached endpoint unless forced by ext_api_autoprobe
+                if (!force_autoprobe) {
+                    metadb_handle_ptr track;
+                    if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+                        pfc::string8 art, tit;
+                        extract_track_metadata_dynamic(track, art, tit);
+                        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
+                        if (meta.is_valid_search && !meta.is_station_or_url) {
+                            return;
+                        }
                     }
                 }
                 pfc::string8 endpoint = it->second.second;
@@ -1322,7 +1478,7 @@ void artwork_manager::probe_external_stream_api(const pfc::string8& stream_url, 
         }
     }
 
-    pfc::string8 slug = extract_station_slug_from_url(stream_url.c_str());
+    pfc::string8 slug = extract_station_slug_from_url(s.c_str());
 
     // Extract numeric segment / sub-id if present
     std::string sub_id;
@@ -1404,15 +1560,18 @@ void artwork_manager::start_external_stream_api_poller(const pfc::string8& strea
     uint64_t current_token = ++g_external_api_session_token;
 
     if (!is_azura && !is_radioreg) {
-        // Check if stream metadata is already valid and not a placeholder/station URL
-        metadb_handle_ptr track;
-        if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
-            pfc::string8 art, tit;
-            extract_track_metadata_dynamic(track, art, tit);
-            StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
-            if (meta.is_valid_search && !meta.is_station_or_url) {
-                // Native ICY stream metadata exists - do not auto-probe external server endpoints
-                return;
+        bool force_autoprobe = has_url_flag(stream_url.c_str(), "ext_api_autoprobe");
+        if (!force_autoprobe) {
+            // Check if stream metadata is already valid and not a placeholder/station URL
+            metadb_handle_ptr track;
+            if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
+                pfc::string8 art, tit;
+                extract_track_metadata_dynamic(track, art, tit);
+                StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(art.c_str(), tit.c_str());
+                if (meta.is_valid_search && !meta.is_station_or_url) {
+                    // Native ICY stream metadata exists - do not auto-probe external server endpoints
+                    return;
+                }
             }
         }
         // Automatic server probing for AzuraCast / RadioReg now-playing endpoints on untagged streams
@@ -1766,7 +1925,7 @@ void artwork_manager::reject_current_artwork() {
     if (track.is_valid() && (!extract_youtube_video_id(track->get_path()).is_empty() || !extract_youtube_video_id(g_current_stream_url.c_str()).is_empty())) {
         available_providers.push_back("YouTube Thumbnail");
     }
-    if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty()) {
+    if (cfg_enable_acrcloud && is_acrcloud_configured()) {
         available_providers.push_back("ACRCloud");
     }
 
@@ -2092,11 +2251,12 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
     // Stop acoustic shift detector since valid song metadata is now available
     stop_rms_silence_detector();
 
-    // If external stream API was auto-probed (not explicitly configured via ?azuracast_api or ?radioreg_api),
+    // If external stream API was auto-probed (not explicitly configured via ?azuracast_api, ?radioreg_api, or ?ext_api_autoprobe),
     // stop the background poller since valid native ICY stream metadata is actively arriving
     pfc::string8 az_param = get_url_param_value(g_current_stream_url.c_str(), "azuracast_api");
     pfc::string8 rr_param = get_url_param_value(g_current_stream_url.c_str(), "radioreg_api");
-    if (az_param.is_empty() && rr_param.is_empty()) {
+    bool force_autoprobe = has_url_flag(g_current_stream_url.c_str(), "ext_api_autoprobe");
+    if (az_param.is_empty() && rr_param.is_empty() && !force_autoprobe) {
         stop_external_stream_api_poller();
     }
 
@@ -2346,7 +2506,7 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                     if (cfg_enable_acrcloud) {
                         foo_artwork::log_printf("foo_artwork: Initial 10s stream metadata monitor completed without song metadata update. Enabling Log-Spectral Acoustic Shift detection...");
                         start_rms_silence_detector(stream_url);
-                        if (!cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
+                        if (is_acrcloud_configured()) {
                             auto now = std::chrono::steady_clock::now();
                             if (now >= g_acrcloud_cooldown_until) {
                                 foo_artwork::log_printf("foo_artwork: Triggering ACRCloud audio recognition fallback for stream without song metadata...");
@@ -2636,7 +2796,7 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
         // UNTAGGED STREAMS, PLACEHOLDER METADATA, STATION DOMAINS/SLOGANS OR ?FORCEACR TAG:
         // On untagged streams, station names/URLs, or ?forceacr streams, do NOT query online commercial APIs.
         if (force_acrcloud) {
-            if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
+            if (cfg_enable_acrcloud && is_acrcloud_configured()) {
                 foo_artwork::log_printf("foo_artwork: Stream URL contains 'forceacr' tag. Bypassing text search to ACRCloud fallback.");
                 search_acrcloud_fallback_async(cache_key, callback);
             } else {
@@ -3026,7 +3186,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
 
     // Direct ACRCloud Tier 4 fallback if URL explicitly contains 'forceacr' tag
     if (force_acrcloud) {
-        if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
+        if (cfg_enable_acrcloud && is_acrcloud_configured()) {
             foo_artwork::log_printf("foo_artwork: Stream URL contains 'forceacr' tag. Bypassing text search to ACRCloud fallback.");
             search_acrcloud_fallback_async(cache_key, callback);
         } else {
@@ -3113,7 +3273,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
                     if (yt_res.success) {
                         final_callback(yt_res);
                     } else {
-                        if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
+                        if (cfg_enable_acrcloud && is_acrcloud_configured()) {
                             auto now = std::chrono::steady_clock::now();
                             if (now >= g_acrcloud_cooldown_until) {
                                 foo_artwork::log_printf("foo_artwork: Triggering ACRCloud audio recognition fallback after YouTube thumbnail failure...");
@@ -3131,7 +3291,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
             }
         }
 
-        if (cfg_enable_acrcloud && !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty()) {
+        if (cfg_enable_acrcloud && is_acrcloud_configured()) {
             auto now = std::chrono::steady_clock::now();
             if (now >= g_acrcloud_cooldown_until) {
                 foo_artwork::log_printf("foo_artwork: Triggering ACRCloud audio recognition fallback after text search failure...");
@@ -3227,7 +3387,7 @@ static visualisation_stream::ptr get_persistent_vis_stream() {
     return g_vis_stream;
 }
 void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_key, artwork_callback callback, bool is_manual_trigger) {
-    if (!cfg_enable_acrcloud || cfg_acrcloud_host.is_empty() || cfg_acrcloud_access_key.is_empty() || cfg_acrcloud_access_secret.is_empty()) {
+    if (!cfg_enable_acrcloud || !is_acrcloud_configured()) {
         artwork_result fail_res;
         fail_res.success = false;
         fail_res.error_message = "All text search tiers failed; ACRCloud fallback is disabled or unconfigured";
@@ -3367,13 +3527,43 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
             memcpy(audio_bytes.data(), pcm_samples.data(), audio_bytes.size());
         }
 
-        ACRCloudClient::RecognitionResult rec = ACRCloudClient::recognize_audio(
-            cfg_acrcloud_host.get_ptr(),
-            cfg_acrcloud_access_key.get_ptr(),
-            cfg_acrcloud_access_secret.get_ptr(),
-            audio_bytes.data(),
-            audio_bytes.size()
-        );
+        bool has_primary = !cfg_acrcloud_host.is_empty() && !cfg_acrcloud_access_key.is_empty() && !cfg_acrcloud_access_secret.is_empty();
+        bool has_secondary = !cfg_acrcloud_host2.is_empty() && !cfg_acrcloud_access_key2.is_empty() && !cfg_acrcloud_access_secret2.is_empty();
+
+        ACRCloudClient::RecognitionResult rec;
+        if (has_primary) {
+            rec = ACRCloudClient::recognize_audio(
+                cfg_acrcloud_host.get_ptr(),
+                cfg_acrcloud_access_key.get_ptr(),
+                cfg_acrcloud_access_secret.get_ptr(),
+                audio_bytes.data(),
+                audio_bytes.size()
+            );
+
+            // Automatic failover on request limit exceeded (error 3001)
+            bool is_limit_exceeded = (rec.status_code == 3001) ||
+                (rec.error_message.find("limit") != std::string::npos && rec.error_message.find("exceeded") != std::string::npos) ||
+                (rec.error_message.find("3001") != std::string::npos);
+
+            if (!rec.success && is_limit_exceeded && has_secondary) {
+                foo_artwork::log_printf("foo_artwork: ACRCloud Primary account requests limit exceeded (Code 3001). Automatically failing over to Secondary credentials...");
+                rec = ACRCloudClient::recognize_audio(
+                    cfg_acrcloud_host2.get_ptr(),
+                    cfg_acrcloud_access_key2.get_ptr(),
+                    cfg_acrcloud_access_secret2.get_ptr(),
+                    audio_bytes.data(),
+                    audio_bytes.size()
+                );
+            }
+        } else if (has_secondary) {
+            rec = ACRCloudClient::recognize_audio(
+                cfg_acrcloud_host2.get_ptr(),
+                cfg_acrcloud_access_key2.get_ptr(),
+                cfg_acrcloud_access_secret2.get_ptr(),
+                audio_bytes.data(),
+                audio_bytes.size()
+            );
+        }
 
         if (rec.success) {
             log_simplified_track_info(rec.artist.c_str(), rec.title.c_str());
@@ -4307,11 +4497,11 @@ pfc::string8 artwork_manager::generate_cache_key_for_track(metadb_handle_ptr tra
         if (meta.is_valid_search && !meta.clean_artist.empty() && !meta.clean_title.empty()) {
             return generate_cache_key(meta.clean_artist.c_str(), meta.clean_title.c_str());
         }
-        if (!artist.is_empty() && !track_name.is_empty()) {
+        if (!artist.is_empty() && !track_name.is_empty() && artist != "Unknown Artist" && track_name != "Unknown Track") {
             return generate_cache_key(artist.c_str(), track_name.c_str());
         }
-        return generate_cache_key(artist.is_empty() ? "Unknown Artist" : artist.c_str(),
-                                  track_name.is_empty() ? "Unknown Track" : track_name.c_str());
+        // Do not generate a generic "Unknown Artist_Unknown Track" cache key for untagged streams
+        return pfc::string8();
     } else {
         // Offline / local track
         if (!artist.is_empty() && !track_name.is_empty() &&
