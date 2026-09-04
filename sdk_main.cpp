@@ -12,6 +12,7 @@
 #include <mutex>
 #include <regex>
 #include <shlobj.h>
+#include <shellapi.h>
 
 // CUI support is now defined in stdafx.h
 
@@ -104,6 +105,40 @@ cfg_string cfg_acrcloud_access_secret(guid_cfg_acrcloud_access_secret, "");
 cfg_string cfg_acrcloud_host2(guid_cfg_acrcloud_host2, "");
 cfg_string cfg_acrcloud_access_key2(guid_cfg_acrcloud_access_key2, "");
 cfg_string cfg_acrcloud_access_secret2(guid_cfg_acrcloud_access_secret2, "");
+
+// Secure credential accessors (decrypt DPAPI ciphertext into memory)
+pfc::string8 get_acrcloud_access_key() {
+    return crypto_utils::decrypt_credential(cfg_acrcloud_access_key.get_ptr());
+}
+
+pfc::string8 get_acrcloud_access_secret() {
+    return crypto_utils::decrypt_credential(cfg_acrcloud_access_secret.get_ptr());
+}
+
+pfc::string8 get_acrcloud_access_key2() {
+    return crypto_utils::decrypt_credential(cfg_acrcloud_access_key2.get_ptr());
+}
+
+pfc::string8 get_acrcloud_access_secret2() {
+    return crypto_utils::decrypt_credential(cfg_acrcloud_access_secret2.get_ptr());
+}
+
+void migrate_credentials_to_encrypted() {
+    // Check and upgrade ACRCloud credentials
+    if (!cfg_acrcloud_access_key.is_empty() && !crypto_utils::is_credential_encrypted(cfg_acrcloud_access_key.get_ptr())) {
+        cfg_acrcloud_access_key = crypto_utils::encrypt_credential(cfg_acrcloud_access_key.get_ptr());
+    }
+    if (!cfg_acrcloud_access_secret.is_empty() && !crypto_utils::is_credential_encrypted(cfg_acrcloud_access_secret.get_ptr())) {
+        cfg_acrcloud_access_secret = crypto_utils::encrypt_credential(cfg_acrcloud_access_secret.get_ptr());
+    }
+    if (!cfg_acrcloud_access_key2.is_empty() && !crypto_utils::is_credential_encrypted(cfg_acrcloud_access_key2.get_ptr())) {
+        cfg_acrcloud_access_key2 = crypto_utils::encrypt_credential(cfg_acrcloud_access_key2.get_ptr());
+    }
+    if (!cfg_acrcloud_access_secret2.is_empty() && !crypto_utils::is_credential_encrypted(cfg_acrcloud_access_secret2.get_ptr())) {
+        cfg_acrcloud_access_secret2 = crypto_utils::encrypt_credential(cfg_acrcloud_access_secret2.get_ptr());
+    }
+}
+
 cfg_bool cfg_fill_mode(guid_cfg_fill_mode, false);  // true = fill window (crop), false = fit window (letterbox)
 
 // API Priority order (0=iTunes, 1=Deezer, 2=Last.fm, 3=MusicBrainz, 4=Discogs)
@@ -153,6 +188,10 @@ cfg_bool cfg_single_file_cache(guid_cfg_single_file_cache, false);  // Single fi
 
 // Cache size limit in MB (default 1000 MB / 1 GB)
 cfg_uint cfg_cache_size(guid_cfg_cache_size, 1000);
+
+// Custom noise blacklist
+static constexpr GUID guid_cfg_custom_blacklist = { 0x1234569f, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x0e } };
+cfg_string cfg_custom_blacklist(guid_cfg_custom_blacklist, "");
 
 
 //=============================================================================
@@ -349,7 +388,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.0",
+    "1.7.1",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -366,7 +405,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.0",
+    "1.7.1",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -410,35 +449,163 @@ static BOOL path_file_exists_utf8(const pfc::string8& utf8_path) {
     return PathFileExistsW(wide_path.c_str());
 }
 
-// Function to create AppData directory structure for logos and cache
-void create_appdata_directories() {
-    try {
-        // Get foobar2000 profile path (returns file:// URL)
-        pfc::string8 profile_url = core_api::get_profile_path();
-
-        // Convert file:// URL to native Windows path using SDK function
-        pfc::string8 profile_path;
-        if (!foobar2000_io::extract_native_path(profile_url.c_str(), profile_path)) {
-            // Fallback: manual conversion if SDK function fails
-            if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
-                const char* path_start = profile_url.c_str() + 7; // Skip "file://"
-                // Skip leading slash if present (file:///C:/... -> C:/...)
-                if (*path_start == '/') path_start++;
-                profile_path = path_start;
-                // Replace forward slashes with backslashes for Windows
-                for (size_t i = 0; i < profile_path.length(); i++) {
-                    if (profile_path[i] == '/') {
-                        profile_path.set_char(i, '\\');
-                    }
+// Helper function to resolve foo_artwork_data directory path in foobar2000 profile
+pfc::string8 get_artwork_data_path() {
+    pfc::string8 profile_url = core_api::get_profile_path();
+    pfc::string8 profile_path;
+    if (!foobar2000_io::extract_native_path(profile_url.c_str(), profile_path)) {
+        if (strstr(profile_url.c_str(), "file://") == profile_url.c_str()) {
+            const char* path_start = profile_url.c_str() + 7;
+            if (*path_start == '/') path_start++;
+            profile_path = path_start;
+            for (size_t i = 0; i < profile_path.length(); i++) {
+                if (profile_path[i] == '/') {
+                    profile_path.set_char(i, '\\');
                 }
-            } else {
-                profile_path = profile_url;
+            }
+        } else {
+            profile_path = profile_url;
+        }
+    }
+    if (!profile_path.is_empty() && profile_path[profile_path.length() - 1] != '\\') {
+        profile_path << "\\";
+    }
+    return profile_path + "foo_artwork_data\\";
+}
+
+pfc::string8 get_blacklist_file_path() {
+    return get_artwork_data_path() + "blacklist.txt";
+}
+
+pfc::string8 load_custom_blacklist_from_file() {
+    pfc::string8 filepath = get_blacklist_file_path();
+    std::wstring wide_path = utf8_to_wide(filepath);
+
+    HANDLE hFile = CreateFileW(wide_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return "";
+    }
+
+    DWORD fileSize = GetFileSize(hFile, NULL);
+    if (fileSize == 0 || fileSize == INVALID_FILE_SIZE) {
+        CloseHandle(hFile);
+        return "";
+    }
+
+    if (fileSize > 1024 * 1024) fileSize = 1024 * 1024;
+
+    std::string buffer;
+    buffer.resize(fileSize);
+    DWORD bytesRead = 0;
+    if (!ReadFile(hFile, &buffer[0], fileSize, &bytesRead, NULL)) {
+        CloseHandle(hFile);
+        return "";
+    }
+    CloseHandle(hFile);
+    buffer.resize(bytesRead);
+
+    // Strip UTF-8 BOM if present
+    if (buffer.size() >= 3 && (unsigned char)buffer[0] == 0xEF && (unsigned char)buffer[1] == 0xBB && (unsigned char)buffer[2] == 0xBF) {
+        buffer.erase(0, 3);
+    }
+
+    return pfc::string8(buffer.c_str());
+}
+
+static FILETIME g_last_blacklist_file_time = { 0, 0 };
+static DWORD g_last_blacklist_check_tick = 0;
+
+void save_custom_blacklist_to_file(const char* content) {
+    if (!content) content = "";
+
+    pfc::string8 dir = get_artwork_data_path();
+    std::wstring wide_dir = utf8_to_wide(dir);
+    SHCreateDirectoryExW(NULL, wide_dir.c_str(), NULL);
+
+    pfc::string8 filepath = get_blacklist_file_path();
+    std::wstring wide_path = utf8_to_wide(filepath);
+
+    HANDLE hFile = CreateFileW(wide_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    DWORD bytesToWrite = (DWORD)strlen(content);
+    DWORD bytesWritten = 0;
+    WriteFile(hFile, content, bytesToWrite, &bytesWritten, NULL);
+    GetFileTime(hFile, NULL, NULL, &g_last_blacklist_file_time);
+    CloseHandle(hFile);
+}
+
+void sync_custom_blacklist_file() {
+    pfc::string8 filepath = get_blacklist_file_path();
+    std::wstring wide_path = utf8_to_wide(filepath);
+
+    if (PathFileExistsW(wide_path.c_str())) {
+        WIN32_FILE_ATTRIBUTE_DATA file_data;
+        if (GetFileAttributesExW(wide_path.c_str(), GetFileExInfoStandard, &file_data)) {
+            g_last_blacklist_file_time = file_data.ftLastWriteTime;
+        }
+        pfc::string8 file_content = load_custom_blacklist_from_file();
+        cfg_custom_blacklist = file_content;
+    } else {
+        pfc::string8 initial_content = cfg_custom_blacklist;
+        if (initial_content.is_empty()) {
+            initial_content =
+                "# Custom Noise Words Blacklist\r\n"
+                "# Filter unwanted station phrases, jingles, and promotional slogans from stream titles.\r\n"
+                "# Format: One entry per line, or separated by commas/semicolons.\r\n"
+                "# Lines starting with # are comments.\r\n"
+                "\r\n"
+                "# Common examples (uncomment or add your own):\r\n"
+                "# LIVE\r\n"
+                "# RADIO EDIT\r\n"
+                "# REMASTERED\r\n"
+                "# STATION JINGLE\r\n"
+                "# NOW PLAYING\r\n";
+        }
+        save_custom_blacklist_to_file(initial_content.c_str());
+    }
+}
+
+pfc::string8 get_custom_blacklist_active_content() {
+    DWORD current_tick = GetTickCount();
+    if (current_tick - g_last_blacklist_check_tick > 1000) {
+        g_last_blacklist_check_tick = current_tick;
+        pfc::string8 filepath = get_blacklist_file_path();
+        std::wstring wide_path = utf8_to_wide(filepath);
+        WIN32_FILE_ATTRIBUTE_DATA file_data;
+        if (GetFileAttributesExW(wide_path.c_str(), GetFileExInfoStandard, &file_data)) {
+            if (CompareFileTime(&g_last_blacklist_file_time, &file_data.ftLastWriteTime) != 0) {
+                g_last_blacklist_file_time = file_data.ftLastWriteTime;
+                pfc::string8 content = load_custom_blacklist_from_file();
+                cfg_custom_blacklist = content;
             }
         }
+    }
+    return cfg_custom_blacklist;
+}
 
-        // Build directory paths
-        pfc::string8 artwork_data_dir = profile_path;
-        artwork_data_dir << "\\foo_artwork_data\\";
+void open_blacklist_file(HWND parent) {
+    pfc::string8 filepath = get_blacklist_file_path();
+    std::wstring wide_path = utf8_to_wide(filepath);
+    if (!PathFileExistsW(wide_path.c_str())) {
+        sync_custom_blacklist_file();
+    }
+    ShellExecuteW(parent, L"open", wide_path.c_str(), NULL, NULL, SW_SHOWNORMAL);
+}
+
+void open_artwork_data_folder(HWND parent) {
+    pfc::string8 dir = get_artwork_data_path();
+    std::wstring wide_dir = utf8_to_wide(dir);
+    SHCreateDirectoryExW(NULL, wide_dir.c_str(), NULL);
+    ShellExecuteW(parent, L"open", wide_dir.c_str(), NULL, NULL, SW_SHOWNORMAL);
+}
+
+// Function to create AppData directory structure for logos, cache, and blacklist
+void create_appdata_directories() {
+    try {
+        pfc::string8 artwork_data_dir = get_artwork_data_path();
 
         pfc::string8 logos_dir = artwork_data_dir;
         logos_dir << "logos\\";
@@ -454,6 +621,9 @@ void create_appdata_directories() {
         SHCreateDirectoryExW(NULL, wide_artwork_dir.c_str(), NULL);
         SHCreateDirectoryExW(NULL, wide_logos_dir.c_str(), NULL);
         SHCreateDirectoryExW(NULL, wide_cache_dir.c_str(), NULL);
+
+        // Ensure blacklist.txt exists in foo_artwork_data and is synchronized
+        sync_custom_blacklist_file();
 
     } catch (...) {
         // Silently ignore errors - directories may already exist
@@ -542,6 +712,9 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
         else if (result[i] == '<') { result.set_char(i, '_'); }
         else if (result[i] == '>') { result.set_char(i, '_'); }
         else if (result[i] == '?') { result.set_char(i, '_'); }
+        else if (result[i] == '&') { result.set_char(i, '_'); }
+        else if (result[i] == ';') { result.set_char(i, '_'); }
+        else if (result[i] == '#') { result.set_char(i, '_'); }
 
     }
 
@@ -743,6 +916,11 @@ HBITMAP try_load_station_logo(const pfc::string8& identifier, const pfc::string8
 HBITMAP load_station_logo(metadb_handle_ptr track) {
     
     if (!track.is_valid()) return NULL;
+
+    // Check rejectstationcovers flag
+    if (artwork_manager::has_url_flag(track->get_path(), "rejectstationcovers", track)) {
+        return NULL;
+    }
     
     // Check if custom station logos are enabled
     if (!cfg_enable_custom_logos) {
@@ -878,12 +1056,17 @@ Gdiplus::Bitmap* try_load_station_logo_gdiplus(const pfc::string8& identifier, c
 // Function to load station logo directly as GDI+ bitmap (preserves alpha)
 Gdiplus::Bitmap* load_station_logo_gdiplus(metadb_handle_ptr track) {
 
+    if (!track.is_valid()) return nullptr;
+
+    // Check rejectstationcovers flag
+    if (artwork_manager::has_url_flag(track->get_path(), "rejectstationcovers", track)) {
+        return nullptr;
+    }
+
     // Check if custom station logos are enabled
     if (!cfg_enable_custom_logos) {
         return nullptr;
     }
-    
-    if (!track.is_valid()) return nullptr;
     
     // Get the directory path (using same logic as existing functions)
     pfc::string8 profile_url = core_api::get_profile_path();
@@ -1470,6 +1653,9 @@ public:
         GdiplusStartupInput gdiplusStartupInput;
         GdiplusStartup(&m_gdiplusToken, &gdiplusStartupInput, NULL);
 
+        // Migrate any legacy plaintext credentials to DPAPI encrypted format
+        migrate_credentials_to_encrypted();
+
         // Create data directories (foo_artwork_data, logos, _cache)
         create_appdata_directories();
 
@@ -1885,8 +2071,7 @@ public:
         if (!track_changed && !content_changed && !enough_time_passed && !metadata_resumed) {
             // For internet radio streams, schedule a delayed retry in case metadata is delayed
             if (track.is_valid()) {
-                pfc::string8 path = track->get_path();
-                bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                bool is_internet_stream = is_safe_internet_stream(track);
                 
                 if (is_internet_stream) {
                     // Schedule a delayed check for metadata updates (short delay for responsiveness)
@@ -1898,8 +2083,7 @@ public:
             // Also schedule delayed retry when enough time has passed but no content change
             // This handles cases where callbacks fire but metadata isn't updated yet
             if (track.is_valid()) {
-                pfc::string8 path = track->get_path();
-                bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                bool is_internet_stream = is_safe_internet_stream(track);
                 
                 if (is_internet_stream) {
                     // Schedule retry with short delay for responsiveness
@@ -1916,9 +2100,7 @@ public:
         
         // Handle ad breaks (when metadata becomes empty) - only clear during actual ad breaks
         if (track.is_valid()) {
-            pfc::string8 path = track->get_path();
-            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
-            
+            bool is_internet_stream = is_safe_internet_stream(track);
             
             // Only clear artwork if this is actually an ad break (empty metadata from non-empty)
             if (is_internet_stream && current_artist.is_empty() && current_title.is_empty()) {
@@ -1929,8 +2111,7 @@ public:
                 // Check if this is a local-to-stream transition (previous track was local file)
                 bool is_local_to_stream_transition = false;
                 if (m_last_update_track.is_valid()) {
-                    pfc::string8 old_path = m_last_update_track->get_path();
-                    bool old_was_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
+                    bool old_was_internet_stream = is_safe_internet_stream(m_last_update_track);
                     if (!old_was_internet_stream && is_internet_stream) {
                         is_local_to_stream_transition = true;
                     }
@@ -1962,7 +2143,7 @@ public:
         // OR when content changes within the same internet radio stream
         if (track_changed && track.is_valid()) {
             pfc::string8 new_path = track->get_path();
-            bool new_is_internet_stream = (strstr(new_path.c_str(), "://") && !strstr(new_path.c_str(), "file://"));
+            bool new_is_internet_stream = is_safe_internet_stream(track);
             
             // Station logos and noart fallbacks are now handled after metadata search fails
             // This allows metadata-based artwork to have priority
@@ -1972,7 +2153,7 @@ public:
             
             if (m_last_update_track.is_valid()) {
                 pfc::string8 old_path = m_last_update_track->get_path();
-                bool old_is_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
+                bool old_is_internet_stream = is_safe_internet_stream(m_last_update_track);
                 
                 // NEVER clear artwork during any transitions - only when playback stops
                 // Keep existing artwork for smooth transitions in all cases:
@@ -2030,13 +2211,13 @@ public:
         // Clear artwork when content changes within the same stream
         if (content_changed && track.is_valid()) {
             pfc::string8 path = track->get_path();
-            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            bool is_internet_stream = is_safe_internet_stream(track);
             
             if (is_internet_stream) {
                 // Check if this is a new stream connection vs track change within stream
                 bool is_new_stream_in_content_changed = false;
                 if (had_previous_track) {
-                    bool old_is_internet_stream = (strstr(old_track_path.c_str(), "://") && !strstr(old_track_path.c_str(), "file://"));
+                    bool old_is_internet_stream = is_safe_internet_stream(m_last_update_track);
                     
                     // New stream if transitioning TO internet stream or different stream URL
                     if (!old_is_internet_stream && is_internet_stream) {
@@ -2082,7 +2263,7 @@ public:
         // Handle metadata resume after ad breaks
         if (metadata_resumed && track.is_valid()) {
             pfc::string8 path = track->get_path();
-            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            bool is_internet_stream = is_safe_internet_stream(track);
             
             if (is_internet_stream) {
                 
@@ -2120,13 +2301,13 @@ public:
         // Check if this is a new internet radio stream that should use delay
         if (track.is_valid()) {
             pfc::string8 path = track->get_path();
-            bool is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+            bool is_internet_stream = is_safe_internet_stream(track);
             
             // Check if this is a new stream (different from last track)
             bool is_new_stream_connection = false;
             if (m_last_update_track.is_valid()) {
                 pfc::string8 old_path = m_last_update_track->get_path();
-                bool old_is_internet_stream = (strstr(old_path.c_str(), "://") && !strstr(old_path.c_str(), "file://"));
+                bool old_is_internet_stream = is_safe_internet_stream(m_last_update_track);
                 
                 // New stream if transitioning TO internet stream or different stream URL
                 if (!old_is_internet_stream && is_internet_stream) {
@@ -2337,6 +2518,16 @@ void subscribe_to_artwork_events(IArtworkEventListener* listener) {
 
 void unsubscribe_from_artwork_events(IArtworkEventListener* listener) {
     ArtworkEventManager::get().unsubscribe(listener);
+}
+
+void notify_artwork_cleared(const char* source) {
+    ArtworkEventManager::get().notify(ArtworkEvent(
+        ArtworkEventType::ARTWORK_CLEARED,
+        nullptr,
+        source ? source : "No-Art",
+        "",
+        ""
+    ));
 }
 
 // Function to trigger main component search from CUI panels with metadata
@@ -5171,7 +5362,7 @@ public:
                         const char* alb = info.meta_get("ALBUM", 0);
                         pfc::string8 clean_art = art ? MetadataCleaner::clean_for_search(art, true, false).c_str() : "";
                         pfc::string8 clean_tit = tit ? MetadataCleaner::clean_for_search(tit, true, false).c_str() : "";
-                        pfc::string8 clean_art_full = art ? MetadataCleaner::clean_for_search(art, true, false).c_str() : "";
+                        pfc::string8 clean_art_full = art ? art : "";
                         pfc::string8 clean_alb = alb ? alb : "";
                         titleformat_provider::set_track_artwork_info(p_track, clean_art.c_str(), clean_tit.c_str(), "", "", clean_art_full.c_str(), clean_alb.c_str(), "");
                     } else {
@@ -5386,13 +5577,20 @@ public:
                 if (val) stream_artist = val;
             }
 
+            if (stream_artist.is_empty() && !stream_title.is_empty()) {
+                StreamMetadataResult xml_res;
+                if (MetadataCleaner::try_parse_xml_stream_title(stream_title.c_str(), xml_res)) {
+                    stream_artist = xml_res.clean_artist.c_str();
+                    stream_title = xml_res.clean_title.c_str();
+                }
+            }
+
             stream_artist.trim(' ');
             stream_title.trim(' ');
 
             if (!stream_artist.is_empty() && !stream_title.is_empty()) {
-                const char* alb = p_info.meta_get("ALBUM", 0);
-                StreamMetadataResult smr = MetadataCleaner::sanitize_stream_metadata(stream_artist.c_str(), stream_title.c_str());
-                artwork_manager::on_stream_metadata_changed(stream_artist.c_str(), stream_title.c_str(), smr.clean_artist.c_str(), alb ? alb : "", "");
+                pfc::string8 broadcast_album = artwork_manager::extract_broadcast_album_from_info(&p_info);
+                artwork_manager::on_stream_metadata_changed(stream_artist.c_str(), stream_title.c_str(), stream_artist.c_str(), broadcast_album.c_str(), "");
             }
         } catch (...) {
             // Silently handle any exceptions
@@ -8101,48 +8299,7 @@ bool is_station_name(const pfc::string8& artist, const pfc::string8& title) {
 
 // Safe internet stream detection to prevent crashes
 bool is_safe_internet_stream(metadb_handle_ptr track) {
-    try {
-        if (!track.is_valid()) {
-            return false;
-        }
-        
-        pfc::string8 path = track->get_path();
-        if (path.is_empty()) {
-            return false;
-        }
-        
-        const char* path_cstr = path.c_str();
-        if (!path_cstr || strlen(path_cstr) == 0) {
-            return false;
-        }
-        
-        // Check for protocol indicators
-        const char* protocol_pos = strstr(path_cstr, "://");
-        if (!protocol_pos) {
-            return false;  // No protocol found
-        }
-        
-        // Check mtag file internet streams
-        const double length = track->get_length();
-        if (strstr(path.c_str(), "://")) {
-            // Has protocol - check if it's a local file protocol and is mtag without duration
-            if ((strstr(path.c_str(), "file://") == path.c_str()) && (strstr(path.c_str(), ".tags")) && (length <= 0)) {
-                return true; // mtag internet stream
-            }
-        }
-
-        // Exclude file:// protocol
-        const char* file_pos = strstr(path_cstr, "file://");
-        if (file_pos == path_cstr) {
-            return false;  // This is a file:// URL
-        }
-        
-        return true;  // This appears to be an internet stream
-        
-    } catch (...) {
-        // If any exception occurs during path checking, assume not a stream
-        return false;
-    }
+    return artwork_manager::is_internet_stream_track(track);
 }
 
 //=============================================================================
@@ -8273,11 +8430,23 @@ extern "C" __declspec(dllexport) void foo_artwork_refresh() {
 // Main Menu & Hotkey Command Implementation
 //=============================================================================
 
+// Popup menu group for all Artwork Display commands under View menu
+static const GUID guid_mainmenu_group_artwork = { 0x7ec56789, 0x9fa0, 0x4b34, { 0xe5, 0xf6, 0x07, 0x18, 0x29, 0x3a, 0x4b, 0xcd } };
+
+static mainmenu_group_popup_factory g_mainmenu_group_artwork(
+    guid_mainmenu_group_artwork,
+    mainmenu_groups::view,
+    mainmenu_commands::sort_priority_dontcare,
+    "Artwork Display"
+);
+
 class mainmenu_commands_artwork : public mainmenu_commands {
 public:
     enum {
         cmd_force_acrcloud = 0,
         cmd_reject_artwork,
+        cmd_probe_external_api,
+        cmd_force_noart,
         cmd_count
     };
 
@@ -8288,9 +8457,13 @@ public:
     GUID get_command(t_uint32 p_index) override {
         static const GUID guid_cmd_force_acrcloud = { 0x3a812345, 0x5b67, 0x4890, { 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x89 } };
         static const GUID guid_cmd_reject_artwork = { 0x4b923456, 0x6c78, 0x4901, { 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x9a } };
+        static const GUID guid_cmd_probe_external_api = { 0x5ca34567, 0x7d89, 0x4a12, { 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x29, 0xab } };
+        static const GUID guid_cmd_force_noart = { 0x6db45678, 0x8e9a, 0x4b23, { 0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x29, 0x3a, 0xbc } };
         switch (p_index) {
             case cmd_force_acrcloud: return guid_cmd_force_acrcloud;
             case cmd_reject_artwork: return guid_cmd_reject_artwork;
+            case cmd_probe_external_api: return guid_cmd_probe_external_api;
+            case cmd_force_noart: return guid_cmd_force_noart;
             default: return pfc::guid_null;
         }
     }
@@ -8299,6 +8472,8 @@ public:
         switch (p_index) {
             case cmd_force_acrcloud: p_out = "Force ACRCloud Audio Recognition"; break;
             case cmd_reject_artwork: p_out = "Reject Artwork & Search Next Provider"; break;
+            case cmd_probe_external_api: p_out = "Probe External Stream API / CoverSync"; break;
+            case cmd_force_noart: p_out = "Force Display No-Art Placeholder"; break;
         }
     }
 
@@ -8310,12 +8485,18 @@ public:
             case cmd_reject_artwork:
                 p_out = "Rejects the currently displayed cover art for the playing track, skips the current provider, and queries the next provider in the chain.";
                 return true;
+            case cmd_probe_external_api:
+                p_out = "Manually triggers auto-probing of external broadcast APIs and CoverSync endpoints for the currently playing stream.";
+                return true;
+            case cmd_force_noart:
+                p_out = "Immediately forces the artwork display into No-Art mode using configured placeholders or station logos.";
+                return true;
             default: return false;
         }
     }
 
     GUID get_parent() override {
-        return mainmenu_groups::view;
+        return guid_mainmenu_group_artwork;
     }
 
     void execute(t_uint32 p_index, service_ptr_t<service_base> p_callback) override {
@@ -8323,6 +8504,10 @@ public:
             artwork_manager::force_acrcloud_lookup();
         } else if (p_index == cmd_reject_artwork) {
             artwork_manager::reject_current_artwork();
+        } else if (p_index == cmd_probe_external_api) {
+            artwork_manager::force_external_api_autoprobe();
+        } else if (p_index == cmd_force_noart) {
+            artwork_manager::force_show_noart();
         }
     }
 };
