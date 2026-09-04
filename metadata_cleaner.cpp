@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "metadata_cleaner.h"
+#include "preferences.h"
 #include <algorithm>
 #include <cctype>
 
@@ -265,6 +266,52 @@ std::string MetadataCleaner::filter_multilingual_keywords(const std::string& str
     return trim(result);
 }
 
+std::string MetadataCleaner::filter_custom_blacklist(const std::string& str) {
+    if (str.empty()) return "";
+    pfc::string8 bl_cfg = get_custom_blacklist_active_content();
+    if (bl_cfg.is_empty()) return str;
+
+    std::string bl_str = bl_cfg.c_str();
+    std::vector<std::string> tokens;
+    std::string token;
+    for (char c : bl_str) {
+        if (c == '\r' || c == '\n' || c == ',' || c == ';') {
+            token = trim(token);
+            if (!token.empty() && token[0] != '#' && token.rfind("//", 0) != 0) {
+                tokens.push_back(token);
+            }
+            token.clear();
+        } else {
+            token += c;
+        }
+    }
+    token = trim(token);
+    if (!token.empty() && token[0] != '#' && token.rfind("//", 0) != 0) {
+        tokens.push_back(token);
+    }
+
+    if (tokens.empty()) return str;
+
+    std::string result = str;
+    for (const auto& t : tokens) {
+        if (t.empty()) continue;
+        try {
+            std::string escaped_term;
+            for (char ch : t) {
+                if (ch == '.' || ch == '^' || ch == '$' || ch == '*' || ch == '+' || ch == '?' ||
+                    ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' ||
+                    ch == '|' || ch == '\\') {
+                    escaped_term += '\\';
+                }
+                escaped_term += ch;
+            }
+            std::string pattern = "(?i)(?:^|\\b|\\s*[-/|~•]\\s*)" + escaped_term + "(?:\\b|\\s*[-/|~•]|\\s*$)";
+            result = std::regex_replace(result, std::regex(pattern), " ");
+        } catch (...) {}
+    }
+    return trim(result);
+}
+
 std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserve_cyrillic, bool apply_title_case) {
     if (!metadata || strlen(metadata) == 0) {
         return "";
@@ -286,6 +333,9 @@ std::string MetadataCleaner::clean_for_search(const char* metadata, bool preserv
 
     // 1. Strip multilingual keyword markers ("Artista: ", "Album: ...")
     str = filter_multilingual_keywords(str);
+
+    // 1b. Strip user custom blacklist words
+    str = filter_custom_blacklist(str);
 
     // 2. Strip track numbering prefixes ("06. ", "01 - ", "Track 05: ")
     str = strip_track_numbers(str);
@@ -402,6 +452,31 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
     for (const auto& bl : blacklist_terms) {
         if (artist_lower == bl || title_lower == bl) {
             return false;
+        }
+    }
+
+    pfc::string8 custom_bl = get_custom_blacklist_active_content();
+    if (!custom_bl.is_empty()) {
+        std::string bl_str = custom_bl.c_str();
+        std::string token;
+        for (char c : bl_str) {
+            if (c == '\r' || c == '\n' || c == ',' || c == ';') {
+                token = trim(token);
+                if (!token.empty() && token[0] != '#' && token.rfind("//", 0) != 0) {
+                    std::string t_lower = token;
+                    to_lower_ascii(t_lower);
+                    if (artist_lower == t_lower || title_lower == t_lower) return false;
+                }
+                token.clear();
+            } else {
+                token += c;
+            }
+        }
+        token = trim(token);
+        if (!token.empty() && token[0] != '#' && token.rfind("//", 0) != 0) {
+            std::string t_lower = token;
+            to_lower_ascii(t_lower);
+            if (artist_lower == t_lower || title_lower == t_lower) return false;
         }
     }
 
@@ -867,16 +942,101 @@ std::string MetadataCleaner::extract_primary_title(const char* title) {
     return trim(str);
 }
 
+bool MetadataCleaner::try_parse_xml_stream_title(const std::string& raw, std::string& out_artist, std::string& out_title, std::string& out_album) {
+    if (raw.empty() || raw.find('<') == std::string::npos || raw.find('>') == std::string::npos) {
+        return false;
+    }
+
+    auto extract_xml_tag = [](const std::string& xml, const std::string& tag) -> std::string {
+        std::string open_tag = "<" + tag;
+        std::string close_tag = "</" + tag + ">";
+        size_t start = 0;
+        while ((start = xml.find(open_tag, start)) != std::string::npos) {
+            size_t tag_end = xml.find('>', start);
+            if (tag_end == std::string::npos) break;
+            size_t val_start = tag_end + 1;
+            size_t val_end = xml.find(close_tag, val_start);
+            if (val_end != std::string::npos) {
+                std::string val = xml.substr(val_start, val_end - val_start);
+                // Strip CDATA wrapper if present
+                if (val.find("<![CDATA[") == 0 && val.rfind("]]>") == val.length() - 3) {
+                    val = val.substr(9, val.length() - 12);
+                }
+                // Unescape standard XML entities
+                val = std::regex_replace(val, std::regex("&amp;"), "&");
+                val = std::regex_replace(val, std::regex("&quot;"), "\"");
+                val = std::regex_replace(val, std::regex("&apos;"), "'");
+                val = std::regex_replace(val, std::regex("&lt;"), "<");
+                val = std::regex_replace(val, std::regex("&gt;"), ">");
+                return trim(val);
+            }
+            start = tag_end + 1;
+        }
+        return "";
+    };
+
+    std::string art = extract_xml_tag(raw, "artist");
+    if (art.empty()) art = extract_xml_tag(raw, "ARTIST");
+    if (art.empty()) art = extract_xml_tag(raw, "Artist");
+    if (art.empty()) art = extract_xml_tag(raw, "singer");
+    if (art.empty()) art = extract_xml_tag(raw, "performer");
+
+    std::string tit = extract_xml_tag(raw, "title");
+    if (tit.empty()) tit = extract_xml_tag(raw, "TITLE");
+    if (tit.empty()) tit = extract_xml_tag(raw, "Title");
+    if (tit.empty()) tit = extract_xml_tag(raw, "song");
+    if (tit.empty()) tit = extract_xml_tag(raw, "track");
+
+    std::string alb = extract_xml_tag(raw, "album");
+    if (alb.empty()) alb = extract_xml_tag(raw, "ALBUM");
+    if (alb.empty()) alb = extract_xml_tag(raw, "Album");
+
+    // Attribute fallback: <track artist="..." title="..." album="..." />
+    if (art.empty() || tit.empty()) {
+        std::smatch m;
+        if (std::regex_search(raw, m, std::regex("(?i)artist=[\"']([^\"']+)[\"']"))) {
+            art = m[1].str();
+        }
+        if (std::regex_search(raw, m, std::regex("(?i)title=[\"']([^\"']+)[\"']"))) {
+            tit = m[1].str();
+        }
+        if (std::regex_search(raw, m, std::regex("(?i)album=[\"']([^\"']+)[\"']"))) {
+            alb = m[1].str();
+        }
+    }
+
+    if (!art.empty() || !tit.empty() || !alb.empty()) {
+        out_artist = art;
+        out_title = tit;
+        out_album = alb;
+        return true;
+    }
+    return false;
+}
+
 StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_artist, const char* raw_title) {
     StreamMetadataResult res;
     res.raw_artist = raw_artist ? raw_artist : "";
     res.raw_title = raw_title ? raw_title : "";
 
+    // Check for XML formatted metadata (e.g. Bauer Media Cidade FM)
+    std::string xml_art, xml_tit, xml_alb;
+    bool has_xml = try_parse_xml_stream_title(res.raw_title, xml_art, xml_tit, xml_alb);
+    if (!has_xml && !res.raw_artist.empty()) {
+        has_xml = try_parse_xml_stream_title(res.raw_artist, xml_art, xml_tit, xml_alb);
+    }
+
+    if (has_xml) {
+        if (!xml_art.empty()) res.clean_artist = clean_for_search(xml_art.c_str(), true);
+        if (!xml_tit.empty()) res.clean_title = clean_for_search(xml_tit.c_str(), true);
+        if (!xml_alb.empty()) res.clean_album = clean_for_search(xml_alb.c_str(), true);
+    } else {
+        res.clean_artist = clean_for_search(res.raw_artist.c_str(), true);
+        res.clean_title = clean_for_search(res.raw_title.c_str(), true);
+    }
+
     // Stage 1: Noise Pre-Cleaning & Station/URL Detection
     res.is_station_or_url = is_station_name_or_url(res.raw_artist.c_str()) || is_station_name_or_url(res.raw_title.c_str());
-
-    res.clean_artist = clean_for_search(res.raw_artist.c_str(), true);
-    res.clean_title = clean_for_search(res.raw_title.c_str(), true);
 
     // Stage 2: Smart Stream Splitter
     bool artist_is_placeholder = res.clean_artist.empty() ||
