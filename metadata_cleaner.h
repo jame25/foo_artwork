@@ -15,6 +15,7 @@ struct StreamMetadataResult {
     std::string first_artist;
     std::string second_artist;
     std::string primary_title;
+    std::string clean_album;
     bool is_valid_search = false;
     bool is_station_or_url = false;
 };
@@ -26,6 +27,9 @@ public:
 
     // Station name / stream URL detector
     static bool is_station_name_or_url(const char* text);
+
+    // XML stream title parser (e.g. Bauer Media Cidade FM <artist>, <title>, <album>)
+    static bool try_parse_xml_stream_title(const std::string& raw, std::string& out_artist, std::string& out_title, std::string& out_album);
 
     // Main cleaning function - UTF-8 safe for Latin, Cyrillic, and other scripts
     static std::string clean_for_search(const char* metadata, bool preserve_cyrillic = true, bool apply_title_case = false);
@@ -51,6 +55,9 @@ public:
 
     // Multilingual release/media keyword filter
     static std::string filter_multilingual_keywords(const std::string& str);
+
+    // Custom user-defined blacklist filter
+    static std::string filter_custom_blacklist(const std::string& str);
     
 private:
     // Core cleaning operations - UTF-8 safe
