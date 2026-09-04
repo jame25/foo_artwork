@@ -18,8 +18,10 @@ public:
         bool success;
         pfc::string8 error_message;
         pfc::string8 source;  // Source of the artwork (e.g., "iTunes", "Deezer", "Local file")
+        pfc::string8 album;   // Album name discovered from metadata or online API
+        bool is_acrcloud_recognized;
         
-        artwork_result() : success(false) {}
+        artwork_result() : success(false), is_acrcloud_recognized(false) {}
     };
 
     // Callback for async artwork retrieval
@@ -38,17 +40,22 @@ public:
     
     // Reject artwork and cycle to next provider
     static void reject_current_artwork();
+    static void force_show_noart();
+    static void force_external_api_autoprobe();
 
     // YouTube Video ID and direct thumbnail extraction
     static pfc::string8 extract_youtube_video_id(const char* path_or_url);
     static void search_youtube_thumbnail_async(const pfc::string8& video_id, const pfc::string8& cache_key, artwork_callback callback);
     
     // External Stream APIs (AzuraCast & RadioReg), In-Stream Broadcast Artwork & URL Modifiers
-    static bool has_url_flag(const char* url, const char* flag);
-    static pfc::string8 get_url_param_value(const char* url, const char* param_name);
+    static bool is_internet_stream_track(metadb_handle_ptr track, pfc::string8* out_stream_url = nullptr);
+    static bool has_url_flag(const char* url, const char* flag, metadb_handle_ptr track = nullptr);
+    static pfc::string8 get_url_param_value(const char* url, const char* param_name, metadb_handle_ptr track = nullptr);
     static pfc::string8 extract_station_slug_from_url(const char* url);
     static pfc::string8 extract_broadcast_artwork_url_from_info(const file_info& info);
     static pfc::string8 extract_broadcast_artwork_url(metadb_handle_ptr track = nullptr);
+    static pfc::string8 extract_broadcast_album_from_info(const file_info& info);
+    static pfc::string8 extract_broadcast_album(metadb_handle_ptr track = nullptr);
     static void start_external_stream_api_poller(const pfc::string8& stream_url);
     static void stop_external_stream_api_poller();
     static void probe_external_stream_api(const pfc::string8& stream_url, uint64_t session_token);
@@ -114,10 +121,10 @@ public:
 private:
     
     // JSON parsing functions
-    static bool parse_itunes_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url);
-    static bool parse_deezer_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url);
-    static bool parse_lastfm_json(const pfc::string8& json, pfc::string8& artwork_url);
-    static bool parse_discogs_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url);
+    static bool parse_itunes_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr);
+    static bool parse_deezer_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr);
+    static bool parse_lastfm_json(const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr);
+    static bool parse_discogs_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr);
     static bool parse_musicbrainz_json(const pfc::string8& json, std::vector<pfc::string8>& release_ids, const char* artist);
     
     // Initialization flag
