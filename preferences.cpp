@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "resource.h"
+#include "preferences.h"
 #include "async_io_manager.h"
 #include <commdlg.h>  // For file save dialog
 #include <shlobj.h>   // For folder browser dialog (still needed for directory extraction)
@@ -28,6 +29,7 @@ extern cfg_bool cfg_single_file_cache;
 extern cfg_string cfg_cache_folder;
 extern cfg_bool cfg_skip_local_artwork;
 extern cfg_bool cfg_quiet_console;
+extern cfg_string cfg_custom_blacklist;
 
 // Reference to current artwork source for logging
 extern pfc::string8 g_current_artwork_source;
@@ -45,6 +47,9 @@ static const GUID guid_preferences_page_advanced =
 
 static const GUID guid_preferences_page_acrcloud =
 { 0x123456a0, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf9 } };
+
+static const GUID guid_preferences_page_blacklist =
+{ 0x123456b0, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfa } };
 
 //=============================================================================
 // artwork_preferences - preferences page instance implementation
@@ -984,8 +989,8 @@ private:
         GetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET, secret, sizeof(secret));
 
         cfg_acrcloud_host = host;
-        cfg_acrcloud_access_key = key;
-        cfg_acrcloud_access_secret = secret;
+        cfg_acrcloud_access_key = crypto_utils::encrypt_credential(key);
+        cfg_acrcloud_access_secret = crypto_utils::encrypt_credential(secret);
 
         char host2[256] = {0}, key2[256] = {0}, secret2[256] = {0};
         GetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_HOST2, host2, sizeof(host2));
@@ -993,8 +998,13 @@ private:
         GetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET2, secret2, sizeof(secret2));
 
         cfg_acrcloud_host2 = host2;
-        cfg_acrcloud_access_key2 = key2;
-        cfg_acrcloud_access_secret2 = secret2;
+        cfg_acrcloud_access_key2 = crypto_utils::encrypt_credential(key2);
+        cfg_acrcloud_access_secret2 = crypto_utils::encrypt_credential(secret2);
+
+        SecureZeroMemory(key, sizeof(key));
+        SecureZeroMemory(secret, sizeof(secret));
+        SecureZeroMemory(key2, sizeof(key2));
+        SecureZeroMemory(secret2, sizeof(secret2));
     }
 
     void reset_settings() {
@@ -1016,11 +1026,11 @@ private:
 
         CheckDlgButton(m_hwnd, IDC_ENABLE_ACRCLOUD, cfg_enable_acrcloud ? BST_CHECKED : BST_UNCHECKED);
         SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_HOST, cfg_acrcloud_host.get_ptr());
-        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY, cfg_acrcloud_access_key.get_ptr());
-        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET, cfg_acrcloud_access_secret.get_ptr());
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY, get_acrcloud_access_key().c_str());
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET, get_acrcloud_access_secret().c_str());
         SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_HOST2, cfg_acrcloud_host2.get_ptr());
-        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY2, cfg_acrcloud_access_key2.get_ptr());
-        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET2, cfg_acrcloud_access_secret2.get_ptr());
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_KEY2, get_acrcloud_access_key2().c_str());
+        SetDlgItemTextA(m_hwnd, IDC_ACRCLOUD_ACCESS_SECRET2, get_acrcloud_access_secret2().c_str());
 
         update_control_states();
     }
@@ -1114,3 +1124,153 @@ public:
 static preferences_page_factory_t<artwork_preferences_page> g_artwork_preferences_page_factory;
 static preferences_page_factory_t<artwork_advanced_preferences_page> g_artwork_advanced_preferences_page_factory;
 static preferences_page_factory_t<acrcloud_preferences_page> g_acrcloud_preferences_page_factory;
+
+//=============================================================================
+// artwork_blacklist_preferences - Blacklist preferences page instance implementation
+//=============================================================================
+
+class artwork_blacklist_preferences : public preferences_page_instance {
+private:
+    HWND m_hwnd;
+    preferences_page_callback::ptr m_callback;
+    bool m_has_changes;
+    fb2k::CCoreDarkModeHooks m_darkMode;
+
+public:
+    artwork_blacklist_preferences(preferences_page_callback::ptr callback)
+        : m_hwnd(nullptr), m_callback(callback), m_has_changes(false) {}
+
+    HWND get_wnd() override { return m_hwnd; }
+
+    t_uint32 get_state() override {
+        t_uint32 state = preferences_state::resettable | preferences_state::dark_mode_supported;
+        if (m_has_changes) {
+            state |= preferences_state::changed;
+        }
+        return state;
+    }
+
+    void apply() override { apply_settings(); }
+    void reset() override { reset_settings(); }
+
+    static INT_PTR CALLBACK BlacklistConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
+private:
+    void on_changed() {
+        m_has_changes = true;
+        m_callback->on_state_changed();
+    }
+
+    bool has_changed() {
+        if (!m_hwnd) return false;
+        int len = GetWindowTextLengthA(GetDlgItem(m_hwnd, IDC_CUSTOM_BLACKLIST));
+        std::string current_blacklist(len + 1, '\0');
+        GetDlgItemTextA(m_hwnd, IDC_CUSTOM_BLACKLIST, &current_blacklist[0], len + 1);
+        current_blacklist.resize(len);
+        return strcmp(current_blacklist.c_str(), cfg_custom_blacklist.get_ptr()) != 0;
+    }
+
+    void apply_settings() {
+        if (!m_hwnd) return;
+        int len = GetWindowTextLengthA(GetDlgItem(m_hwnd, IDC_CUSTOM_BLACKLIST));
+        std::string blacklist_text(len + 1, '\0');
+        GetDlgItemTextA(m_hwnd, IDC_CUSTOM_BLACKLIST, &blacklist_text[0], len + 1);
+        blacklist_text.resize(len);
+        cfg_custom_blacklist = blacklist_text.c_str();
+        save_custom_blacklist_to_file(blacklist_text.c_str());
+    }
+
+    void reset_settings() {
+        if (!m_hwnd) return;
+        cfg_custom_blacklist = "";
+        save_custom_blacklist_to_file("");
+        update_controls();
+    }
+
+    void update_controls() {
+        if (!m_hwnd) return;
+        pfc::string8 content = load_custom_blacklist_from_file();
+        if (content.is_empty() && !cfg_custom_blacklist.is_empty()) {
+            content = cfg_custom_blacklist;
+        }
+        SetDlgItemTextA(m_hwnd, IDC_CUSTOM_BLACKLIST, content.c_str());
+    }
+};
+
+INT_PTR CALLBACK artwork_blacklist_preferences::BlacklistConfigProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    artwork_blacklist_preferences* pThis = nullptr;
+
+    if (msg == WM_INITDIALOG) {
+        pThis = reinterpret_cast<artwork_blacklist_preferences*>(lp);
+        SetWindowLongPtr(hwnd, DWLP_USER, lp);
+        pThis->m_hwnd = hwnd;
+        pThis->m_darkMode.AddDialogWithControls(hwnd);
+        pThis->update_controls();
+        return TRUE;
+    } else {
+        pThis = reinterpret_cast<artwork_blacklist_preferences*>(GetWindowLongPtr(hwnd, DWLP_USER));
+    }
+
+    if (pThis) {
+        switch (msg) {
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+            case IDC_CUSTOM_BLACKLIST:
+                if (HIWORD(wp) == EN_CHANGE) {
+                    pThis->on_changed();
+                }
+                break;
+            case IDC_OPEN_BLACKLIST_FILE:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->apply_settings();
+                    open_blacklist_file(hwnd);
+                }
+                break;
+            case IDC_OPEN_DATA_FOLDER:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    open_artwork_data_folder(hwnd);
+                }
+                break;
+            case IDC_RELOAD_BLACKLIST_FILE:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->update_controls();
+                    pThis->on_changed();
+                }
+                break;
+            }
+            break;
+        }
+    }
+
+    return FALSE;
+}
+
+//=============================================================================
+// artwork_blacklist_preferences_page - Blacklist preferences page factory implementation
+//=============================================================================
+
+class artwork_blacklist_preferences_page : public preferences_page_v3 {
+public:
+    const char* get_name() override { return "Blacklist"; }
+    GUID get_guid() override { return guid_preferences_page_blacklist; }
+    GUID get_parent_guid() override { return guid_preferences_page_artwork; }
+    preferences_page_instance::ptr instantiate(HWND parent, preferences_page_callback::ptr callback) override {
+        auto instance = fb2k::service_new<artwork_blacklist_preferences>(callback);
+
+        HWND hwnd = CreateDialogParam(
+            g_hIns,
+            MAKEINTRESOURCE(IDD_PREFERENCES_BLACKLIST),
+            parent,
+            artwork_blacklist_preferences::BlacklistConfigProc,
+            reinterpret_cast<LPARAM>(instance.get_ptr())
+        );
+
+        if (hwnd == nullptr) {
+            throw exception_win32(GetLastError());
+        }
+
+        return instance;
+    }
+};
+
+static preferences_page_factory_t<artwork_blacklist_preferences_page> g_artwork_blacklist_preferences_page_factory;
