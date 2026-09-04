@@ -2499,38 +2499,7 @@ bool CUIArtworkPanel::get_safe_track_path(metadb_handle_ptr track, pfc::string8&
 
 // Safe internet stream detection
 bool CUIArtworkPanel::is_safe_internet_stream(metadb_handle_ptr track) {
-    if (!track.is_valid()) return false;
-    
-    pfc::string8 path;
-    if (!get_safe_track_path(track, path)) {
-        return false; // Couldn't get path safely
-    }
-    
-    if (path.is_empty()) return false;
-    
-    // Check for protocol indicators
-    const char* path_cstr = path.c_str();
-    const char* protocol_pos = strstr(path_cstr, "://");
-    if (!protocol_pos) {
-        return false; // No protocol found
-    }
-    
-    // Check mtag file internet streams
-    const double length = track->get_length();
-    if (strstr(path.c_str(), "://")) {
-        // Has protocol - check if it's a local file protocol and is mtag without duration
-        if ((strstr(path.c_str(), "file://") == path.c_str()) && (strstr(path.c_str(), ".tags")) && (length <= 0)) {
-            return true; // mtag internet stream
-        }
-    }
-
-    // Exclude file:// protocol
-    const char* file_pos = strstr(path_cstr, "file://");
-    if (file_pos == path_cstr) {
-        return false; // This is a file:// URL
-    }
-    
-    return true; // This appears to be an internet stream
+    return artwork_manager::is_internet_stream_track(track);
 }
 
 bool CUIArtworkPanel::is_stream_with_possible_artwork(metadb_handle_ptr track) {
@@ -2647,10 +2616,8 @@ bool CUIArtworkPanel::is_inverted_internet_stream(metadb_handle_ptr track, const
     pfc::string8 path = track->get_path();
     if (path.is_empty()) return false;
 
-    //  Search if parameter "?inverted" or "&inverted" in path
-    std::string path_str = path.c_str();
-
-    if ((path_str.find("?inverted") != std::string::npos) || (path_str.find("&inverted") != std::string::npos)) {
+    // Search via unified artwork_manager::has_url_flag (supports ?inverted, &inverted, ;inverted, m-tags @ tag, etc.)
+    if (artwork_manager::has_url_flag(path.c_str(), "inverted", track)) {
         return true;
     }
     
