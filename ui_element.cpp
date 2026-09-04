@@ -1031,10 +1031,8 @@ bool artwork_ui_element::is_inverted_internet_stream(metadb_handle_ptr track, co
     pfc::string8 path = track->get_path();
     if (path.is_empty()) return false;
 
-    //  Search if parameter "?inverted" or "&inverted" in path
-    std::string path_str = path.c_str();
-
-    if ((path_str.find("?inverted") != std::string::npos) || (path_str.find("&inverted") != std::string::npos)) {
+    // Search via unified artwork_manager::has_url_flag (supports ?inverted, &inverted, ;inverted, m-tags @ tag, etc.)
+    if (artwork_manager::has_url_flag(path.c_str(), "inverted", track)) {
         return true;
     }
 
@@ -2079,41 +2077,7 @@ void artwork_ui_element::paint_osd(HDC hdc) {
 }
 
 bool artwork_ui_element::is_internet_stream(metadb_handle_ptr track) {
-    if (!track.is_valid()) return false;
-    
-    try {
-        pfc::string8 path = track->get_path();
-        if (path.is_empty()) return false;
-
-        const double length = track->get_length();
-
-        // Check mtag file internet streams
-        if (strstr(path.c_str(), "://")) {
-            // Has protocol - check if it's a local file protocol and is mtag without duration
-            if ((strstr(path.c_str(), "file://") == path.c_str()) && (strstr(path.c_str(), ".tags")) && (length <= 0)) {
-                return true; // mtag internet stream
-            }
-        }
-
-        // Check URL protocol first - this covers online playlists with duration
-        if (strstr(path.c_str(), "://")) {
-            // Has protocol - check if it's a local file protocol
-            if (strstr(path.c_str(), "file://") == path.c_str()) {
-                return false; // file:// protocol = local file
-            }
-            // Any other protocol (http://, https://, etc.) = internet stream
-            return true;
-        }
-        
-        // No protocol - check length as fallback for other stream types
-        if (length > 0) {
-            return false; // Has length but no protocol = local file
-        }     
-        
-        return true; // No length, no protocol = likely internet stream
-    } catch (...) {
-        return false; // Error accessing path, assume local file
-    }
+    return artwork_manager::is_internet_stream_track(track);
 }
 
 bool artwork_ui_element::is_stream_with_possible_artwork(metadb_handle_ptr track) {
