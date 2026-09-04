@@ -108,7 +108,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/debug-win32/foobar2000_SDK;columns_ui/pfc/debug-win32/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/debug-win32/columns_ui_sdk</AdditionalLibraryDirectories>
-      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-Win32.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
+      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-Win32.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib;crypt32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
     <ResourceCompile>
@@ -141,7 +141,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/Win32/foobar2000_SDK;columns_ui/pfc/Win32/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/Win32/columns_ui_sdk</AdditionalLibraryDirectories>
-      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-Win32.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
+      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-Win32.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib;crypt32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
     <ResourceCompile>
@@ -166,7 +166,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/debug-x64/foobar2000_SDK;columns_ui/pfc/debug-x64/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/debug-x64/columns_ui_sdk</AdditionalLibraryDirectories>
-      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-x64.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
+      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-x64.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib;crypt32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
     <ResourceCompile>
@@ -199,7 +199,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>columns_ui/foobar2000/SDK/x64/foobar2000_SDK;columns_ui/pfc/x64/pfc;columns_ui/foobar2000/shared;columns_ui/columns_ui-sdk/x64/columns_ui_sdk</AdditionalLibraryDirectories>
-      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-x64.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib</AdditionalDependencies>
+      <AdditionalDependencies>foobar2000_SDK.lib;pfc.lib;shared-x64.lib;columns_ui_sdk.lib;shell32.lib;user32.lib;winmm.lib;ole32.lib;gdi32.lib;gdiplus.lib;shlwapi.lib;comdlg32.lib;crypt32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>foo_artwork.def</ModuleDefinitionFile>
     </Link>
     <ResourceCompile>
@@ -212,6 +212,7 @@
     <ClInclude Include="artwork_panel_cui.h" />
     <ClInclude Include="artwork_viewer_popup.h" />
     <ClInclude Include="async_io_manager.h" />
+    <ClInclude Include="crypto_utils.h" />
     <ClInclude Include="metadata_cleaner.h" />
     <ClInclude Include="preferences.h" />
     <ClInclude Include="resource.h" />
@@ -221,6 +222,12 @@
     <ClInclude Include="webp_decoder.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="crypto_utils.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Use</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Use</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Use</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Use</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="titleformat_provider.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Use</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Use</PrecompiledHeader>
