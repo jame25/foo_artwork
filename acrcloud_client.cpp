@@ -124,7 +124,21 @@ ACRCloudClient::RecognitionResult ACRCloudClient::parse_response_json(const std:
                         res.title = track_obj["title"].get<std::string>();
                     }
                     if (track_obj.contains("artists") && track_obj["artists"].is_array() && !track_obj["artists"].empty()) {
-                        if (track_obj["artists"][0].contains("name")) {
+                        std::string artists_combined;
+                        for (size_t i = 0; i < track_obj["artists"].size(); ++i) {
+                            if (track_obj["artists"][i].contains("name")) {
+                                std::string a_name = track_obj["artists"][i]["name"].get<std::string>();
+                                if (!a_name.empty()) {
+                                    if (!artists_combined.empty()) {
+                                        artists_combined += " & ";
+                                    }
+                                    artists_combined += a_name;
+                                }
+                            }
+                        }
+                        if (!artists_combined.empty()) {
+                            res.artist = artists_combined;
+                        } else if (track_obj["artists"][0].contains("name")) {
                             res.artist = track_obj["artists"][0]["name"].get<std::string>();
                         }
                     }
