@@ -39,9 +39,19 @@ public:
     // Cache operations with write-behind buffering
     void cache_get_async(const pfc::string8& key, file_read_callback callback);
     void cache_set_async(const pfc::string8& key, const pfc::array_t<t_uint8>& data, file_write_callback callback = nullptr);
+    void cache_set_metadata(const pfc::string8& key, const pfc::string8& artist, const pfc::string8& title, const pfc::string8& album, const pfc::string8& source);
+    inline void cache_set_metadata(const pfc::string8& key, const pfc::string8& artist, const pfc::string8& title, const pfc::string8& album) {
+        cache_set_metadata(key, artist, title, album, "");
+    }
+    bool cache_get_metadata(const pfc::string8& key, pfc::string8& out_artist, pfc::string8& out_title, pfc::string8& out_album, pfc::string8& out_source);
+    inline bool cache_get_metadata(const pfc::string8& key, pfc::string8& out_artist, pfc::string8& out_title, pfc::string8& out_album) {
+        pfc::string8 unused;
+        return cache_get_metadata(key, out_artist, out_title, out_album, unused);
+    }
     void cache_clear_all();
     void cache_remove(const pfc::string8& key);
     pfc::string8 get_cache_file_path(const pfc::string8& key) const;
+    pfc::string8 get_cache_meta_path(const pfc::string8& key) const;
     
     // Thread pool management
     void initialize(size_t thread_count = 4);
@@ -125,8 +135,18 @@ private:
             cache_entry() : dirty(false) {}
         };
         
+        struct cache_metadata_entry {
+            pfc::string8 artist;
+            pfc::string8 title;
+            pfc::string8 album;
+            pfc::string8 source;
+            std::chrono::steady_clock::time_point last_access;
+        };
+        
         pfc::map_t<pfc::string8, cache_entry> cache_map;
         std::mutex cache_mutex;
+        pfc::map_t<pfc::string8, cache_metadata_entry> metadata_map;
+        std::mutex metadata_mutex;
         std::queue<std::pair<pfc::string8, pfc::array_t<t_uint8>>> write_queue;
         std::mutex write_queue_mutex;
         HANDLE write_condition_event;  // Windows Event instead of std::condition_variable
@@ -144,11 +164,14 @@ private:
         void initialize(const pfc::string8& cache_dir);
         void get_async(const pfc::string8& key, file_read_callback callback);
         void set_async(const pfc::string8& key, const pfc::array_t<t_uint8>& data, file_write_callback callback = nullptr);
+        void set_metadata(const pfc::string8& key, const pfc::string8& artist, const pfc::string8& title, const pfc::string8& album, const pfc::string8& source);
+        bool get_metadata(const pfc::string8& key, pfc::string8& out_artist, pfc::string8& out_title, pfc::string8& out_album, pfc::string8& out_source);
         void remove(const pfc::string8& key);
         void clear_all();
         void flush_all();
         void shutdown();
         pfc::string8 get_cache_file_path(const pfc::string8& key) const;
+        pfc::string8 get_cache_meta_path(const pfc::string8& key) const;
     };
     
     // Progressive image loader
