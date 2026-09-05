@@ -8483,7 +8483,7 @@ public:
     bool get_description(t_uint32 p_index, pfc::string_base& p_out) override {
         switch (p_index) {
             case cmd_force_acrcloud:
-                p_out = "Forces an immediate ACRCloud audio recognition scan on the currently playing track/stream, bypassing rate-limiting cooldowns.";
+                p_out = "Forces an immediate ACRCloud audio recognition scan on the currently playing track/stream.";
                 return true;
             case cmd_reject_artwork:
                 p_out = "Rejects the currently displayed cover art for the playing track, skips the current provider, and queries the next provider in the chain.";
