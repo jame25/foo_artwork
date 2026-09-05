@@ -56,8 +56,9 @@ public:
     // Multilingual release/media keyword filter
     static std::string filter_multilingual_keywords(const std::string& str);
 
-    // Custom user-defined blacklist filter
+    // Custom user-defined blacklist filter & active tokens
     static std::string filter_custom_blacklist(const std::string& str);
+    static std::vector<std::string> get_active_blacklist_tokens();
     
 private:
     // Core cleaning operations - UTF-8 safe
