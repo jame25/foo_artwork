@@ -30,6 +30,7 @@ extern cfg_string cfg_cache_folder;
 extern cfg_bool cfg_skip_local_artwork;
 extern cfg_bool cfg_quiet_console;
 extern cfg_string cfg_custom_blacklist;
+extern cfg_bool cfg_trim_secondary_artists;
 
 // Reference to current artwork source for logging
 extern pfc::string8 g_current_artwork_source;
@@ -1172,6 +1173,7 @@ private:
 
     void apply_settings() {
         if (!m_hwnd) return;
+        cfg_trim_secondary_artists = (IsDlgButtonChecked(m_hwnd, IDC_TRIM_SECONDARY_ARTISTS) == BST_CHECKED);
         int len = GetWindowTextLengthA(GetDlgItem(m_hwnd, IDC_CUSTOM_BLACKLIST));
         std::string blacklist_text(len + 1, '\0');
         GetDlgItemTextA(m_hwnd, IDC_CUSTOM_BLACKLIST, &blacklist_text[0], len + 1);
@@ -1182,13 +1184,14 @@ private:
 
     void reset_settings() {
         if (!m_hwnd) return;
-        cfg_custom_blacklist = "";
-        save_custom_blacklist_to_file("");
+        cfg_trim_secondary_artists = true;
+        reset_custom_blacklist_to_defaults();
         update_controls();
     }
 
     void update_controls() {
         if (!m_hwnd) return;
+        CheckDlgButton(m_hwnd, IDC_TRIM_SECONDARY_ARTISTS, cfg_trim_secondary_artists ? BST_CHECKED : BST_UNCHECKED);
         pfc::string8 content = load_custom_blacklist_from_file();
         if (content.is_empty() && !cfg_custom_blacklist.is_empty()) {
             content = cfg_custom_blacklist;
@@ -1215,6 +1218,11 @@ INT_PTR CALLBACK artwork_blacklist_preferences::BlacklistConfigProc(HWND hwnd, U
         switch (msg) {
         case WM_COMMAND:
             switch (LOWORD(wp)) {
+            case IDC_TRIM_SECONDARY_ARTISTS:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->on_changed();
+                }
+                break;
             case IDC_CUSTOM_BLACKLIST:
                 if (HIWORD(wp) == EN_CHANGE) {
                     pThis->on_changed();
@@ -1233,6 +1241,13 @@ INT_PTR CALLBACK artwork_blacklist_preferences::BlacklistConfigProc(HWND hwnd, U
                 break;
             case IDC_RELOAD_BLACKLIST_FILE:
                 if (HIWORD(wp) == BN_CLICKED) {
+                    pThis->update_controls();
+                    pThis->on_changed();
+                }
+                break;
+            case IDC_RESET_BLACKLIST_DEFAULTS:
+                if (HIWORD(wp) == BN_CLICKED) {
+                    reset_custom_blacklist_to_defaults();
                     pThis->update_controls();
                     pThis->on_changed();
                 }
