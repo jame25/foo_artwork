@@ -58,6 +58,7 @@ extern cfg_int cfg_noart_cycle_mode; // 0 = Single / Disabled, 1 = Sequential, 2
 // Miscellaneous settings
 extern cfg_bool cfg_disable_instream_artwork;
 extern cfg_string cfg_custom_blacklist;
+extern cfg_bool cfg_trim_secondary_artists;
 
 // Blacklist file & directory helpers
 pfc::string8 get_artwork_data_path();
@@ -66,8 +67,11 @@ pfc::string8 load_custom_blacklist_from_file();
 void save_custom_blacklist_to_file(const char* content);
 void sync_custom_blacklist_file();
 pfc::string8 get_custom_blacklist_active_content();
+const char* get_unified_default_blacklist_content();
+void reset_custom_blacklist_to_defaults();
 void open_blacklist_file(HWND parent = NULL);
 void open_artwork_data_folder(HWND parent = NULL);
 
 // Function to get API search order based on user preferences
 std::vector<ApiType> get_api_search_order();
+
