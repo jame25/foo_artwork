@@ -388,7 +388,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.1",
+    "1.7.2",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -405,7 +405,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.1",
+    "1.7.2",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -5355,13 +5355,16 @@ public:
                 // Initialize title formatting variables for the new track
                 try {
                     metadb_info_container::ptr info_cont = p_track->get_info_ref();
-                    if (info_cont.is_valid()) {
+                    pfc::string8 path = p_track->get_path();
+                    bool is_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+
+                    if (info_cont.is_valid() && (!cfg_skip_local_artwork || is_stream)) {
                         const file_info& info = info_cont->info();
                         const char* art = info.meta_get("ARTIST", 0);
                         const char* tit = info.meta_get("TITLE", 0);
                         const char* alb = info.meta_get("ALBUM", 0);
-                        pfc::string8 clean_art = art ? MetadataCleaner::clean_for_search(art, true, false).c_str() : "";
-                        pfc::string8 clean_tit = tit ? MetadataCleaner::clean_for_search(tit, true, false).c_str() : "";
+                        pfc::string8 clean_art = art ? art : "";
+                        pfc::string8 clean_tit = tit ? tit : "";
                         pfc::string8 clean_art_full = art ? art : "";
                         pfc::string8 clean_alb = alb ? alb : "";
                         titleformat_provider::set_track_artwork_info(p_track, clean_art.c_str(), clean_tit.c_str(), "", "", clean_art_full.c_str(), clean_alb.c_str(), "");
