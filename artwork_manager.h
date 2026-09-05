@@ -18,6 +18,8 @@ public:
         bool success;
         pfc::string8 error_message;
         pfc::string8 source;  // Source of the artwork (e.g., "iTunes", "Deezer", "Local file")
+        pfc::string8 artist;  // Canonical artist name discovered from online API
+        pfc::string8 title;   // Canonical track title discovered from online API
         pfc::string8 album;   // Album name discovered from metadata or online API
         bool is_acrcloud_recognized;
         
@@ -105,7 +107,7 @@ private:
     static void download_image_async(const char* url, artwork_callback callback);
     
     // Helper functions for async operations
-    static void validate_and_complete_result(const pfc::array_t<t_uint8>& data, artwork_callback callback);
+    static void validate_and_complete_result(const pfc::array_t<t_uint8>& data, artwork_callback callback, const char* cache_key = nullptr);
     
     // Utility functions (private)
     static bool is_valid_image_data(const t_uint8* data, size_t size);
@@ -121,10 +123,10 @@ public:
 private:
     
     // JSON parsing functions
-    static bool parse_itunes_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr);
-    static bool parse_deezer_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr);
-    static bool parse_lastfm_json(const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr);
-    static bool parse_discogs_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr);
+    static bool parse_itunes_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr, pfc::string8* out_artist = nullptr, pfc::string8* out_title = nullptr);
+    static bool parse_deezer_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr, pfc::string8* out_artist = nullptr, pfc::string8* out_title = nullptr);
+    static bool parse_lastfm_json(const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr, pfc::string8* out_artist = nullptr, pfc::string8* out_title = nullptr);
+    static bool parse_discogs_json(const char* artist, const char* track, const pfc::string8& json, pfc::string8& artwork_url, pfc::string8* out_album = nullptr, pfc::string8* out_artist = nullptr, pfc::string8* out_title = nullptr);
     static bool parse_musicbrainz_json(const pfc::string8& json, std::vector<pfc::string8>& release_ids, const char* artist);
     
     // Initialization flag
