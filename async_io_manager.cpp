@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "async_io_manager.h"
 #include "artwork_manager.h"
+#include <nlohmann/json.hpp>
 #include <shlwapi.h>
 #include <shlobj.h>
 #include <winhttp.h>
@@ -217,6 +218,16 @@ void async_io_manager::cache_set_async(const pfc::string8& key, const pfc::array
     cache_->set_async(key, data, callback);
 }
 
+void async_io_manager::cache_set_metadata(const pfc::string8& key, const pfc::string8& artist, const pfc::string8& title, const pfc::string8& album, const pfc::string8& source) {
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !cache_) return;
+    cache_->set_metadata(key, artist, title, album, source);
+}
+
+bool async_io_manager::cache_get_metadata(const pfc::string8& key, pfc::string8& out_artist, pfc::string8& out_title, pfc::string8& out_album, pfc::string8& out_source) {
+    if (g_is_shutting_down.load() || core_api::is_shutting_down() || !cache_) return false;
+    return cache_->get_metadata(key, out_artist, out_title, out_album, out_source);
+}
+
 void async_io_manager::cache_clear_all() {
     if (cache_) {
         cache_->clear_all();
@@ -232,6 +243,13 @@ void async_io_manager::cache_remove(const pfc::string8& key) {
 pfc::string8 async_io_manager::get_cache_file_path(const pfc::string8& key) const {
     if (cache_) {
         return cache_->get_cache_file_path(key);
+    }
+    return pfc::string8();
+}
+
+pfc::string8 async_io_manager::get_cache_meta_path(const pfc::string8& key) const {
+    if (cache_) {
+        return cache_->get_cache_meta_path(key);
     }
     return pfc::string8();
 }
@@ -756,6 +774,107 @@ pfc::string8 async_io_manager::async_cache::get_cache_file_path(const pfc::strin
     return file_path;
 }
 
+pfc::string8 async_io_manager::async_cache::get_cache_meta_path(const pfc::string8& key) const {
+    pfc::string8 file_path = cache_directory;
+    file_path << key << ".meta";
+    return file_path;
+}
+
+void async_io_manager::async_cache::set_metadata(const pfc::string8& key, const pfc::string8& artist, const pfc::string8& title, const pfc::string8& album, const pfc::string8& source) {
+    if (key.is_empty()) return;
+
+    cache_metadata_entry entry;
+    entry.artist = artist;
+    entry.title = title;
+    entry.album = album;
+    entry.source = source;
+    entry.last_access = std::chrono::steady_clock::now();
+
+    {
+        std::lock_guard<std::mutex> lock(metadata_mutex);
+        metadata_map.set(key, entry);
+    }
+
+    pfc::string8 meta_path = get_cache_meta_path(key);
+    instance().submit_task([meta_path, artist, title, album, source]() {
+        try {
+            nlohmann::json j;
+            j["artist"] = artist.c_str();
+            j["title"] = title.c_str();
+            j["album"] = album.c_str();
+            j["source"] = source.c_str();
+
+            std::string content = j.dump(2);
+            std::wstring wide_path = utf8_to_wide(meta_path);
+            HANDLE hFile = CreateFileW(wide_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                DWORD written = 0;
+                WriteFile(hFile, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
+                CloseHandle(hFile);
+            }
+        } catch (...) {}
+    });
+}
+
+bool async_io_manager::async_cache::get_metadata(const pfc::string8& key, pfc::string8& out_artist, pfc::string8& out_title, pfc::string8& out_album, pfc::string8& out_source) {
+    if (key.is_empty()) return false;
+
+    // Check memory cache first
+    {
+        std::lock_guard<std::mutex> lock(metadata_mutex);
+        cache_metadata_entry* entry = metadata_map.query_ptr(key);
+        if (entry != nullptr) {
+            entry->last_access = std::chrono::steady_clock::now();
+            out_artist = entry->artist;
+            out_title = entry->title;
+            out_album = entry->album;
+            out_source = entry->source;
+            return true;
+        }
+    }
+
+    // Load from disk
+    pfc::string8 meta_path = get_cache_meta_path(key);
+    std::wstring wide_path = utf8_to_wide(meta_path);
+    HANDLE hFile = CreateFileW(wide_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    DWORD size = GetFileSize(hFile, nullptr);
+    if (size == 0 || size > 65536) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    std::string content(size, '\0');
+    DWORD read_bytes = 0;
+    BOOL ok = ReadFile(hFile, &content[0], size, &read_bytes, nullptr);
+    CloseHandle(hFile);
+    if (!ok || read_bytes == 0) return false;
+
+    try {
+        nlohmann::json j = nlohmann::json::parse(content);
+        cache_metadata_entry entry;
+        if (j.contains("artist") && j["artist"].is_string()) entry.artist = j["artist"].get<std::string>().c_str();
+        if (j.contains("title") && j["title"].is_string()) entry.title = j["title"].get<std::string>().c_str();
+        if (j.contains("album") && j["album"].is_string()) entry.album = j["album"].get<std::string>().c_str();
+        if (j.contains("source") && j["source"].is_string()) entry.source = j["source"].get<std::string>().c_str();
+        entry.last_access = std::chrono::steady_clock::now();
+
+        out_artist = entry.artist;
+        out_title = entry.title;
+        out_album = entry.album;
+        out_source = entry.source;
+
+        std::lock_guard<std::mutex> lock(metadata_mutex);
+        metadata_map.set(key, entry);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 void async_io_manager::async_cache::prune_disk_cache(uint64_t max_bytes) {
     if (cache_directory.is_empty() || max_bytes == 0) return;
 
@@ -824,6 +943,10 @@ void async_io_manager::async_cache::prune_disk_cache(uint64_t max_bytes) {
                 } else {
                     total_size = 0;
                 }
+                if (entry.filename.size() >= 6 && entry.filename.substr(entry.filename.size() - 6) == L".cache") {
+                    std::wstring meta_path = wide_dir + entry.filename.substr(0, entry.filename.size() - 6) + L".meta";
+                    DeleteFileW(meta_path.c_str());
+                }
             }
         }
     }
@@ -836,6 +959,10 @@ void async_io_manager::async_cache::clear_all() {
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache_map.remove_all();
     }
+    {
+        std::lock_guard<std::mutex> lock(metadata_mutex);
+        metadata_map.remove_all();
+    }
 
     // Clear pending write queue
     {
@@ -845,17 +972,28 @@ void async_io_manager::async_cache::clear_all() {
         }
     }
 
-    // Delete all cache files from disk on a background thread
+    // Delete all cache files (.cache and .meta) from disk on a background thread
     pfc::string8 cache_dir = cache_directory;
     instance().submit_task([cache_dir]() {
-        std::wstring wide_pattern = utf8_to_wide(cache_dir);
-        wide_pattern += L"*.cache";
+        std::wstring wide_dir = utf8_to_wide(cache_dir);
+        std::wstring wide_pattern = wide_dir + L"*.cache";
 
         WIN32_FIND_DATAW find_data;
         HANDLE find_handle = FindFirstFileW(wide_pattern.c_str(), &find_data);
 
         if (find_handle != INVALID_HANDLE_VALUE) {
-            std::wstring wide_dir = utf8_to_wide(cache_dir);
+            do {
+                if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                    std::wstring full_path = wide_dir + find_data.cFileName;
+                    DeleteFileW(full_path.c_str());
+                }
+            } while (FindNextFileW(find_handle, &find_data));
+            FindClose(find_handle);
+        }
+
+        std::wstring meta_pattern = wide_dir + L"*.meta";
+        find_handle = FindFirstFileW(meta_pattern.c_str(), &find_data);
+        if (find_handle != INVALID_HANDLE_VALUE) {
             do {
                 if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
                     std::wstring full_path = wide_dir + find_data.cFileName;
@@ -877,12 +1015,19 @@ void async_io_manager::async_cache::remove(const pfc::string8& key) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache_map.remove(key);
     }
+    {
+        std::lock_guard<std::mutex> lock(metadata_mutex);
+        metadata_map.remove(key);
+    }
 
-    // Delete the .cache file from disk on a background thread
+    // Delete the .cache and .meta files from disk on a background thread
     pfc::string8 file_path = get_cache_file_path(key);
-    instance().submit_task([file_path]() {
+    pfc::string8 meta_path = get_cache_meta_path(key);
+    instance().submit_task([file_path, meta_path]() {
         std::wstring wide_path = utf8_to_wide(file_path);
         DeleteFileW(wide_path.c_str());
+        std::wstring wide_meta = utf8_to_wide(meta_path);
+        DeleteFileW(wide_meta.c_str());
     });
 }
 
