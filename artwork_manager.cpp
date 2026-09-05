@@ -327,6 +327,7 @@ static std::atomic<uint64_t> g_coversync_cue_token{0};
 static std::atomic<bool> g_has_received_first_stream_cue{false};
 static std::atomic<int> g_active_acrcloud_account{1}; // 1 = Primary, 2 = Secondary
 static pfc::string8 g_last_stream_artist = "";
+static pfc::string8 g_last_stream_artist_full = "";
 static pfc::string8 g_last_stream_title = "";
 static pfc::string8 g_pending_external_api_artist = "";
 static pfc::string8 g_pending_external_api_title = "";
@@ -467,6 +468,7 @@ void artwork_manager::on_playback_new_track(metadb_handle_ptr track) {
     g_active_resolved_provider.reset();
     g_rejected_providers_for_current_track.clear();
     g_last_stream_artist.reset();
+    g_last_stream_artist_full.reset();
     g_last_stream_title.reset();
     g_pending_external_api_artist.reset();
     g_pending_external_api_title.reset();
@@ -526,6 +528,7 @@ void artwork_manager::on_playback_stop() {
     g_active_playing_track.release();
     g_current_stream_url.reset();
     g_last_stream_artist.reset();
+    g_last_stream_artist_full.reset();
     g_last_stream_title.reset();
     g_pending_external_api_artist.reset();
     g_pending_external_api_title.reset();
@@ -767,7 +770,8 @@ void artwork_manager::search_youtube_thumbnail_async(const pfc::string8& video_i
             }
             pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
             metadb_handle_ptr now_track = g_active_playing_track;
-            titleformat_provider::set_track_artwork_info(now_track, g_last_stream_artist.c_str(), g_last_stream_title.c_str(), cache_file.c_str(), "YouTube Thumbnail");
+            pfc::string8 yt_art = !g_last_stream_artist_full.is_empty() ? g_last_stream_artist_full : g_last_stream_artist;
+            titleformat_provider::set_track_artwork_info(now_track, yt_art.c_str(), g_last_stream_title.c_str(), cache_file.c_str(), "YouTube Thumbnail", yt_art.c_str());
             std::vector<uint8_t> vec(final_res.data.get_ptr(), final_res.data.get_ptr() + final_res.data.get_size());
             create_bitmap_from_image_data(vec);
             refresh_all_dui_artwork_panels();
@@ -795,7 +799,8 @@ void artwork_manager::search_youtube_thumbnail_async(const pfc::string8& video_i
                 }
                 pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
                 metadb_handle_ptr now_track = g_active_playing_track;
-                titleformat_provider::set_track_artwork_info(now_track, g_last_stream_artist.c_str(), g_last_stream_title.c_str(), cache_file.c_str(), "YouTube Thumbnail");
+                pfc::string8 yt_art2 = !g_last_stream_artist_full.is_empty() ? g_last_stream_artist_full : g_last_stream_artist;
+                titleformat_provider::set_track_artwork_info(now_track, yt_art2.c_str(), g_last_stream_title.c_str(), cache_file.c_str(), "YouTube Thumbnail", yt_art2.c_str());
                 std::vector<uint8_t> vec(final_res.data.get_ptr(), final_res.data.get_ptr() + final_res.data.get_size());
                 create_bitmap_from_image_data(vec);
                 refresh_all_dui_artwork_panels();
@@ -1392,7 +1397,8 @@ void artwork_manager::search_broadcast_artwork_async(const pfc::string8& cover_u
             }
             pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
             metadb_handle_ptr now_track = g_active_playing_track;
-            titleformat_provider::set_track_artwork_info(now_track, g_last_stream_artist.c_str(), g_last_stream_title.c_str(), cache_file.c_str(), "Broadcast Artwork");
+            pfc::string8 bc_art = !g_last_stream_artist_full.is_empty() ? g_last_stream_artist_full : g_last_stream_artist;
+            titleformat_provider::set_track_artwork_info(now_track, bc_art.c_str(), g_last_stream_title.c_str(), cache_file.c_str(), "Broadcast Artwork", bc_art.c_str());
             std::vector<uint8_t> vec(final_res.data.get_ptr(), final_res.data.get_ptr() + final_res.data.get_size());
             create_bitmap_from_image_data(vec);
             refresh_all_dui_artwork_panels();
@@ -2114,7 +2120,7 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
 
                                 metadb_handle_ptr track;
                                 if (pc_cue->get_now_playing(track) && track.is_valid()) {
-                                    titleformat_provider::set_track_artwork_info(track, clean_art.c_str(), clean_tit.c_str(), "", "", clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str());
+                                    titleformat_provider::set_track_artwork_info(track, clean_art_full.c_str(), clean_tit.c_str(), "", "", clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str());
                                 }
 
                                 metadb_handle_ptr cur_t;
@@ -2131,6 +2137,7 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                                     search_broadcast_artwork_async(art_url_c.c_str(), cache_key, [clean_art, clean_tit, clean_art_full, album_c, listeners_c, cache_key](const artwork_result& res) {
                                         if (res.success) {
                                             g_last_stream_artist = clean_art;
+                                            g_last_stream_artist_full = clean_art_full;
                                             g_last_stream_title = clean_tit;
                                             g_stream_monitor_token++;
                                             stop_rms_silence_detector();
@@ -2148,7 +2155,7 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                                             metadb_handle_ptr track;
                                             if (playback_control::get()->get_now_playing(track) && track.is_valid()) {
                                                 pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
-                                                titleformat_provider::set_track_artwork_info(track, clean_art.c_str(), clean_tit.c_str(), cache_file.c_str(), res.source.c_str(), clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str());
+                                                titleformat_provider::set_track_artwork_info(track, clean_art_full.c_str(), clean_tit.c_str(), cache_file.c_str(), res.source.c_str(), clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str());
                                             }
 
                                             int w = 0, h = 0;
@@ -2678,6 +2685,7 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         titleformat_provider::reset_stream_track_timer(applied_delay);
 
         g_last_stream_artist = clean_art;
+        g_last_stream_artist_full = clean_art_full;
         g_last_stream_title = clean_tit;
 
         // Reset rejected providers and active provider for the new stream song
@@ -2752,7 +2760,7 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
                 g_active_source = res.source;
             }
             pfc::string8 effective_source = (!g_active_resolved_provider.is_empty() && g_active_resolved_provider != "Cache") ? g_active_resolved_provider : res.source;
-            pfc::string8 final_artist = !res.artist.is_empty() ? res.artist : clean_art_full;
+            pfc::string8 final_artist = !clean_art_full.is_empty() ? clean_art_full : (!res.artist.is_empty() ? res.artist : clean_art);
             pfc::string8 final_title = !res.title.is_empty() ? res.title : clean_tit;
             pfc::string8 final_album = !res.album.is_empty() ? res.album : clean_album;
 
@@ -4347,20 +4355,28 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
             titleformat_provider::set_status_artwork_loaded(api_name.c_str(), w, h, (size_t)result.data.get_size(), result.is_acrcloud_recognized);
 
             cancel_acrcloud_tasks(); // Cancel any pending background ACRCloud sampling tasks
+            pfc::string8 disp_artist;
+            if (!g_last_stream_artist_full.is_empty()) {
+                disp_artist = g_last_stream_artist_full;
+            } else if (!result.artist.is_empty()) {
+                disp_artist = result.artist;
+            } else {
+                disp_artist = artist;
+            }
+            pfc::string8 disp_title = !result.title.is_empty() ? result.title : track;
+
             if (cfg_enable_disk_cache || cfg_single_file_cache) {
                 if (!cache_key.is_empty()) {
                     async_io_manager::instance().cache_set_async(cache_key, result.data);
-                    async_io_manager::instance().cache_set_metadata(cache_key, result.artist, result.title, result.album, api_name);
+                    async_io_manager::instance().cache_set_metadata(cache_key, disp_artist, disp_title, result.album, api_name);
                 }
                 if (cfg_single_file_cache) {
                     async_io_manager::instance().cache_set_async("current", result.data);
-                    async_io_manager::instance().cache_set_metadata("current", result.artist, result.title, result.album, api_name);
+                    async_io_manager::instance().cache_set_metadata("current", disp_artist, disp_title, result.album, api_name);
                 }
             }
             pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
             metadb_handle_ptr now_track = g_active_playing_track;
-            pfc::string8 disp_artist = !result.artist.is_empty() ? result.artist : artist;
-            pfc::string8 disp_title = !result.title.is_empty() ? result.title : track;
             titleformat_provider::set_track_artwork_info(now_track, disp_artist.c_str(), disp_title.c_str(), cache_file.c_str(), api_name.c_str(), disp_artist.c_str(), result.album.c_str());
             std::vector<uint8_t> vec(result.data.get_ptr(), result.data.get_ptr() + result.data.get_size());
             create_bitmap_from_image_data(vec);
