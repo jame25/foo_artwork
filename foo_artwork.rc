@@ -94,26 +94,21 @@ IDD_PREFERENCES_BLACKLIST DIALOGEX 0, 0, 350, 270
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
-    GROUPBOX        "Custom Noise Words Blacklist",IDC_STATIC,10,10,320,250
+    GROUPBOX        "Metadata Cleaner && Noise Words Blacklist",IDC_STATIC,10,10,320,250
 
-    LTEXT           "Filter unwanted station phrases, jingles, and promotional slogans from stream",IDC_STATIC,20,24,300,10
-    LTEXT           "titles before querying online artwork APIs (iTunes, Deezer, Last.fm, etc.):",IDC_STATIC,20,36,300,10
+    LTEXT           "Blacklist entries (saved to foo_artwork_data\\blacklist.txt):",IDC_STATIC_BLACKLIST,20,24,300,10
+    EDITTEXT        IDC_CUSTOM_BLACKLIST,20,36,300,128,ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL
 
-    LTEXT           "Blacklist entries (saved to foo_artwork_data\\blacklist.txt):",IDC_STATIC_BLACKLIST,20,50,300,10
-    EDITTEXT        IDC_CUSTOM_BLACKLIST,20,62,300,58,ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL
+    PUSHBUTTON      "Open File",IDC_OPEN_BLACKLIST_FILE,20,170,55,14
+    PUSHBUTTON      "Open Folder",IDC_OPEN_DATA_FOLDER,78,170,55,14
+    PUSHBUTTON      "Reload File",IDC_RELOAD_BLACKLIST_FILE,136,170,55,14
+    PUSHBUTTON      "Reset Defaults",IDC_RESET_BLACKLIST_DEFAULTS,194,170,65,14
 
-    PUSHBUTTON      "Open File",IDC_OPEN_BLACKLIST_FILE,20,124,65,14
-    PUSHBUTTON      "Open Folder",IDC_OPEN_DATA_FOLDER,90,124,65,14
-    PUSHBUTTON      "Reload File",IDC_RELOAD_BLACKLIST_FILE,160,124,65,14
+    CONTROL         "Trim secondary artists during online artwork search",IDC_TRIM_SECONDARY_ARTISTS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,190,290,12
 
-    LTEXT           "Common Examples:",IDC_STATIC,20,144,100,10
-    LTEXT           "LIVE, RADIO EDIT, REMASTERED, STATION JINGLE, NOW PLAYING,",IDC_STATIC,30,156,290,10
-    LTEXT           "ADVERT, SPONSOR, ON AIR, NON-STOP MUSIC, BEST HITS",IDC_STATIC,30,168,290,10
-
-    LTEXT           "Note:",IDC_STATIC,20,186,40,10
-    LTEXT           "Separate with newlines, commas, or semicolons. Lines with # are comments.",IDC_STATIC,30,198,290,10
-    LTEXT           "Matches are stripped from artist and track title prior to online searches.",IDC_STATIC,30,210,290,10
-    LTEXT           "If artist or title becomes empty after filtering, online searching is skipped.",IDC_STATIC,30,222,290,10
+    LTEXT           "Multi-Artist Note:",IDC_STATIC,20,206,100,10
+    LTEXT           "When checked, multi-artist tracks (duets, collaborations) query APIs with only",IDC_STATIC,30,217,290,10
+    LTEXT           "the primary artist for higher match rates.",IDC_STATIC,30,228,290,10
 END
 
 IDD_PREFERENCES_ACRCLOUD DIALOGEX 0, 0, 350, 270
