@@ -268,10 +268,10 @@ public:
             // 1. If matching active playing track and dynamic/resolved values are present, use them
             if (is_current_track) {
                 switch (index) {
-                    case field_artist: if (!current_artist.is_empty()) field_val = current_artist; break;
+                    case field_artist:
                     case field_artist_full:
-                        if (!current_artist_full.is_empty()) field_val = current_artist_full;
-                        else if (!current_artist.is_empty()) field_val = current_artist;
+                        if (!current_artist.is_empty()) field_val = current_artist;
+                        else if (!current_artist_full.is_empty()) field_val = current_artist_full;
                         break;
                     case field_title: if (!current_title.is_empty()) field_val = current_title; break;
                     case field_album: if (!current_album.is_empty()) field_val = current_album; break;
@@ -353,35 +353,53 @@ public:
                 }
             }
 
-            // 2. If field_val is empty and handle is provided, extract directly from handle's metadata / disk cache
+            // 2. If field_val is empty and handle is provided, extract directly from disk cache metadata or handle's metadata / disk cache
             if (field_val.is_empty() && handle != nullptr && !core_api::is_shutting_down()) {
-                try {
-                    metadb_info_container::ptr info_container = handle->get_info_ref();
-                    if (info_container.is_valid()) {
-                        const file_info& info = info_container->info();
-                        if (index == field_artist) {
-                            const char* art = info.meta_get("ARTIST", 0);
-                            if (art && strlen(art) > 0) {
-                                field_val = MetadataCleaner::clean_for_search(art, true, false).c_str();
-                            }
-                        } else if (index == field_artist_full) {
-                            const char* art = info.meta_get("ARTIST", 0);
-                            if (art && strlen(art) > 0) {
-                                field_val = art;
-                            }
-                        } else if (index == field_title) {
-                            const char* tit = info.meta_get("TITLE", 0);
-                            if (tit && strlen(tit) > 0) {
-                                field_val = MetadataCleaner::clean_for_search(tit, true, false).c_str();
-                            }
-                        } else if (index == field_album) {
-                            const char* alb = info.meta_get("ALBUM", 0);
-                            if (alb && strlen(alb) > 0) {
-                                field_val = alb;
-                            }
+                pfc::string8 key = artwork_manager::generate_cache_key_for_track(handle);
+                pfc::string8 c_source;
+                if (!key.is_empty()) {
+                    pfc::string8 c_artist, c_title, c_album;
+                    if (async_io_manager::instance().cache_get_metadata(key, c_artist, c_title, c_album, c_source)) {
+                        if ((index == field_artist || index == field_artist_full) && !c_artist.is_empty()) {
+                            field_val = c_artist;
+                        } else if (index == field_title && !c_title.is_empty()) {
+                            field_val = c_title;
+                        } else if (index == field_album && !c_album.is_empty()) {
+                            field_val = c_album;
                         }
                     }
-                } catch (...) {}
+                }
+
+                if (field_val.is_empty()) {
+                    try {
+                        const char* h_path = handle->get_path();
+                        bool is_stream = (h_path && strstr(h_path, "://") && !strstr(h_path, "file://"));
+
+                        // If cfg_skip_local_artwork is enabled, skip local file tags in title variables for local files
+                        if (!cfg_skip_local_artwork || is_stream) {
+                            metadb_info_container::ptr info_container = handle->get_info_ref();
+                            if (info_container.is_valid()) {
+                                const file_info& info = info_container->info();
+                                if (index == field_artist || index == field_artist_full) {
+                                    const char* art = info.meta_get("ARTIST", 0);
+                                    if (art && strlen(art) > 0) {
+                                        field_val = art;
+                                    }
+                                } else if (index == field_title) {
+                                    const char* tit = info.meta_get("TITLE", 0);
+                                    if (tit && strlen(tit) > 0) {
+                                        field_val = tit;
+                                    }
+                                } else if (index == field_album) {
+                                    const char* alb = info.meta_get("ALBUM", 0);
+                                    if (alb && strlen(alb) > 0) {
+                                        field_val = alb;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (...) {}
+                }
 
                 if (index == field_length) {
                     double len = handle->get_length();
@@ -389,7 +407,6 @@ public:
                         field_val = format_time_seconds(len);
                     }
                 } else if (index == field_cover || index == field_path) {
-                    pfc::string8 key = artwork_manager::generate_cache_key_for_track(handle);
                     if (!key.is_empty()) {
                         pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(key);
                         if (PathFileExistsA(cache_file.c_str())) {
@@ -397,11 +414,14 @@ public:
                         }
                     }
                 } else if (index == field_source) {
-                    pfc::string8 key = artwork_manager::generate_cache_key_for_track(handle);
                     if (!key.is_empty()) {
                         pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(key);
                         if (PathFileExistsA(cache_file.c_str())) {
-                            field_val = "Cache";
+                            if (!c_source.is_empty()) {
+                                field_val = c_source;
+                            } else {
+                                field_val = "Cache";
+                            }
                         }
                     }
                 }
