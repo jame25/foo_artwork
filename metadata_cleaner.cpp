@@ -247,32 +247,12 @@ std::string MetadataCleaner::strip_broadcast_dates(const std::string& str) {
     return trim(result);
 }
 
-std::string MetadataCleaner::filter_multilingual_keywords(const std::string& str) {
-    if (str.empty()) return "";
-    std::string result = str;
-
-    // Strip leading label tags like "Artist: ...", "Artista: ...", "Track - ...", "Faixa: ..."
-    result = std::regex_replace(result,
-        std::regex("^\\s*(?:artist|artista|artiste|k\\xC3\\xBCnstler|interprete|interpr\\xC3\\xA8te|interpret|title|titel|track|piste|traccia|faixa|song)\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*", std::regex_constants::icase), "");
-
-    // Strip inline album / media noise tags like "- Album: OK Computer", "/ CD: Greatest Hits", "• Disco: ..."
-    result = std::regex_replace(result,
-        std::regex("\\s*(?:[\\-\\/\\|~]|\\xE2\\x80\\xA2)\\s*(?:album|\\xC3\\xA1lbum|disco|disque|cd\\d*|dvd|vinyl|disc\\s*\\d*|disk\\s*\\d*)\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*[^-\\/\\|~]+", std::regex_constants::icase), "");
-
-    // Strip standalone leading album labels e.g. "Album: ..."
-    result = std::regex_replace(result,
-        std::regex("^\\s*(?:album|\\xC3\\xA1lbum|disco|disque|cd\\d*|dvd|vinyl|disc\\s*\\d*|disk\\s*\\d*)\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*", std::regex_constants::icase), "");
-
-    return trim(result);
-}
-
-std::string MetadataCleaner::filter_custom_blacklist(const std::string& str) {
-    if (str.empty()) return "";
+std::vector<std::string> MetadataCleaner::get_active_blacklist_tokens() {
     pfc::string8 bl_cfg = get_custom_blacklist_active_content();
-    if (bl_cfg.is_empty()) return str;
+    std::vector<std::string> tokens;
+    if (bl_cfg.is_empty()) return tokens;
 
     std::string bl_str = bl_cfg.c_str();
-    std::vector<std::string> tokens;
     std::string token;
     for (char c : bl_str) {
         if (c == '\r' || c == '\n' || c == ',' || c == ';') {
@@ -289,7 +269,42 @@ std::string MetadataCleaner::filter_custom_blacklist(const std::string& str) {
     if (!token.empty() && token[0] != '#' && token.rfind("//", 0) != 0) {
         tokens.push_back(token);
     }
+    return tokens;
+}
 
+std::string MetadataCleaner::filter_multilingual_keywords(const std::string& str) {
+    if (str.empty()) return "";
+    std::string result = str;
+
+    auto tokens = get_active_blacklist_tokens();
+    for (const auto& t : tokens) {
+        if (t.length() < 2) continue;
+        try {
+            std::string escaped;
+            for (char ch : t) {
+                if (ch == '.' || ch == '^' || ch == '$' || ch == '*' || ch == '+' || ch == '?' ||
+                    ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' ||
+                    ch == '|' || ch == '\\') {
+                    escaped += '\\';
+                }
+                escaped += ch;
+            }
+            // Strip leading label tags e.g. "^Artist: ...", "^Artista - ..."
+            std::string lead_pat = "(?i)^\\s*" + escaped + "\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*";
+            result = std::regex_replace(result, std::regex(lead_pat), "");
+
+            // Strip inline album / media noise tags like "- Album: OK Computer", "/ CD: Greatest Hits", "• Disco: ..."
+            std::string inline_pat = "(?i)\\s*(?:[\\-\\/\\|~]|\\xE2\\x80\\xA2)\\s*" + escaped + "\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*[^-\\/\\|~]+";
+            result = std::regex_replace(result, std::regex(inline_pat), "");
+        } catch (...) {}
+    }
+
+    return trim(result);
+}
+
+std::string MetadataCleaner::filter_custom_blacklist(const std::string& str) {
+    if (str.empty()) return "";
+    auto tokens = get_active_blacklist_tokens();
     if (tokens.empty()) return str;
 
     std::string result = str;
@@ -439,44 +454,25 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
         return false;
     }
 
-    // Rule 5: Block "Unknown" and standalone media blacklist keywords
-    static const std::vector<std::string> blacklist_terms = {
-        "cd", "cd1", "cd2", "dvd", "album", "\xC3\xA1lbum", "disco", "disque", "disc", "disk",
-        "artista", "artiste", "artist", "k\xC3\xBCnstler", "interprete", "interpr\xC3\xA8te", "interpret",
-        "track", "faixa", "pista", "traccia", "titel", "song", "vinyl", "ep", "lp",
+    // Rule 5: Block "Unknown" and active unified blacklist keywords
+    static const std::vector<std::string> hardcoded_fallbacks = {
         "unknown", "unknown artist", "unknown track"
     };
     std::string artist_lower = artist_str;
     to_lower_ascii(artist_lower);
 
-    for (const auto& bl : blacklist_terms) {
+    for (const auto& bl : hardcoded_fallbacks) {
         if (artist_lower == bl || title_lower == bl) {
             return false;
         }
     }
 
-    pfc::string8 custom_bl = get_custom_blacklist_active_content();
-    if (!custom_bl.is_empty()) {
-        std::string bl_str = custom_bl.c_str();
-        std::string token;
-        for (char c : bl_str) {
-            if (c == '\r' || c == '\n' || c == ',' || c == ';') {
-                token = trim(token);
-                if (!token.empty() && token[0] != '#' && token.rfind("//", 0) != 0) {
-                    std::string t_lower = token;
-                    to_lower_ascii(t_lower);
-                    if (artist_lower == t_lower || title_lower == t_lower) return false;
-                }
-                token.clear();
-            } else {
-                token += c;
-            }
-        }
-        token = trim(token);
-        if (!token.empty() && token[0] != '#' && token.rfind("//", 0) != 0) {
-            std::string t_lower = token;
-            to_lower_ascii(t_lower);
-            if (artist_lower == t_lower || title_lower == t_lower) return false;
+    auto active_tokens = get_active_blacklist_tokens();
+    for (const auto& token : active_tokens) {
+        std::string t_lower = token;
+        to_lower_ascii(t_lower);
+        if (artist_lower == t_lower || title_lower == t_lower) {
+            return false;
         }
     }
 
@@ -719,6 +715,10 @@ bool MetadataCleaner::is_featuring_pattern(const std::string& term) {
 std::string MetadataCleaner::extract_first_artist(const char* artist) {
     if (!artist || strlen(artist) == 0) {
         return "";
+    }
+    
+    if (!cfg_trim_secondary_artists) {
+        return trim(std::string(artist));
     }
     
     std::string artist_str(artist);
