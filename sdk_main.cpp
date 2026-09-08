@@ -193,6 +193,11 @@ cfg_uint cfg_cache_size(guid_cfg_cache_size, 1000);
 static constexpr GUID guid_cfg_custom_blacklist = { 0x1234569f, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x0e } };
 cfg_string cfg_custom_blacklist(guid_cfg_custom_blacklist, "");
 
+// Trim secondary artists during online artwork search (default: true)
+static constexpr GUID guid_cfg_trim_secondary_artists = { 0x123456a1, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x0f } };
+cfg_bool cfg_trim_secondary_artists(guid_cfg_trim_secondary_artists, true);
+
+
 
 //=============================================================================
 // Event-Driven Artwork System
@@ -388,7 +393,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.2",
+    "1.7.4",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -405,7 +410,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.2",
+    "1.7.4",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -537,6 +542,74 @@ void save_custom_blacklist_to_file(const char* content) {
     CloseHandle(hFile);
 }
 
+const char* get_unified_default_blacklist_content() {
+    return
+        "# =============================================================================\r\n"
+        "# foo_artwork - Unified Noise Words Blacklist\r\n"
+        "# =============================================================================\r\n"
+        "# Filter unwanted media terms, labels, and promotional slogans from stream\r\n"
+        "# titles before querying online artwork APIs (iTunes, Deezer, Last.fm, etc.).\r\n"
+        "#\r\n"
+        "# Format: One entry per line, or separated by commas/semicolons.\r\n"
+        "# Lines starting with # are comments.\r\n"
+        "# To prevent a term from being stripped (whitelist it), simply delete that line.\r\n"
+        "# =============================================================================\r\n"
+        "\r\n"
+        "# --- Media Formats & Physical Media ---\r\n"
+        "CD\r\n"
+        "CD1\r\n"
+        "CD2\r\n"
+        "DVD\r\n"
+        "VINYL\r\n"
+        "EP\r\n"
+        "LP\r\n"
+        "DISC\r\n"
+        "DISK\r\n"
+        "DISCO\r\n"
+        "DISQUE\r\n"
+        "ALBUM\r\n"
+        "ÁLBUM\r\n"
+        "\r\n"
+        "# --- Track & Artist Field Labels ---\r\n"
+        "ARTIST\r\n"
+        "ARTISTA\r\n"
+        "ARTISTE\r\n"
+        "KÜNSTLER\r\n"
+        "INTERPRETE\r\n"
+        "INTERPRÈTE\r\n"
+        "INTERPRET\r\n"
+        "TRACK\r\n"
+        "FAIXA\r\n"
+        "PISTA\r\n"
+        "TRACCIA\r\n"
+        "TITEL\r\n"
+        "SONG\r\n"
+        "\r\n"
+        "# --- Broadcast & Release Slogans ---\r\n"
+        "LIVE\r\n"
+        "RADIO EDIT\r\n"
+        "RADIO MIX\r\n"
+        "REMASTERED\r\n"
+        "REMASTER\r\n"
+        "ORIGINAL MIX\r\n"
+        "EXTENDED MIX\r\n"
+        "CLUB MIX\r\n"
+        "INSTRUMENTAL\r\n"
+        "ACOUSTIC\r\n"
+        "STATION JINGLE\r\n"
+        "NOW PLAYING\r\n"
+        "ON AIR\r\n"
+        "NON-STOP\r\n"
+        "COMMERCIAL FREE\r\n"
+        "BEST HITS\r\n";
+}
+
+void reset_custom_blacklist_to_defaults() {
+    pfc::string8 defaults = get_unified_default_blacklist_content();
+    cfg_custom_blacklist = defaults;
+    save_custom_blacklist_to_file(defaults.c_str());
+}
+
 void sync_custom_blacklist_file() {
     pfc::string8 filepath = get_blacklist_file_path();
     std::wstring wide_path = utf8_to_wide(filepath);
@@ -547,24 +620,29 @@ void sync_custom_blacklist_file() {
             g_last_blacklist_file_time = file_data.ftLastWriteTime;
         }
         pfc::string8 file_content = load_custom_blacklist_from_file();
+        bool has_active_rules = false;
+        for (const char* p = file_content.c_str(); *p; ++p) {
+            if (*p == '\r' || *p == '\n' || *p == ' ' || *p == '\t') continue;
+            if (*p == '#' || (*p == '/' && *(p + 1) == '/')) {
+                while (*p && *p != '\r' && *p != '\n') ++p;
+                if (!*p) break;
+                continue;
+            }
+            has_active_rules = true;
+            break;
+        }
+        if (!has_active_rules) {
+            file_content = get_unified_default_blacklist_content();
+            save_custom_blacklist_to_file(file_content.c_str());
+        }
         cfg_custom_blacklist = file_content;
     } else {
         pfc::string8 initial_content = cfg_custom_blacklist;
         if (initial_content.is_empty()) {
-            initial_content =
-                "# Custom Noise Words Blacklist\r\n"
-                "# Filter unwanted station phrases, jingles, and promotional slogans from stream titles.\r\n"
-                "# Format: One entry per line, or separated by commas/semicolons.\r\n"
-                "# Lines starting with # are comments.\r\n"
-                "\r\n"
-                "# Common examples (uncomment or add your own):\r\n"
-                "# LIVE\r\n"
-                "# RADIO EDIT\r\n"
-                "# REMASTERED\r\n"
-                "# STATION JINGLE\r\n"
-                "# NOW PLAYING\r\n";
+            initial_content = get_unified_default_blacklist_content();
         }
         save_custom_blacklist_to_file(initial_content.c_str());
+        cfg_custom_blacklist = initial_content;
     }
 }
 
