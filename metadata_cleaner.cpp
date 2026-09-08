@@ -280,22 +280,44 @@ std::string MetadataCleaner::filter_multilingual_keywords(const std::string& str
     for (const auto& t : tokens) {
         if (t.length() < 2) continue;
         try {
-            std::string escaped;
-            for (char ch : t) {
-                if (ch == '.' || ch == '^' || ch == '$' || ch == '*' || ch == '+' || ch == '?' ||
-                    ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' ||
-                    ch == '|' || ch == '\\') {
-                    escaped += '\\';
+            if (has_non_ascii(t) || has_non_ascii(result)) {
+                std::wstring wresult = utf8_to_wstring(result);
+                std::wstring wt = utf8_to_wstring(t);
+                std::wstring w_escaped;
+                for (wchar_t ch : wt) {
+                    if (ch == L'.' || ch == L'^' || ch == L'$' || ch == L'*' || ch == L'+' || ch == L'?' ||
+                        ch == L'(' || ch == L')' || ch == L'[' || ch == L']' || ch == L'{' || ch == L'}' ||
+                        ch == L'|' || ch == L'\\') {
+                        w_escaped += L'\\';
+                    }
+                    w_escaped += ch;
                 }
-                escaped += ch;
-            }
-            // Strip leading label tags e.g. "^Artist: ...", "^Artista - ..."
-            std::string lead_pat = "(?i)^\\s*" + escaped + "\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*";
-            result = std::regex_replace(result, std::regex(lead_pat), "");
+                // Strip leading label tags e.g. "^Artist: ...", "^Artista - ..."
+                std::wstring lead_pat = L"^\\s*" + w_escaped + L"\\s*(?:[:\\-]|\\x2013|\\x2014)\\s*";
+                wresult = std::regex_replace(wresult, std::wregex(lead_pat, std::regex_constants::icase), L"");
 
-            // Strip inline album / media noise tags like "- Album: OK Computer", "/ CD: Greatest Hits", "• Disco: ..."
-            std::string inline_pat = "(?i)\\s*(?:[\\-\\/\\|~]|\\xE2\\x80\\xA2)\\s*" + escaped + "\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*[^-\\/\\|~]+";
-            result = std::regex_replace(result, std::regex(inline_pat), "");
+                // Strip inline album / media noise tags like "- Album: OK Computer", "/ CD: Greatest Hits", "• Disco: ..."
+                std::wstring inline_pat = L"\\s*(?:[\\-\\/\\|~]|\\x2022)\\s*" + w_escaped + L"\\s*(?:[:\\-]|\\x2013|\\x2014)\\s*[^-\\/\\|~]+";
+                wresult = std::regex_replace(wresult, std::wregex(inline_pat, std::regex_constants::icase), L"");
+                result = wstring_to_utf8(wresult);
+            } else {
+                std::string escaped;
+                for (char ch : t) {
+                    if (ch == '.' || ch == '^' || ch == '$' || ch == '*' || ch == '+' || ch == '?' ||
+                        ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' ||
+                        ch == '|' || ch == '\\') {
+                        escaped += '\\';
+                    }
+                    escaped += ch;
+                }
+                // Strip leading label tags e.g. "^Artist: ...", "^Artista - ..."
+                std::string lead_pat = "^\\s*" + escaped + "\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*";
+                result = std::regex_replace(result, std::regex(lead_pat, std::regex_constants::icase), "");
+
+                // Strip inline album / media noise tags like "- Album: OK Computer", "/ CD: Greatest Hits", "• Disco: ..."
+                std::string inline_pat = "\\s*(?:[\\-\\/\\|~]|\\xE2\\x80\\xA2)\\s*" + escaped + "\\s*(?:[:\\-]|\\xE2\\x80\\x93|\\xE2\\x80\\x94)\\s*[^-\\/\\|~]+";
+                result = std::regex_replace(result, std::regex(inline_pat, std::regex_constants::icase), "");
+            }
         } catch (...) {}
     }
 
@@ -311,17 +333,34 @@ std::string MetadataCleaner::filter_custom_blacklist(const std::string& str) {
     for (const auto& t : tokens) {
         if (t.empty()) continue;
         try {
-            std::string escaped_term;
-            for (char ch : t) {
-                if (ch == '.' || ch == '^' || ch == '$' || ch == '*' || ch == '+' || ch == '?' ||
-                    ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' ||
-                    ch == '|' || ch == '\\') {
-                    escaped_term += '\\';
+            if (has_non_ascii(t) || has_non_ascii(result)) {
+                std::wstring wresult = utf8_to_wstring(result);
+                std::wstring wt = utf8_to_wstring(t);
+                std::wstring w_escaped;
+                for (wchar_t ch : wt) {
+                    if (ch == L'.' || ch == L'^' || ch == L'$' || ch == L'*' || ch == L'+' || ch == L'?' ||
+                        ch == L'(' || ch == L')' || ch == L'[' || ch == L']' || ch == L'{' || ch == L'}' ||
+                        ch == L'|' || ch == L'\\') {
+                        w_escaped += L'\\';
+                    }
+                    w_escaped += ch;
                 }
-                escaped_term += ch;
+                std::wstring pattern = L"(?:^|\\b|\\s*[-/|~\\x2022]\\s*)" + w_escaped + L"(?:\\b|\\s*[-/|~\\x2022]|\\s*$)";
+                wresult = std::regex_replace(wresult, std::wregex(pattern, std::regex_constants::icase), L" ");
+                result = wstring_to_utf8(wresult);
+            } else {
+                std::string escaped_term;
+                for (char ch : t) {
+                    if (ch == '.' || ch == '^' || ch == '$' || ch == '*' || ch == '+' || ch == '?' ||
+                        ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' ||
+                        ch == '|' || ch == '\\') {
+                        escaped_term += '\\';
+                    }
+                    escaped_term += ch;
+                }
+                std::string pattern = "(?:^|\\b|\\s*(?:[\\-\\/\\|~]|\\xE2\\x80\\xA2)\\s*)" + escaped_term + "(?:\\b|\\s*(?:[\\-\\/\\|~]|\\xE2\\x80\\xA2)|\\s*$)";
+                result = std::regex_replace(result, std::regex(pattern, std::regex_constants::icase), " ");
             }
-            std::string pattern = "(?i)(?:^|\\b|\\s*[-/|~•]\\s*)" + escaped_term + "(?:\\b|\\s*[-/|~•]|\\s*$)";
-            result = std::regex_replace(result, std::regex(pattern), " ");
         } catch (...) {}
     }
     return trim(result);
@@ -458,26 +497,24 @@ bool MetadataCleaner::is_valid_for_search(const char* artist, const char* title)
     static const std::vector<std::string> hardcoded_fallbacks = {
         "unknown", "unknown artist", "unknown track"
     };
-    std::string artist_lower = artist_str;
-    to_lower_ascii(artist_lower);
 
     for (const auto& bl : hardcoded_fallbacks) {
-        if (artist_lower == bl || title_lower == bl) {
+        if (pfc::stringCompareCaseInsensitive(artist_str.c_str(), bl.c_str()) == 0 ||
+            pfc::stringCompareCaseInsensitive(title_str.c_str(), bl.c_str()) == 0) {
             return false;
         }
     }
 
     auto active_tokens = get_active_blacklist_tokens();
     for (const auto& token : active_tokens) {
-        std::string t_lower = token;
-        to_lower_ascii(t_lower);
-        if (artist_lower == t_lower || title_lower == t_lower) {
+        if (pfc::stringCompareCaseInsensitive(artist_str.c_str(), token.c_str()) == 0 ||
+            pfc::stringCompareCaseInsensitive(title_str.c_str(), token.c_str()) == 0) {
             return false;
         }
     }
 
     // Rule 6: Block known problematic station names
-    if (artist_str == "RADIO BOB") {
+    if (pfc::stringCompareCaseInsensitive(artist_str.c_str(), "RADIO BOB") == 0) {
         return false;
     }
 
@@ -994,13 +1031,13 @@ bool MetadataCleaner::try_parse_xml_stream_title(const std::string& raw, std::st
     // Attribute fallback: <track artist="..." title="..." album="..." />
     if (art.empty() || tit.empty()) {
         std::smatch m;
-        if (std::regex_search(raw, m, std::regex("(?i)artist=[\"']([^\"']+)[\"']"))) {
+        if (std::regex_search(raw, m, std::regex("artist=[\"']([^\"']+)[\"']", std::regex_constants::icase))) {
             art = m[1].str();
         }
-        if (std::regex_search(raw, m, std::regex("(?i)title=[\"']([^\"']+)[\"']"))) {
+        if (std::regex_search(raw, m, std::regex("title=[\"']([^\"']+)[\"']", std::regex_constants::icase))) {
             tit = m[1].str();
         }
-        if (std::regex_search(raw, m, std::regex("(?i)album=[\"']([^\"']+)[\"']"))) {
+        if (std::regex_search(raw, m, std::regex("album=[\"']([^\"']+)[\"']", std::regex_constants::icase))) {
             alb = m[1].str();
         }
     }
