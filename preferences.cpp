@@ -31,6 +31,7 @@ extern cfg_bool cfg_skip_local_artwork;
 extern cfg_bool cfg_quiet_console;
 extern cfg_string cfg_custom_blacklist;
 extern cfg_bool cfg_trim_secondary_artists;
+extern cfg_bool cfg_normalize_api_metadata_case;
 
 // Reference to current artwork source for logging
 extern pfc::string8 g_current_artwork_source;
@@ -1168,12 +1169,16 @@ private:
         std::string current_blacklist(len + 1, '\0');
         GetDlgItemTextA(m_hwnd, IDC_CUSTOM_BLACKLIST, &current_blacklist[0], len + 1);
         current_blacklist.resize(len);
-        return strcmp(current_blacklist.c_str(), cfg_custom_blacklist.get_ptr()) != 0;
+        bool blacklist_changed = strcmp(current_blacklist.c_str(), cfg_custom_blacklist.get_ptr()) != 0;
+        bool trim_changed = (IsDlgButtonChecked(m_hwnd, IDC_TRIM_SECONDARY_ARTISTS) == BST_CHECKED) != cfg_trim_secondary_artists;
+        bool norm_changed = (IsDlgButtonChecked(m_hwnd, IDC_NORMALIZE_API_METADATA_CASE) == BST_CHECKED) != cfg_normalize_api_metadata_case;
+        return blacklist_changed || trim_changed || norm_changed;
     }
 
     void apply_settings() {
         if (!m_hwnd) return;
         cfg_trim_secondary_artists = (IsDlgButtonChecked(m_hwnd, IDC_TRIM_SECONDARY_ARTISTS) == BST_CHECKED);
+        cfg_normalize_api_metadata_case = (IsDlgButtonChecked(m_hwnd, IDC_NORMALIZE_API_METADATA_CASE) == BST_CHECKED);
         int len = GetWindowTextLengthA(GetDlgItem(m_hwnd, IDC_CUSTOM_BLACKLIST));
         std::string blacklist_text(len + 1, '\0');
         GetDlgItemTextA(m_hwnd, IDC_CUSTOM_BLACKLIST, &blacklist_text[0], len + 1);
@@ -1185,6 +1190,7 @@ private:
     void reset_settings() {
         if (!m_hwnd) return;
         cfg_trim_secondary_artists = true;
+        cfg_normalize_api_metadata_case = true;
         reset_custom_blacklist_to_defaults();
         update_controls();
     }
@@ -1192,6 +1198,7 @@ private:
     void update_controls() {
         if (!m_hwnd) return;
         CheckDlgButton(m_hwnd, IDC_TRIM_SECONDARY_ARTISTS, cfg_trim_secondary_artists ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(m_hwnd, IDC_NORMALIZE_API_METADATA_CASE, cfg_normalize_api_metadata_case ? BST_CHECKED : BST_UNCHECKED);
         pfc::string8 content = load_custom_blacklist_from_file();
         if (content.is_empty() && !cfg_custom_blacklist.is_empty()) {
             content = cfg_custom_blacklist;
@@ -1219,6 +1226,7 @@ INT_PTR CALLBACK artwork_blacklist_preferences::BlacklistConfigProc(HWND hwnd, U
         case WM_COMMAND:
             switch (LOWORD(wp)) {
             case IDC_TRIM_SECONDARY_ARTISTS:
+            case IDC_NORMALIZE_API_METADATA_CASE:
                 if (HIWORD(wp) == BN_CLICKED) {
                     pThis->on_changed();
                 }
