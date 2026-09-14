@@ -51,8 +51,11 @@ void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track,
     {
         std::lock_guard<std::mutex> lock(g_tf_mutex);
         pfc::string8 new_path = track.is_valid() ? track->get_path() : "";
-        pfc::string8 new_artist = artist ? artist : "";
         pfc::string8 new_artist_full = (artist_full && artist_full[0] != '\0') ? artist_full : (artist ? artist : "");
+        pfc::string8 new_artist = new_artist_full;
+        if (new_artist.is_empty() && artist) {
+            new_artist = artist;
+        }
         pfc::string8 new_title = title ? title : "";
         pfc::string8 new_album = album ? album : "";
         pfc::string8 new_listeners = listeners ? listeners : "";
@@ -61,9 +64,30 @@ void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track,
 
         // If this is the same track path, preserve existing metadata if not supplied in current call
         if (g_tf_track_path == new_path && !new_path.is_empty()) {
-            if (new_artist.is_empty() && !g_tf_artist.is_empty()) new_artist = g_tf_artist;
-            if (new_title.is_empty() && !g_tf_title.is_empty()) new_title = g_tf_title;
             if (new_artist_full.is_empty() && !g_tf_artist_full.is_empty()) new_artist_full = g_tf_artist_full;
+            if (new_artist.is_empty() && !g_tf_artist.is_empty()) new_artist = g_tf_artist;
+            // Never downgrade an existing full collaboration/duet to a single trimmed artist
+            if (!g_tf_artist_full.is_empty() && new_artist_full != g_tf_artist_full) {
+                const char* old_s = g_tf_artist_full.c_str();
+                const char* new_s = new_artist_full.c_str();
+                bool old_has_collab = (strstr(old_s, " e ") != nullptr ||
+                                       strstr(old_s, " & ") != nullptr ||
+                                       strstr(old_s, " and ") != nullptr ||
+                                       strstr(old_s, " y ") != nullptr ||
+                                       strstr(old_s, " feat") != nullptr ||
+                                       strstr(old_s, ", ") != nullptr);
+                bool new_has_collab = (strstr(new_s, " e ") != nullptr ||
+                                       strstr(new_s, " & ") != nullptr ||
+                                       strstr(new_s, " and ") != nullptr ||
+                                       strstr(new_s, " y ") != nullptr ||
+                                       strstr(new_s, " feat") != nullptr ||
+                                       strstr(new_s, ", ") != nullptr);
+                if (old_has_collab && !new_has_collab) {
+                    new_artist_full = g_tf_artist_full;
+                }
+            }
+            if (!new_artist_full.is_empty()) new_artist = new_artist_full;
+            if (new_title.is_empty() && !g_tf_title.is_empty()) new_title = g_tf_title;
             if (new_album.is_empty() && !g_tf_album.is_empty()) new_album = g_tf_album;
             if (new_listeners.is_empty() && !g_tf_listeners.is_empty()) new_listeners = g_tf_listeners;
         }
@@ -270,8 +294,8 @@ public:
                 switch (index) {
                     case field_artist:
                     case field_artist_full:
-                        if (!current_artist.is_empty()) field_val = current_artist;
-                        else if (!current_artist_full.is_empty()) field_val = current_artist_full;
+                        if (!current_artist_full.is_empty()) field_val = current_artist_full;
+                        else if (!current_artist.is_empty()) field_val = current_artist;
                         break;
                     case field_title: if (!current_title.is_empty()) field_val = current_title; break;
                     case field_album: if (!current_album.is_empty()) field_val = current_album; break;
