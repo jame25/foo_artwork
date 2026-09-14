@@ -62,6 +62,7 @@
 #define IDC_RELOAD_BLACKLIST_FILE       1056
 #define IDC_RESET_BLACKLIST_DEFAULTS    1057
 #define IDC_TRIM_SECONDARY_ARTISTS      1058
+#define IDC_NORMALIZE_API_METADATA_CASE 1059
 
 // Next default values for new objects
 //
@@ -69,7 +70,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        105
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1059
+#define _APS_NEXT_CONTROL_VALUE         1060
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
