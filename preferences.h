@@ -59,6 +59,7 @@ extern cfg_int cfg_noart_cycle_mode; // 0 = Single / Disabled, 1 = Sequential, 2
 extern cfg_bool cfg_disable_instream_artwork;
 extern cfg_string cfg_custom_blacklist;
 extern cfg_bool cfg_trim_secondary_artists;
+extern cfg_bool cfg_normalize_api_metadata_case;
 
 // Blacklist file & directory helpers
 pfc::string8 get_artwork_data_path();
