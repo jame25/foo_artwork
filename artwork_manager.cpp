@@ -285,6 +285,7 @@ extern cfg_bool cfg_enable_discogs;
 extern cfg_bool cfg_enable_lastfm;
 extern cfg_bool cfg_enable_deezer;
 extern cfg_bool cfg_enable_musicbrainz;
+extern cfg_bool cfg_normalize_api_metadata_case;
 extern cfg_string cfg_itunes_key;
 extern cfg_string cfg_discogs_key;
 extern cfg_string cfg_discogs_consumer_key;
@@ -2855,6 +2856,10 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
 
                     pfc::string8 c_artist, c_title, c_album, c_source;
                     if (async_io_manager::instance().cache_get_metadata(cache_key, c_artist, c_title, c_album, c_source)) {
+                        if (cfg_normalize_api_metadata_case) {
+                            if (!c_title.is_empty()) c_title = MetadataCleaner::to_title_case(c_title.c_str()).c_str();
+                            if (!c_album.is_empty()) c_album = MetadataCleaner::to_title_case(c_album.c_str()).c_str();
+                        }
                         cache_res.artist = c_artist;
                         cache_res.title = c_title;
                         cache_res.album = c_album;
@@ -4323,7 +4328,8 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
     }
     
     // Create a callback that will either return success or try the next API for all pending callbacks
-    auto api_callback = [artist, track, cache_key, api_order, index, force_enable_apis, api_dedup_key](const artwork_result& result) {
+    auto api_callback = [artist, track, cache_key, api_order, index, force_enable_apis, api_dedup_key](const artwork_result& in_result) {
+        artwork_result result = in_result;
         pfc::string8 api_name;
         switch (api_order[index]) {
             case ApiType::iTunes: api_name = "iTunes"; break;
@@ -4364,20 +4370,36 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
                 disp_artist = artist;
             }
             pfc::string8 disp_title = !result.title.is_empty() ? result.title : track;
+            pfc::string8 disp_album = result.album;
+
+            if (cfg_normalize_api_metadata_case) {
+                disp_title = MetadataCleaner::to_title_case(disp_title.c_str()).c_str();
+                if (!disp_album.is_empty()) {
+                    disp_album = MetadataCleaner::to_title_case(disp_album.c_str()).c_str();
+                }
+                result.title = disp_title;
+                result.album = disp_album;
+
+                std::lock_guard<std::mutex> lock(g_in_flight_mutex);
+                auto it = g_api_dedup_map.find(api_dedup_key);
+                if (it != g_api_dedup_map.end()) {
+                    it->second.result = result;
+                }
+            }
 
             if (cfg_enable_disk_cache || cfg_single_file_cache) {
                 if (!cache_key.is_empty()) {
                     async_io_manager::instance().cache_set_async(cache_key, result.data);
-                    async_io_manager::instance().cache_set_metadata(cache_key, disp_artist, disp_title, result.album, api_name);
+                    async_io_manager::instance().cache_set_metadata(cache_key, disp_artist, disp_title, disp_album, api_name);
                 }
                 if (cfg_single_file_cache) {
                     async_io_manager::instance().cache_set_async("current", result.data);
-                    async_io_manager::instance().cache_set_metadata("current", disp_artist, disp_title, result.album, api_name);
+                    async_io_manager::instance().cache_set_metadata("current", disp_artist, disp_title, disp_album, api_name);
                 }
             }
             pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
             metadb_handle_ptr now_track = g_active_playing_track;
-            titleformat_provider::set_track_artwork_info(now_track, disp_artist.c_str(), disp_title.c_str(), cache_file.c_str(), api_name.c_str(), disp_artist.c_str(), result.album.c_str());
+            titleformat_provider::set_track_artwork_info(now_track, disp_artist.c_str(), disp_title.c_str(), cache_file.c_str(), api_name.c_str(), disp_artist.c_str(), disp_album.c_str());
             std::vector<uint8_t> vec(result.data.get_ptr(), result.data.get_ptr() + result.data.get_size());
             create_bitmap_from_image_data(vec);
             refresh_all_dui_artwork_panels();
@@ -4742,7 +4764,7 @@ void artwork_manager::perform_deezer_fallback_search(const char* artist, const c
     pfc::string8 track_copy = track ? track : "";
     
     pfc::string8 search_query;
-    pfc::string8 search_artist = "artist:\"";
+    pfc::string8 search_artist = "\"";
 
     // Build search query: "artist"
     search_query += search_artist;
@@ -4800,10 +4822,10 @@ void artwork_manager::perform_deezer_fallback_search(const char* artist, const c
 
 void artwork_manager::search_deezer_api_async(const char* artist, const char* track, artwork_callback callback) {
    
-    // Deezer API doesn't require authentication
+    // Use quoted free text because Deezer field-filter searches no longer work reliably.
     pfc::string8 search_query;
-    pfc::string8 search_track = "track:\"";
-    pfc::string8 search_artist = "artist:\"";
+    pfc::string8 search_track = "\"";
+    pfc::string8 search_artist = "\"";
     
     // Build search query: "track"
     // NOTE: Metadata cleaner (is valid for search) rule 1 stops it from being used
@@ -4812,7 +4834,7 @@ void artwork_manager::search_deezer_api_async(const char* artist, const char* tr
         search_query += track;
         search_query += "\"";
     } else {
-        // Build search query: "artist track"
+        // Build search query: "artist" "track"
         search_query += search_artist;
         search_query += artist;
         search_query += "\"";
@@ -4947,6 +4969,10 @@ void artwork_manager::validate_and_complete_result(const pfc::array_t<t_uint8>& 
     if (cache_key && cache_key[0] != '\0') {
         pfc::string8 c_artist, c_title, c_album, c_source;
         if (async_io_manager::instance().cache_get_metadata(cache_key, c_artist, c_title, c_album, c_source)) {
+            if (cfg_normalize_api_metadata_case) {
+                if (!c_title.is_empty()) c_title = MetadataCleaner::to_title_case(c_title.c_str()).c_str();
+                if (!c_album.is_empty()) c_album = MetadataCleaner::to_title_case(c_album.c_str()).c_str();
+            }
             result.artist = c_artist;
             result.title = c_title;
             result.album = c_album;
@@ -5287,10 +5313,12 @@ bool artwork_manager::parse_itunes_json(const char* artist, const char* track, c
                 if (strings_match_fuzzy(result_track, track_str) && artists_match(result_artist, artist_str)) {
                     if (extract_url(item, artwork_url)) {
                         if (out_album && item.contains("collectionName") && item["collectionName"].is_string()) {
-                            *out_album = item["collectionName"].get<std::string>().c_str();
+                            std::string alb = item["collectionName"].get<std::string>();
+                            if (cfg_normalize_api_metadata_case) alb = MetadataCleaner::to_title_case(alb);
+                            *out_album = alb.c_str();
                         }
                         if (out_artist) *out_artist = result_artist.c_str();
-                        if (out_title) *out_title = result_track.c_str();
+                        if (out_title) *out_title = (cfg_normalize_api_metadata_case ? MetadataCleaner::to_title_case(result_track) : result_track).c_str();
                         return true;
                     }
                 }
@@ -5307,7 +5335,9 @@ bool artwork_manager::parse_itunes_json(const char* artist, const char* track, c
             if (!result_artist.empty() && artists_match(result_artist, artist_str)) {
                 if (extract_url(item, artwork_url)) {
                     if (out_album && item.contains("collectionName") && item["collectionName"].is_string()) {
-                        *out_album = item["collectionName"].get<std::string>().c_str();
+                        std::string alb = item["collectionName"].get<std::string>();
+                        if (cfg_normalize_api_metadata_case) alb = MetadataCleaner::to_title_case(alb);
+                        *out_album = alb.c_str();
                     }
                     if (out_artist) *out_artist = result_artist.c_str();
                     if (out_title) {
@@ -5315,7 +5345,9 @@ bool artwork_manager::parse_itunes_json(const char* artist, const char* track, c
                         if (item.contains("trackName") && item["trackName"].is_string()) {
                             fallback_track = item["trackName"].get<std::string>();
                         }
-                        if (!fallback_track.empty()) *out_title = fallback_track.c_str();
+                        if (!fallback_track.empty()) {
+                            *out_title = (cfg_normalize_api_metadata_case ? MetadataCleaner::to_title_case(fallback_track) : fallback_track).c_str();
+                        }
                     }
                     return true;
                 }
@@ -5367,7 +5399,9 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track, c
 
         auto extract_album = [&](const json& itm) {
             if (out_album && itm.contains("album") && itm["album"].is_object() && itm["album"].contains("title") && itm["album"]["title"].is_string()) {
-                *out_album = itm["album"]["title"].get<std::string>().c_str();
+                std::string alb = itm["album"]["title"].get<std::string>();
+                if (cfg_normalize_api_metadata_case) alb = MetadataCleaner::to_title_case(alb);
+                *out_album = alb.c_str();
             }
         };
 
@@ -5384,14 +5418,14 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track, c
                         artwork_url = artwork_url.replace("1000x1000", "1200x1200");
                         extract_album(item.value());
                         if (out_artist && !result_artist.empty()) *out_artist = result_artist.c_str();
-                        if (out_title && !result_title.empty()) *out_title = result_title.c_str();
+                        if (out_title && !result_title.empty()) *out_title = (cfg_normalize_api_metadata_case ? MetadataCleaner::to_title_case(result_title) : result_title).c_str();
                         return true;
                     }
                     if (item.value()["album"].contains("cover_big") && item.value()["album"]["cover_big"].is_string()) {
                         artwork_url = unescape_url(item.value()["album"]["cover_big"].get<std::string>());
                         extract_album(item.value());
                         if (out_artist && !result_artist.empty()) *out_artist = result_artist.c_str();
-                        if (out_title && !result_title.empty()) *out_title = result_title.c_str();
+                        if (out_title && !result_title.empty()) *out_title = (cfg_normalize_api_metadata_case ? MetadataCleaner::to_title_case(result_title) : result_title).c_str();
                         return true;
                     }
                 }
@@ -5411,7 +5445,8 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track, c
                     extract_album(item.value());
                     if (out_artist && !result_artist.empty()) *out_artist = result_artist.c_str();
                     if (out_title && item.value().contains("title") && item.value()["title"].is_string()) {
-                        *out_title = item.value()["title"].get<std::string>().c_str();
+                        std::string tit = item.value()["title"].get<std::string>();
+                        *out_title = (cfg_normalize_api_metadata_case ? MetadataCleaner::to_title_case(tit) : tit).c_str();
                     }
                     return true;
                 }
@@ -5420,7 +5455,8 @@ bool artwork_manager::parse_deezer_json(const char* artist, const char* track, c
                     extract_album(item.value());
                     if (out_artist && !result_artist.empty()) *out_artist = result_artist.c_str();
                     if (out_title && item.value().contains("title") && item.value()["title"].is_string()) {
-                        *out_title = item.value()["title"].get<std::string>().c_str();
+                        std::string tit = item.value()["title"].get<std::string>();
+                        *out_title = (cfg_normalize_api_metadata_case ? MetadataCleaner::to_title_case(tit) : tit).c_str();
                     }
                     return true;
                 }
@@ -5447,17 +5483,25 @@ bool artwork_manager::parse_lastfm_json(const pfc::string8& json_in, pfc::string
 
         auto extract_meta = [&]() {
             if (out_album && data.contains("track") && data["track"].contains("album") && data["track"]["album"].contains("title") && data["track"]["album"]["title"].is_string()) {
-                *out_album = data["track"]["album"]["title"].get<std::string>().c_str();
+                std::string alb = data["track"]["album"]["title"].get<std::string>();
+                if (cfg_normalize_api_metadata_case) alb = MetadataCleaner::to_title_case(alb);
+                *out_album = alb.c_str();
             }
             if (out_artist && data.contains("track") && data["track"].contains("artist")) {
+                std::string art;
                 if (data["track"]["artist"].is_object() && data["track"]["artist"].contains("name") && data["track"]["artist"]["name"].is_string()) {
-                    *out_artist = data["track"]["artist"]["name"].get<std::string>().c_str();
+                    art = data["track"]["artist"]["name"].get<std::string>();
                 } else if (data["track"]["artist"].is_string()) {
-                    *out_artist = data["track"]["artist"].get<std::string>().c_str();
+                    art = data["track"]["artist"].get<std::string>();
+                }
+                if (!art.empty()) {
+                    *out_artist = art.c_str();
                 }
             }
             if (out_title && data.contains("track") && data["track"].contains("name") && data["track"]["name"].is_string()) {
-                *out_title = data["track"]["name"].get<std::string>().c_str();
+                std::string tit = data["track"]["name"].get<std::string>();
+                if (cfg_normalize_api_metadata_case) tit = MetadataCleaner::to_title_case(tit);
+                *out_title = tit.c_str();
             }
         };
 
@@ -5514,12 +5558,25 @@ bool artwork_manager::parse_discogs_json(const char* artist, const char* track, 
                 std::string t = itm["title"].get<std::string>();
                 size_t sep = t.find(" - ");
                 if (sep != std::string::npos) {
-                    if (out_artist) *out_artist = t.substr(0, sep).c_str();
-                    if (out_title) *out_title = t.substr(sep + 3).c_str();
-                    if (out_album) *out_album = t.substr(sep + 3).c_str();
+                    std::string art = t.substr(0, sep);
+                    std::string tit = t.substr(sep + 3);
+                    std::string alb = t.substr(sep + 3);
+                    if (cfg_normalize_api_metadata_case) {
+                        tit = MetadataCleaner::to_title_case(tit);
+                        alb = MetadataCleaner::to_title_case(alb);
+                    }
+                    if (out_artist) *out_artist = art.c_str();
+                    if (out_title) *out_title = tit.c_str();
+                    if (out_album) *out_album = alb.c_str();
                 } else {
-                    if (out_title) *out_title = t.c_str();
-                    if (out_album) *out_album = t.c_str();
+                    std::string tit = t;
+                    std::string alb = t;
+                    if (cfg_normalize_api_metadata_case) {
+                        tit = MetadataCleaner::to_title_case(tit);
+                        alb = MetadataCleaner::to_title_case(alb);
+                    }
+                    if (out_title) *out_title = tit.c_str();
+                    if (out_album) *out_album = alb.c_str();
                 }
             }
         };
