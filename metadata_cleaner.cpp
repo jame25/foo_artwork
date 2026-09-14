@@ -136,6 +136,29 @@ std::string MetadataCleaner::to_title_case(const std::string& str) {
     }
 
     bool should_normalize = (lower_count == 0 && upper_count > 2) || (upper_count == 0 && lower_count > 0);
+    
+    // If the whole string is not pure uppercase/lowercase, check if the primary title segment
+    // (before any '(', '[', or " - ") is all uppercase (e.g. "SHE DID IT AGAIN (feat. Zara Larsson)")
+    // or all lowercase (e.g. "back of the club (feat. Zara Larsson)")
+    if (!should_normalize) {
+        size_t cutoff = wstr.find_first_of(L"([");
+        size_t dash_pos = wstr.find(L" - ");
+        if (dash_pos != std::wstring::npos && (cutoff == std::wstring::npos || dash_pos < cutoff)) {
+            cutoff = dash_pos;
+        }
+        if (cutoff != std::wstring::npos && cutoff > 2) {
+            size_t prim_upper = 0;
+            size_t prim_lower = 0;
+            for (size_t k = 0; k < cutoff; ++k) {
+                if (iswupper(wstr[k])) prim_upper++;
+                else if (iswlower(wstr[k])) prim_lower++;
+            }
+            if ((prim_lower == 0 && prim_upper > 2) || (prim_upper == 0 && prim_lower > 2)) {
+                should_normalize = true;
+            }
+        }
+    }
+
     if (!should_normalize) {
         return str;
     }
@@ -165,19 +188,42 @@ std::string MetadataCleaner::to_title_case(const std::string& str) {
             result += wide_to_upper(word);
         } else {
             std::wstring lower_word = wide_to_lower(word);
-            std::string lower_utf8 = wstring_to_utf8(lower_word);
 
-            if (word_index > 0 && i < wstr.length() && is_minor_word(lower_utf8)) {
+            // Find first letter index to skip opening punctuation e.g. '(', '[', '"', '\''
+            size_t letter_idx = 0;
+            while (letter_idx < lower_word.length() && 
+                   (lower_word[letter_idx] == L'(' || lower_word[letter_idx] == L'[' || 
+                    lower_word[letter_idx] == L'{' || lower_word[letter_idx] == L'"' || 
+                    lower_word[letter_idx] == L'\'')) {
+                letter_idx++;
+            }
+
+            // Extract the core word stripped of surrounding punctuation for minor-word checking
+            std::wstring core_word = lower_word.substr(letter_idx);
+            while (!core_word.empty() && 
+                   (core_word.back() == L')' || core_word.back() == L']' || 
+                    core_word.back() == L'}' || core_word.back() == L'.' || 
+                    core_word.back() == L',' || core_word.back() == L';')) {
+                core_word.pop_back();
+            }
+            std::string core_utf8 = wstring_to_utf8(core_word);
+
+            // Featured artist tags ("feat", "ft") and minor words ("of", "in", etc. after first word) stay lowercase
+            bool is_minor = (word_index > 0 && i < wstr.length() && is_minor_word(core_utf8)) ||
+                            (core_utf8 == "feat" || core_utf8 == "ft");
+
+            if (is_minor) {
                 result += lower_word;
             } else {
-                if (!lower_word.empty()) {
-                    wchar_t first_char = lower_word[0];
+                if (letter_idx < lower_word.length()) {
+                    wchar_t first_char = lower_word[letter_idx];
                     wchar_t upper_char = first_char;
                     LCMapStringEx(LOCALE_NAME_USER_DEFAULT, LCMAP_UPPERCASE, &first_char, 1, &upper_char, 1, NULL, NULL, 0);
-                    lower_word[0] = (upper_char != 0) ? upper_char : towupper(first_char);
+                    lower_word[letter_idx] = (upper_char != 0) ? upper_char : towupper(first_char);
 
-                    size_t apo = lower_word.find(L'\'');
-                    if (apo != std::wstring::npos && apo + 1 < lower_word.length() && apo <= 2) {
+                    // Handle internal contractions like D'Angelo, L'Amour
+                    size_t apo = lower_word.find(L'\'', letter_idx);
+                    if (apo != std::wstring::npos && apo + 1 < lower_word.length() && (apo - letter_idx) <= 2) {
                         wchar_t after_apo = lower_word[apo + 1];
                         wchar_t upper_after_apo = after_apo;
                         LCMapStringEx(LOCALE_NAME_USER_DEFAULT, LCMAP_UPPERCASE, &after_apo, 1, &upper_after_apo, 1, NULL, NULL, 0);
