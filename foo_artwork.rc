@@ -97,18 +97,19 @@ BEGIN
     GROUPBOX        "Metadata Cleaner && Noise Words Blacklist",IDC_STATIC,10,10,320,250
 
     LTEXT           "Blacklist entries (saved to foo_artwork_data\\blacklist.txt):",IDC_STATIC_BLACKLIST,20,24,300,10
-    EDITTEXT        IDC_CUSTOM_BLACKLIST,20,36,300,128,ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL
+    EDITTEXT        IDC_CUSTOM_BLACKLIST,20,36,300,120,ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL
 
-    PUSHBUTTON      "Open File",IDC_OPEN_BLACKLIST_FILE,20,170,55,14
-    PUSHBUTTON      "Open Folder",IDC_OPEN_DATA_FOLDER,78,170,55,14
-    PUSHBUTTON      "Reload File",IDC_RELOAD_BLACKLIST_FILE,136,170,55,14
-    PUSHBUTTON      "Reset Defaults",IDC_RESET_BLACKLIST_DEFAULTS,194,170,65,14
+    PUSHBUTTON      "Open File",IDC_OPEN_BLACKLIST_FILE,20,161,55,14
+    PUSHBUTTON      "Open Folder",IDC_OPEN_DATA_FOLDER,78,161,55,14
+    PUSHBUTTON      "Reload File",IDC_RELOAD_BLACKLIST_FILE,136,161,55,14
+    PUSHBUTTON      "Reset Defaults",IDC_RESET_BLACKLIST_DEFAULTS,194,161,65,14
 
-    CONTROL         "Trim secondary artists during online artwork search",IDC_TRIM_SECONDARY_ARTISTS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,190,290,12
+    CONTROL         "Trim secondary artists during online artwork search",IDC_TRIM_SECONDARY_ARTISTS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,180,290,12
+    CONTROL         "Normalize title && album case from online APIs (ALL CAPS && lowercase)",IDC_NORMALIZE_API_METADATA_CASE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,194,290,12
 
-    LTEXT           "Multi-Artist Note:",IDC_STATIC,20,206,100,10
-    LTEXT           "When checked, multi-artist tracks (duets, collaborations) query APIs with only",IDC_STATIC,30,217,290,10
-    LTEXT           "the primary artist for higher match rates.",IDC_STATIC,30,228,290,10
+    LTEXT           "Cleaner Notes:",IDC_STATIC,20,210,100,10
+    LTEXT           "When checked, duets/collaborations query APIs with primary artist for higher match rates.",IDC_STATIC,30,221,290,10
+    LTEXT           "Normalization converts ALL CAPS and lowercase API titles/albums into clean Title Case.",IDC_STATIC,30,232,290,10
 END
 
 IDD_PREFERENCES_ACRCLOUD DIALOGEX 0, 0, 350, 270
