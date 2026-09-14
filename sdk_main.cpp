@@ -197,6 +197,10 @@ cfg_string cfg_custom_blacklist(guid_cfg_custom_blacklist, "");
 static constexpr GUID guid_cfg_trim_secondary_artists = { 0x123456a1, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x0f } };
 cfg_bool cfg_trim_secondary_artists(guid_cfg_trim_secondary_artists, true);
 
+// Normalize ALL CAPS titles & albums from online APIs (default: true)
+static constexpr GUID guid_cfg_normalize_api_metadata_case = { 0x123456a2, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xdf, 0x10 } };
+cfg_bool cfg_normalize_api_metadata_case(guid_cfg_normalize_api_metadata_case, true);
+
 
 
 //=============================================================================
