@@ -77,17 +77,16 @@ BEGIN
     CONTROL         "[ Use noart image ]",IDC_USE_NOART_IMAGE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,214,92,12
     CONTROL         "Show Infobar (DUI only)",IDC_INFOBAR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,228,128,12
     CONTROL         "Disable in-stream artwork",IDC_DISABLE_INSTREAM_ARTWORK,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,228,160,12
+    CONTROL         "Disable auto-probing on radio connection",IDC_DISABLE_EXT_API_AUTOPROBE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,242,200,12
 
-    LTEXT           "HTTP timeout:",IDC_STATIC_TIMEOUT,20,248,50,10
-    EDITTEXT        IDC_HTTP_TIMEOUT,72,246,30,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "seconds",IDC_STATIC_SECONDS,106,248,30,10
+    LTEXT           "HTTP timeout:",IDC_STATIC_TIMEOUT,20,262,50,10
+    EDITTEXT        IDC_HTTP_TIMEOUT,72,260,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "seconds",IDC_STATIC_SECONDS,106,262,30,10
 
-    LTEXT           "Retry count:",IDC_STATIC_RETRY,155,248,45,10
-    EDITTEXT        IDC_RETRY_COUNT,202,246,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Retry count:",IDC_STATIC_RETRY,155,262,45,10
+    EDITTEXT        IDC_RETRY_COUNT,202,260,30,14,ES_AUTOHSCROLL | ES_NUMBER
 
-    LTEXT           "(0 = no retries, max 5)",IDC_STATIC,236,248,80,10
-
-    LTEXT           "Note: Retries use exponential backoff (1s, 2s, 4s...) for transient failures.",IDC_STATIC,20,268,290,10
+    LTEXT           "(0 = no retries, max 5)",IDC_STATIC,236,262,80,10
 END
 
 IDD_PREFERENCES_BLACKLIST DIALOGEX 0, 0, 350, 270
