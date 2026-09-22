@@ -23,7 +23,15 @@ struct StreamMetadataResult {
 class MetadataCleaner {
 public:
     // Main 4-Stage Stream Metadata Sanitizer
-    static StreamMetadataResult sanitize_stream_metadata(const char* raw_artist, const char* raw_title);
+    static StreamMetadataResult sanitize_stream_metadata(const char* raw_artist, const char* raw_title, bool is_youtube = false, bool known_track_metadata = false);
+
+    static bool is_youtube_topic_artist(const char* artist);
+
+    // YouTube Music Art Track DESCRIPTION tag parser (Title · Artist / Album)
+    static bool try_parse_youtube_description(const char* desc, std::string& out_artist, std::string& out_title, std::string& out_album);
+
+    // Multi-part title splitter for unofficial channels, record labels, and complex titles (-, •, ~, |)
+    static bool try_split_multipart_title(const std::string& title, const std::string& raw_artist, std::string& out_field1, std::string& out_field2, bool is_youtube = false);
 
     // Station name / stream URL detector
     static bool is_station_name_or_url(const char* text);
