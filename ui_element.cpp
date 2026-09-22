@@ -2215,6 +2215,8 @@ LRESULT artwork_ui_element::OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lPar
     // Take ownership — ensure we delete the heap-allocated data when done
     std::unique_ptr<ArtworkEventData> event_guard(event);
 
+    if (artwork_manager::is_noart_forced() && event->type != ArtworkEventType::ARTWORK_CLEARED) return 0;
+
     switch (event->type) {
         case ArtworkEventType::ARTWORK_LOADED:
             {
@@ -2253,6 +2255,14 @@ LRESULT artwork_ui_element::OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lPar
             }
             break;
             
+        case ArtworkEventType::ARTWORK_CLEARED:
+            cleanup_gdiplus_image();
+            m_artwork_loading = false;
+            m_artwork_source.clear();
+            if (event->source == "No-Art") load_noart_image();
+            Invalidate();
+            break;
+
         case ArtworkEventType::ARTWORK_LOADING:
             m_artwork_loading = true;
             break;
