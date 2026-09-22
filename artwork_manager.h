@@ -43,11 +43,14 @@ public:
     // Reject artwork and cycle to next provider
     static void reject_current_artwork();
     static void force_show_noart();
+    static bool is_noart_forced();
+    static bool is_manual_artwork_search();
     static void force_external_api_autoprobe();
 
     // YouTube Video ID and direct thumbnail extraction
     static pfc::string8 extract_youtube_video_id(const char* path_or_url);
-    static void search_youtube_thumbnail_async(const pfc::string8& video_id, const pfc::string8& cache_key, artwork_callback callback);
+    static void search_youtube_thumbnail_async(const pfc::string8& video_id, const pfc::string8& cache_key, artwork_callback callback, bool crop_to_square = false);
+    static bool crop_image_to_square_jpeg(const t_uint8* in_data, size_t in_size, pfc::array_t<t_uint8>& out_data);
     
     // External Stream APIs (AzuraCast & RadioReg), In-Stream Broadcast Artwork & URL Modifiers
     static bool is_internet_stream_track(metadb_handle_ptr track, pfc::string8* out_stream_url = nullptr);
