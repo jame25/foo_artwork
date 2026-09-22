@@ -794,6 +794,8 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                 delete source_ptr;
             }
 
+            if (artwork_manager::is_noart_forced()) break;
+
             // Dedup check and cancel fallback timer (safe on main thread)
             if (bitmap == m_last_event_bitmap) {
                 break; // Already processed this bitmap
@@ -806,7 +808,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             metadb_handle_ptr current_track;
             
             if (pc->get_now_playing(current_track) && current_track.is_valid()) {
-                if (m_artwork_loaded && !m_artwork_source.empty() &&
+                if (!artwork_manager::is_manual_artwork_search() && m_artwork_loaded && !m_artwork_source.empty() &&
                     m_artwork_source == "Local artwork" && artwork_source != "Local artwork" && is_stream_with_possible_artwork(current_track)) {
                     break;
                 }
@@ -839,6 +841,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         break;
         
     case WM_USER + 11: // Handle -noart fallback on main thread
+        if (artwork_manager::is_noart_forced()) break;
         {
             // CHECK: Don't override existing tagged artwork with fallback images
             if (m_artwork_loaded && !m_artwork_source.empty() && m_artwork_source == "Local artwork") {
@@ -945,8 +948,14 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         break;
 
-    case WM_USER + 12: // Artwork cleared — reset dedup state on main thread
+    case WM_USER + 12: // Artwork cleared on main thread
         m_last_event_bitmap = nullptr;
+        if (wParam) {
+            KillTimer(m_hWnd, 100);
+            KillTimer(m_hWnd, 101);
+            m_artwork_source.clear();
+            load_noart_image();
+        }
         break;
 
     case WM_MOUSEMOVE:
@@ -2146,7 +2155,7 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
         case ArtworkEventType::ARTWORK_CLEARED:
             // Post to main thread to clear dedup state
             if (m_hWnd) {
-                PostMessage(m_hWnd, WM_USER + 12, 0, 0);
+                PostMessage(m_hWnd, WM_USER + 12, event.source == "No-Art", 0);
             }
             break;
     }
