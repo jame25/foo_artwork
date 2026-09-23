@@ -691,7 +691,7 @@ LRESULT artwork_ui_element::OnPaint(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 bool is_stream = false;
                 if (m_current_track.is_valid()) {
                     pfc::string8 path = m_current_track->get_path();
-                    is_stream = strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://");
+                    is_stream = artwork_manager::is_internet_stream_track(m_current_track);
                 }
                 should_show = !is_stream;
             }
@@ -1866,8 +1866,7 @@ void artwork_ui_element::show_osd(const std::string& text) {
         try {
             pfc::string8 current_path = m_current_track->get_path();
             if (!current_path.is_empty()) {
-                bool is_current_local = (strstr(current_path.c_str(), "file://") == current_path.c_str()) || 
-                                       !(strstr(current_path.c_str(), "://"));
+                bool is_current_local = !artwork_manager::is_internet_stream_track(m_current_track);
                 if (is_current_local) {
                     return;
                 }
@@ -2256,6 +2255,7 @@ LRESULT artwork_ui_element::OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lPar
             break;
             
         case ArtworkEventType::ARTWORK_CLEARED:
+            if (event->source == "No-Art" && !artwork_manager::is_noart_forced()) break;
             cleanup_gdiplus_image();
             m_artwork_loading = false;
             m_artwork_source.clear();
