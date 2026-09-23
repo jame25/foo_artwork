@@ -81,6 +81,10 @@ public:
     static pfc::string8 detect_mime_type(const t_uint8* data, size_t size);
     
 private:
+    static void search_rejected_artwork_pass(metadb_handle_ptr track,
+        const pfc::string8& artist, const pfc::string8& title, const pfc::string8& cache_key,
+        uint64_t generation, bool allow_wrap);
+
     // Internal async pipeline methods
     static void check_cache_async_metadata(const pfc::string8& cache_key, const pfc::string8& artist, const pfc::string8& track, artwork_callback callback);
     static void search_apis_async_metadata(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback);
