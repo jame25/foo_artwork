@@ -378,6 +378,12 @@ std::string MetadataCleaner::filter_custom_blacklist(const std::string& str) {
     std::string result = str;
     for (const auto& t : tokens) {
         if (t.empty()) continue;
+        // Version words and multilingual field labels are valid song words too
+        // ("Disco 2000", "I Can't Live In A Living Room"). Their annotated forms
+        // are handled by label/bracket cleaning; do not delete bare occurrences.
+        std::string lower = t;
+        to_lower_ascii(lower);
+        if (is_common_remix_term(lower) || lower == "disco" || lower == "album" || lower == "cd") continue;
         try {
             if (has_non_ascii(t) || has_non_ascii(result)) {
                 std::wstring wresult = utf8_to_wstring(result);
