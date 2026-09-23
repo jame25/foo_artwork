@@ -62,8 +62,11 @@ void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track,
         pfc::string8 new_cover = cover_path ? cover_path : "";
         pfc::string8 new_source = source ? source : "";
 
-        // If this is the same track path, preserve existing metadata if not supplied in current call
-        if (g_tf_track_path == new_path && !new_path.is_empty()) {
+        // A radio URL is not a song identity. Preserve omitted fields only when
+        // every supplied identity field still agrees with the current song.
+        const bool same_song = (new_artist.is_empty() || new_artist == g_tf_artist) &&
+                               (new_title.is_empty() || new_title == g_tf_title);
+        if (g_tf_track_path == new_path && !new_path.is_empty() && same_song) {
             if (new_artist_full.is_empty() && !g_tf_artist_full.is_empty()) new_artist_full = g_tf_artist_full;
             if (new_artist.is_empty() && !g_tf_artist.is_empty()) new_artist = g_tf_artist;
             // Never downgrade an existing full collaboration/duet to a single trimmed artist
