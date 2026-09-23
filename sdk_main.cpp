@@ -71,6 +71,7 @@ static constexpr GUID guid_cfg_use_noart_image = { 0x1234568c, 0x1234, 0x1234, {
 static constexpr GUID guid_cfg_infobar = { 0x59b0b41b, 0x2d12, 0x4965, { 0xaa, 0x4a, 0xb5, 0x80, 0x5, 0x55, 0x2e, 0xf7 } };
 static constexpr GUID guid_cfg_disable_instream_artwork = { 0x7c2d91b4, 0x8a3e, 0x4f52, { 0x9b, 0x6e, 0x1d, 0x3f, 0x7a, 0x5c, 0x92, 0xe1 } };
 static constexpr GUID guid_cfg_disable_ext_api_autoprobe = { 0x7c2d91b5, 0x8a3e, 0x4f52, { 0x9b, 0x6e, 0x1d, 0x3f, 0x7a, 0x5c, 0x92, 0xe2 } };
+static constexpr GUID guid_cfg_skip_youtube_apis = { 0x769e427a, 0xc830, 0x48cb, { 0x8a, 0xbd, 0xa1, 0x61, 0xdd, 0xec, 0x65, 0x30 } };
 static constexpr GUID guid_cfg_http_timeout = { 0x1234568d, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfd } };
 static constexpr GUID guid_cfg_retry_count = { 0x1234568e, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
 static constexpr GUID guid_cfg_enable_disk_cache = { 0x1234568f, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xff } };
@@ -170,6 +171,7 @@ cfg_int cfg_noart_cycle_mode(guid_cfg_noart_cycle_mode, 0);  // 0 = Single / Dis
 cfg_bool cfg_infobar(guid_cfg_infobar, false);  // DUI infobar (default disabled)
 cfg_bool cfg_disable_instream_artwork(guid_cfg_disable_instream_artwork, false);  // Disable in-stream artwork detection (default false)
 cfg_bool cfg_disable_ext_api_autoprobe(guid_cfg_disable_ext_api_autoprobe, true);  // Disable auto-probing on radio connection by default
+cfg_bool cfg_skip_youtube_apis(guid_cfg_skip_youtube_apis, false);  // YouTube APIs first by default
 
 // Network settings
 cfg_int cfg_http_timeout(guid_cfg_http_timeout, 15);  // HTTP timeout in seconds (default 15)
@@ -399,7 +401,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.5",
+    "1.7.6",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -416,7 +418,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.5",
+    "1.7.6",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
