@@ -623,6 +623,7 @@ bool artwork_advanced_preferences::has_changed() {
 
     // Check if Disable auto-probing on radio connection checkbox changed
     bool disable_ext_api_autoprobe_changed = (IsDlgButtonChecked(m_hwnd, IDC_DISABLE_EXT_API_AUTOPROBE) == BST_CHECKED) != cfg_disable_ext_api_autoprobe;
+    bool skip_youtube_apis_changed = (IsDlgButtonChecked(m_hwnd, IDC_SKIP_YOUTUBE_APIS) == BST_CHECKED) != cfg_skip_youtube_apis;
 
     // Check if Use noart image checkbox changed
     bool use_noart_changed = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED) != cfg_use_noart_image;
@@ -637,7 +638,7 @@ bool artwork_advanced_preferences::has_changed() {
 
     return enable_logos_changed || folder_changed || noart_folder_changed || cycle_mode_changed ||
            clear_panel_changed || use_noart_changed || infobar_changed || disable_instream_artwork_changed ||
-           disable_ext_api_autoprobe_changed || timeout_changed || retry_changed;
+           disable_ext_api_autoprobe_changed || skip_youtube_apis_changed || timeout_changed || retry_changed;
 }
 
 void artwork_advanced_preferences::apply_settings() {
@@ -673,6 +674,7 @@ void artwork_advanced_preferences::apply_settings() {
 
     // Apply Disable auto-probing on radio connection setting
     cfg_disable_ext_api_autoprobe = (IsDlgButtonChecked(m_hwnd, IDC_DISABLE_EXT_API_AUTOPROBE) == BST_CHECKED);
+    cfg_skip_youtube_apis = (IsDlgButtonChecked(m_hwnd, IDC_SKIP_YOUTUBE_APIS) == BST_CHECKED);
 
     // Apply Use noart image setting
     cfg_use_noart_image = (IsDlgButtonChecked(m_hwnd, IDC_USE_NOART_IMAGE) == BST_CHECKED);
@@ -705,6 +707,7 @@ void artwork_advanced_preferences::reset_settings() {
     cfg_infobar = false;  // Default disabled
     cfg_disable_instream_artwork = false;  // Default disabled
     cfg_disable_ext_api_autoprobe = true;  // Disable auto-probing by default
+    cfg_skip_youtube_apis = false;  // Search APIs before YouTube thumbnails
     cfg_use_noart_image = false;  // Default disabled
     cfg_http_timeout = 15;  // Default 15 seconds
     cfg_retry_count = 2;  // Default 2 retries
@@ -743,6 +746,7 @@ void artwork_advanced_preferences::update_controls() {
 
     // Update Disable auto-probing on radio connection checkbox
     CheckDlgButton(m_hwnd, IDC_DISABLE_EXT_API_AUTOPROBE, cfg_disable_ext_api_autoprobe ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(m_hwnd, IDC_SKIP_YOUTUBE_APIS, cfg_skip_youtube_apis ? BST_CHECKED : BST_UNCHECKED);
 
     // Update Use noart image checkbox
     CheckDlgButton(m_hwnd, IDC_USE_NOART_IMAGE, cfg_use_noart_image ? BST_CHECKED : BST_UNCHECKED);
@@ -850,6 +854,7 @@ INT_PTR CALLBACK artwork_advanced_preferences::AdvancedConfigProc(HWND hwnd, UIN
                 break;
 
             case IDC_DISABLE_EXT_API_AUTOPROBE:
+            case IDC_SKIP_YOUTUBE_APIS:
                 if (HIWORD(wp) == BN_CLICKED) {
                     pThis->on_changed();
                 }
