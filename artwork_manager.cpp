@@ -337,6 +337,7 @@ static pfc::string8 g_pending_external_api_title = "";
 static pfc::string8 g_last_logged_track_info = "";
 
 static metadb_handle_ptr g_active_playing_track;
+static metadb_handle_ptr g_playback_session_track;
 static pfc::string8 g_active_source;
 static pfc::string8 g_active_resolved_provider;
 static pfc::string8 g_active_cache_key;
@@ -468,6 +469,10 @@ void artwork_manager::shutdown() {
 }
 
 void artwork_manager::on_playback_new_track(metadb_handle_ptr track) {
+    // Panels can request artwork before the static playback callback is dispatched.
+    // Initialize once per connection, irrespective of callback ordering.
+    if (track.is_valid() && g_playback_session_track == track) return;
+    g_playback_session_track = track;
     g_force_noart = false;
     g_search_generation++;
     stop_external_stream_api_poller();
@@ -537,6 +542,7 @@ void artwork_manager::on_playback_new_track(metadb_handle_ptr track) {
 }
 
 void artwork_manager::on_playback_stop() {
+    g_playback_session_track.release();
     g_force_noart = false;
     ++g_search_generation;
     stop_external_stream_api_poller();
@@ -574,8 +580,42 @@ extern void refresh_all_dui_artwork_panels();
 extern void refresh_all_cui_artwork_panels();
 extern bool create_bitmap_from_image_data(const std::vector<BYTE>& data);
 
+class artwork_manager_playback_callback : public play_callback_static {
+public:
+    unsigned get_flags() override {
+        return flag_on_playback_starting | flag_on_playback_new_track | flag_on_playback_stop |
+            flag_on_playback_dynamic_info_track;
+    }
+    void on_playback_starting(play_control::t_track_command, bool) override {
+        // Also reset when reconnecting to the same URL or replaying the same handle.
+        artwork_manager::on_playback_stop();
+    }
+    void on_playback_new_track(metadb_handle_ptr track) override {
+        artwork_manager::on_playback_new_track(track);
+    }
+    void on_playback_stop(play_control::t_stop_reason) override {
+        artwork_manager::on_playback_stop();
+    }
+    void on_playback_seek(double) override {}
+    void on_playback_pause(bool) override {}
+    void on_playback_edited(metadb_handle_ptr) override {}
+    void on_playback_dynamic_info(const file_info&) override {}
+    void on_playback_dynamic_info_track(const file_info& info) override {
+        const char* artist = info.meta_get("ARTIST", 0);
+        const char* title = info.meta_get("TITLE", 0);
+        if (!title || !*title) title = info.meta_get("STREAMTITLE", 0);
+        if (!title || !*title) title = info.meta_get("ICY_TITLE", 0);
+        // Keep the cue together; never combine a new artist with the previous title.
+        if (title && *title) artwork_manager::on_stream_metadata_changed(artist ? artist : "", title);
+    }
+    void on_playback_time(double) override {}
+    void on_volume_change(float) override {}
+};
+static play_callback_static_factory_t<artwork_manager_playback_callback> g_artwork_manager_playback_callback;
+
 void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
+    if (track.is_valid() && g_playback_session_track != track) on_playback_new_track(track);
     
     // A forced placeholder cancels requests; a failure callback would start logo fallbacks.
     if (g_force_noart) return;
@@ -612,8 +652,20 @@ void artwork_manager::get_artwork_async(metadb_handle_ptr track, artwork_callbac
 
 void artwork_manager::get_artwork_async_with_metadata(const char* artist, const char* track, artwork_callback callback) {
     ASSERT_MAIN_THREAD();
+    metadb_handle_ptr now_playing;
+    if (playback_control::get()->get_now_playing(now_playing) && now_playing.is_valid() &&
+        g_playback_session_track != now_playing) on_playback_new_track(now_playing);
+    if (g_force_noart) on_stream_metadata_changed(artist, track);
     // A forced placeholder cancels requests; a failure callback would start logo fallbacks.
     if (g_force_noart) return;
+
+    // Metadata bridge requests can also come from local-file playback. Keep the
+    // track handle so embedded/folder artwork is checked before online providers,
+    // including when single-file caching intentionally bypasses cache reads.
+    if (now_playing.is_valid() && !is_internet_stream_track(now_playing)) {
+        get_artwork_async(now_playing, callback);
+        return;
+    }
     
     if (!initialized_) {
         initialize();
@@ -674,6 +726,12 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
             original_callback(res);
         };
         callback = wrapped_callback;
+
+        // YouTube decoder artwork and cached thumbnails must not bypass API policy.
+        if (is_youtube) {
+            search_apis_async(artist_str, track_str, cache_key, callback);
+            return;
+        }
 
         // Extract broadcast artwork if currently playing an internet stream
         pfc::string8 broadcast_art_url;
@@ -1062,6 +1120,20 @@ static pfc::string8 extract_param_value_from_url_string(const char* url, const c
     return val.c_str();
 }
 
+// Local filesystem protocols can contain :// too (notably portable file-relative paths).
+static bool is_remote_artwork_path(const char* path) {
+    if (!path || !*path) return false;
+    if (_strnicmp(path, "file://", 7) == 0 ||
+        _strnicmp(path, "file-relative://", 16) == 0) return false;
+    if (!strstr(path, "://")) return false;
+    try {
+        return filesystem::g_is_remote(path);
+    } catch (...) {
+        // Decoder-owned protocols such as fy:// may not have a filesystem handler.
+        return true;
+    }
+}
+
 bool artwork_manager::is_internet_stream_track(metadb_handle_ptr track, pfc::string8* out_stream_url) {
     if (out_stream_url) out_stream_url->reset();
     if (!track.is_valid()) return false;
@@ -1070,15 +1142,9 @@ bool artwork_manager::is_internet_stream_track(metadb_handle_ptr track, pfc::str
         pfc::string8 path = track->get_path();
         if (path.is_empty()) return false;
 
-        // 1. YouTube track detection
-        if (!extract_youtube_video_id(path.c_str()).is_empty() ||
-            strstr(path.c_str(), "youtube.com") || strstr(path.c_str(), "youtu.be")) {
-            if (out_stream_url) *out_stream_url = path;
-            return true;
-        }
-
-        // 2. Direct remote stream protocol (http://, https://, etc.)
-        if (strstr(path.c_str(), "://") && !(strstr(path.c_str(), "file://") == path.c_str())) {
+        // Ask the owning filesystem rather than assuming every non-file:// URI
+        // is remote. This includes YouTube decoder protocols via the fallback.
+        if (is_remote_artwork_path(path.c_str())) {
             if (out_stream_url) *out_stream_url = path;
             return true;
         }
@@ -1089,10 +1155,11 @@ bool artwork_manager::is_internet_stream_track(metadb_handle_ptr track, pfc::str
             const file_info& info = info_container->info();
             const char* at_meta = info.meta_get("@", 0);
             if (at_meta && at_meta[0] != '\0') {
-                if (strstr(at_meta, "://") && !(strstr(at_meta, "file://") == at_meta)) {
+                if (is_remote_artwork_path(at_meta)) {
                     if (out_stream_url) *out_stream_url = at_meta;
                     return true;
                 }
+                return false;
             }
         }
 
@@ -2508,7 +2575,22 @@ void artwork_manager::reject_current_artwork() {
     reset_acrcloud_cooldown();
     const uint64_t generation = ++g_search_generation;
     g_manual_search_generation = generation;
-    auto deliver = [track, cache_key, generation](const artwork_result& result) {
+    search_rejected_artwork_pass(track, artist, title, cache_key, generation, true);
+}
+
+void artwork_manager::search_rejected_artwork_pass(metadb_handle_ptr track,
+    const pfc::string8& artist, const pfc::string8& title, const pfc::string8& cache_key,
+    uint64_t generation, bool allow_wrap) {
+    auto deliver = [track, artist, title, cache_key, generation, allow_wrap](const artwork_result& result) {
+        if (generation != g_search_generation.load()) return;
+        if (!result.success && allow_wrap && !g_rejected_providers_for_current_track.empty()) {
+            // Failed/empty providers cannot be explicitly rejected by the user.
+            // Reaching the end is enough to wrap, but only once per command.
+            g_rejected_providers_for_current_track.clear();
+            foo_artwork::log_printf("foo_artwork: End of artwork provider chain. Retrying from the first provider...");
+            search_rejected_artwork_pass(track, artist, title, cache_key, generation, false);
+            return;
+        }
         display_manual_artwork(result, track, cache_key, generation);
     };
     pfc::string8 video_id = extract_youtube_video_id(track->get_path());
@@ -2532,7 +2614,7 @@ void artwork_manager::reject_current_artwork() {
             } else {
                 thumbnail_fallback(result);
             }
-        }, api_order, 0, false);
+        }, get_api_search_order(), 0, false);
 }
 
 void artwork_manager::force_show_noart() {
@@ -2686,7 +2768,7 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
         }
     }
 
-    bool is_stream = strstr(resolved_url.c_str(), "://") && !strstr(resolved_url.c_str(), "file://");
+    bool is_stream = is_remote_artwork_path(resolved_url.c_str());
     if (!is_stream || resolved_url.is_empty()) {
         return; // Never run acoustic shift detector for local music files
     }
@@ -2858,6 +2940,10 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         active_track = g_active_playing_track;
     }
 
+    // Local decoders can emit dynamic metadata too. Do not let those events
+    // supersede local artwork with the radio cache/API-only search pipeline.
+    if (active_track.is_valid() && !is_internet_stream_track(active_track)) return;
+
     bool is_youtube = false;
     if (active_track.is_valid()) {
         is_youtube = !extract_youtube_video_id(active_track->get_path()).is_empty();
@@ -2906,6 +2992,8 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         static_api_ptr_t<playback_control> pc_cue;
         if (!pc_cue->is_playing() && !pc_cue->is_paused()) return;
 
+        // A station URL is shared by many songs: discard metadata from the previous cue.
+        titleformat_provider::clear_track_artwork_info();
         titleformat_provider::reset_stream_track_timer(applied_delay);
 
         g_last_stream_artist = clean_art;
@@ -3013,6 +3101,14 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
             refresh_all_cui_artwork_panels();
         };
 
+        // Apply the same YouTube policy to later metadata cues.
+        if (is_youtube) {
+            search_apis_async(clean_art, clean_tit, cache_key, [apply_success_result](const artwork_result& res) {
+                if (res.success && res.data.get_size() > 0) apply_success_result(res);
+            });
+            return;
+        }
+
         if (try_broadcast_artwork) {
             foo_artwork::log_printf("foo_artwork: In-stream broadcast artwork URL detected: '%s'", broadcast_art_url.c_str());
         } else if (g_rejected_providers_for_current_track.find("Broadcast Artwork") != g_rejected_providers_for_current_track.end()) {
@@ -3042,7 +3138,8 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
             }
         } else {
             // Multi-file cache mode: check disk cache first for this specific song
-            async_io_manager::instance().cache_get_async(cache_key, [broadcast_art_url, try_broadcast_artwork, clean_art, clean_tit, cache_key, apply_success_result](bool cache_hit, const pfc::array_t<t_uint8>& data, const pfc::string8& err) {
+            async_io_manager::instance().cache_get_async(cache_key, [broadcast_art_url, try_broadcast_artwork, clean_art, clean_tit, cache_key, apply_success_result, gen](bool cache_hit, const pfc::array_t<t_uint8>& data, const pfc::string8& err) {
+                if (gen != g_search_generation.load()) return;
                 if (cache_hit && data.get_size() > 0) {
                     pfc::string8 effective_source = (!g_active_resolved_provider.is_empty() && g_active_resolved_provider != "Cache") ? g_active_resolved_provider : pfc::string8("Cache");
                     if (effective_source == "Cache") {
@@ -3483,6 +3580,12 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     };
     callback = wrapped_callback;
 
+    // YouTube decoder artwork and cached thumbnails must not bypass API policy.
+    if (is_youtube) {
+        search_apis_async(artist, track_name, cache_key, callback);
+        return;
+    }
+
     if (is_internet_stream) {
         StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str(), is_youtube, is_youtube && (g_is_youtube_art_track || g_is_youtube_topic_track));
         pfc::string8 target_stream_url = !effective_stream_url.is_empty() ? effective_stream_url : file_path;
@@ -3691,8 +3794,10 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
 }
 
 void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
+    const uint64_t generation = g_search_generation.load();
     async_io_manager::instance().cache_get_async(cache_key, 
-        [cache_key, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+        [cache_key, track, callback, generation](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+            if (generation != g_search_generation.load()) return;
             if (success && data.get_size() > 0) {
                 bool is_already_resolved = (!g_active_resolved_provider.is_empty() && g_active_resolved_provider != "Cache");
                 if (!is_already_resolved) {
@@ -3713,35 +3818,20 @@ void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_ha
                 }
 
                 pfc::string8 file_path = track.is_valid() ? track->get_path() : "";
-                bool is_stream = strstr(file_path.c_str(), "://") && !(strstr(file_path.c_str(), "file://") == file_path.c_str());
+                bool is_stream = is_internet_stream_track(track);
 
-                // CACHE PRIORITY & INVALIDATION CHECK:
-                // For local tracks, check if local artwork (embedded or in folder) was added or updated after cache was generated
+                // Local embedded/folder artwork takes precedence over cached online
+                // results, including covers cached while a relative path was misclassified.
                 if (track.is_valid() && !is_stream && !cfg_skip_local_artwork) {
-                    async_io_manager::instance().submit_task([cache_key, track, file_path, data, callback, is_already_resolved]() {
-                        bool local_art_newer = is_local_artwork_newer_than_cache(file_path, cache_key);
-                        if (local_art_newer) {
-                            find_local_artwork_async(track, [cache_key, track, data, callback](const artwork_result& local_result) {
-                                if (local_result.success && local_result.data.get_size() > 0) {
-                                    foo_artwork::log_printf("foo_artwork: Cache invalidation - Local artwork was added or updated after cache generation. Updating cache.");
-                                    if (cfg_enable_disk_cache && !cache_key.is_empty()) {
-                                        async_io_manager::instance().cache_set_async(cache_key, local_result.data);
-                                    }
-                                    if (cfg_single_file_cache) {
-                                        async_io_manager::instance().cache_set_async("current", local_result.data);
-                                    }
-                                    callback(local_result);
-                                } else {
-                                    validate_and_complete_result(data, callback, cache_key.c_str());
-                                }
-                            });
+                    find_local_artwork_async(track, [cache_key, data, callback, generation](const artwork_result& local_result) {
+                        if (generation != g_search_generation.load()) return;
+                        if (local_result.success && local_result.data.get_size() > 0) {
+                            if (cfg_enable_disk_cache && !cache_key.is_empty()) {
+                                async_io_manager::instance().cache_set_async(cache_key, local_result.data);
+                            }
+                            callback(local_result);
                         } else {
-                            async_io_manager::instance().post_to_main_thread([data, callback, is_already_resolved, cache_key]() {
-                                if (!is_already_resolved) {
-                                    foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork displayed from disk cache");
-                                }
-                                validate_and_complete_result(data, callback, cache_key.c_str());
-                            });
+                            validate_and_complete_result(data, callback, cache_key.c_str());
                         }
                     });
                 } else {
@@ -3760,9 +3850,11 @@ void artwork_manager::check_cache_async(const pfc::string8& cache_key, metadb_ha
 }
 
 void artwork_manager::check_cache_async_metadata(const pfc::string8& cache_key, const pfc::string8& artist, const pfc::string8& track, artwork_callback callback) {
+    const uint64_t generation = g_search_generation.load();
     // Check cache first, then fall back to Broadcast Artwork / API search on miss
     async_io_manager::instance().cache_get_async(cache_key,
-        [cache_key, artist, track, callback](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+        [cache_key, artist, track, callback, generation](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+            if (generation != g_search_generation.load()) return;
             if (success && data.get_size() > 0) {
                 bool is_already_resolved = (!g_active_resolved_provider.is_empty() && g_active_resolved_provider != "Cache");
                 if (!is_already_resolved) {
@@ -3786,7 +3878,8 @@ void artwork_manager::check_cache_async_metadata(const pfc::string8& cache_key, 
 
                 if (try_broadcast_artwork) {
                     foo_artwork::log_printf("foo_artwork: In-stream broadcast artwork URL detected: '%s'", broadcast_art_url.c_str());
-                    search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track, cache_key, callback](const artwork_result& res) {
+                    search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track, cache_key, callback, generation](const artwork_result& res) {
+                        if (generation != g_search_generation.load()) return;
                         if (res.success) {
                             callback(res);
                         } else {
@@ -3807,6 +3900,7 @@ void artwork_manager::search_apis_async_metadata(const pfc::string8& artist, con
 }
 
 void artwork_manager::search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback) {
+    const uint64_t generation = g_search_generation.load();
 
     bool is_youtube = !extract_youtube_video_id(file_path.c_str()).is_empty() || 
                       !extract_youtube_video_id(g_current_stream_url.c_str()).is_empty();
@@ -3821,15 +3915,15 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
     }
 
     // ALWAYS try to find tagged artwork first for local audio files
-    find_local_artwork_async(track, [artist, track_name, cache_key, track, callback](const artwork_result& result) {
+    find_local_artwork_async(track, [artist, track_name, cache_key, track, callback, generation](const artwork_result& result) {
+        if (generation != g_search_generation.load()) return;
         if (result.success) {
             // Local artwork found - in single-file cache mode, write to current.cache
             // so external consumers (e.g., JScript Panel 3 Thumbs) see the correct artwork.
             // In normal cache mode, write to disk cache for fast offline retrieval.
             if (cfg_single_file_cache) {
                 async_io_manager::instance().cache_set_async("current", result.data);
-            }
-            if (cfg_enable_disk_cache && !cache_key.is_empty()) {
+            } else if (cfg_enable_disk_cache && !cache_key.is_empty()) {
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
             }
             callback(result);
@@ -3841,8 +3935,27 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
 }
 
 void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pfc::string8& raw_track, const pfc::string8& cache_key, artwork_callback callback) {
+    const uint64_t generation = g_search_generation.load();
     bool is_youtube = !extract_youtube_video_id(g_current_stream_url.c_str()).is_empty() || 
                       (g_active_playing_track.is_valid() && !extract_youtube_video_id(g_active_playing_track->get_path()).is_empty());
+
+    // Explicit thumbnail-only mode also works without searchable song metadata.
+    if (is_youtube && cfg_skip_youtube_apis) {
+        cancel_acrcloud_tasks();
+        stop_rms_silence_detector(true);
+        pfc::string8 video_id = g_active_playing_track.is_valid()
+            ? extract_youtube_video_id(g_active_playing_track->get_path()) : pfc::string8();
+        if (video_id.is_empty()) video_id = extract_youtube_video_id(g_current_stream_url.c_str());
+        if (g_rejected_providers_for_current_track.count("YouTube Thumbnail")) {
+            artwork_result fail;
+            fail.error_message = "YouTube thumbnail rejected";
+            callback(fail);
+        } else {
+            search_youtube_thumbnail_async(video_id, cache_key, callback,
+                g_is_youtube_art_track || g_is_youtube_topic_track);
+        }
+        return;
+    }
 
     StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(raw_artist.c_str(), raw_track.c_str(), is_youtube, is_youtube && (g_is_youtube_art_track || g_is_youtube_topic_track));
 
@@ -3881,10 +3994,15 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
 
     // Deduplicate in-flight search requests for identical metadata
     pfc::string8 dedup_key_pfc = generate_cache_key(meta.clean_artist.c_str(), meta.clean_title.c_str());
-    std::string dedup_key = dedup_key_pfc.c_str();
+    std::string dedup_key = std::to_string(generation) + "|" + dedup_key_pfc.c_str();
 
     {
         std::lock_guard<std::mutex> lock(g_in_flight_mutex);
+        const std::string prefix = std::to_string(generation) + "|";
+        for (auto it = g_in_flight_queries.begin(); it != g_in_flight_queries.end();) {
+            if (it->first.compare(0, prefix.size(), prefix) != 0) it = g_in_flight_queries.erase(it);
+            else ++it;
+        }
         auto it = g_in_flight_queries.find(dedup_key);
         if (it != g_in_flight_queries.end()) {
             // Already in-flight: queue callback and exit without triggering duplicate network queries
@@ -3897,7 +4015,8 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     }
 
     // Callback wrapper to dispatch result to all merged in-flight listeners when query completes
-    auto final_callback = [dedup_key](const artwork_result& result) {
+    auto final_callback = [dedup_key, generation](const artwork_result& result) {
+        if (generation != g_search_generation.load()) return;
         if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
         std::vector<artwork_callback> callbacks_to_call;
         {
@@ -3928,6 +4047,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     const bool known_youtube_metadata = is_youtube && (g_is_youtube_art_track || g_is_youtube_topic_track);
     const bool description_parsed = g_is_youtube_art_track;
     auto notify_text_search_failed = [=]() {
+        if (generation != g_search_generation.load()) return;
         foo_artwork::log_printf("foo_artwork: Text search failed for '%s - %s'. No artwork found from any online API.",
                                  meta.clean_artist.c_str(), meta.clean_title.c_str());
 
@@ -3969,18 +4089,9 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
             }
         }
 
-        if (cfg_enable_acrcloud && is_acrcloud_configured()) {
-            auto now = std::chrono::steady_clock::now();
-            if (now >= g_acrcloud_cooldown_until) {
-                foo_artwork::log_printf("foo_artwork: Triggering ACRCloud audio recognition fallback after text search failure...");
-                search_acrcloud_fallback_async(cache_key, final_callback);
-                return;
-            }
-        }
-        if (cfg_enable_acrcloud && !g_current_stream_url.is_empty()) {
-            foo_artwork::log_printf("foo_artwork: Stage 3 text search ended with no artwork found. Enabling Log-Spectral Acoustic Shift detection...");
-            start_rms_silence_detector(g_current_stream_url);
-        }
+        // Valid radio/file metadata reached this path. A missing cover does not
+        // justify fingerprinting or enabling the acoustic detector. Untagged
+        // streams and explicit forceacr/manual requests have separate paths.
         artwork_result fail_res;
         fail_res.success = false;
         fail_res.error_message = "No artwork found in text search";
@@ -3992,7 +4103,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     // Tier 1: Full Track Title (First Artist -> Second Artist -> Full Clean Artist)
     // Tier 2: Primary Track Title (First Artist -> Second Artist -> Full Clean Artist)
     // Tier 3: Swapped Fallback (Title as Artist, Artist as Track)
-    // (Note: ACRCloud audio fingerprinting is dedicated to untagged streams/station URLs and does not trigger on text search failures)
+    // Tagged radio/file failures stop here; non-Art-Track YouTube retains its recognition fallback.
 
     // Tier 1 Execution
     search_apis_by_priority(first_art, clean_title, cache_key, [=](const artwork_result& r1) {
@@ -4444,6 +4555,12 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
 void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index, bool force_enable_apis) {
     ASSERT_MAIN_THREAD();
     if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
+    const uint64_t generation = g_search_generation.load();
+    auto original_callback = callback;
+    callback = [generation, original_callback](const artwork_result& result) {
+        if (generation != g_search_generation.load()) return;
+        original_callback(result);
+    };
     
     if (index == 0) {
         StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track.c_str());
@@ -4512,7 +4629,6 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         return;
     }
 
-    const uint64_t generation = g_search_generation.load();
     std::string api_dedup_key = std::to_string(generation) + "|" + current_api_name.c_str();
     api_dedup_key += "|";
     api_dedup_key += artist.c_str();
@@ -4678,90 +4794,85 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
 }
 
 void artwork_manager::find_local_artwork_async(metadb_handle_ptr track, artwork_callback callback) {
-    // Use album_art_manager_v2 from SDK exclusively - no custom logic
-    
-    async_io_manager::instance().submit_task([track, callback]() {
-        artwork_result result;
-        result.success = false;
-        
-        try {
-            if (!track.is_valid()) {
-                result.error_message = "Invalid metadb handle";
-                async_io_manager::instance().post_to_main_thread([callback, result]() {
-                    callback(result);
-                });
-                return;
+    const uint64_t generation = g_search_generation.load();
+    const bool is_local = track.is_valid() && !is_internet_stream_track(track);
+    auto complete = [callback, generation](const artwork_result& result) {
+        async_io_manager::instance().post_to_main_thread([callback, generation, result]() {
+            if (generation != g_search_generation.load()) return;
+            if (result.success) {
+                g_active_resolved_provider = "Local artwork";
+                g_active_source = "Local artwork";
+                titleformat_provider::set_status("Artwork loaded from Local artwork");
             }
-            
-            // Try multiple artwork IDs in priority order to find any available tagged artwork
-            const GUID artwork_ids[] = {
-                album_art_ids::cover_front,  // Front cover (most common)
-                album_art_ids::disc,         // Disc/media artwork
-                album_art_ids::artist,       // Artist image
-                album_art_ids::icon,         // Icon artwork
-                album_art_ids::cover_back    // Back cover (least preferred)
-            };
-            
-            const char* artwork_names[] = {
-                "Front Cover",
-                "Disc/Media",
-                "Artist Image", 
-                "Icon",
-                "Back Cover"
-            };
-            
-            static_api_ptr_t<album_art_manager_v2> aam;
-            
-            // Try each artwork ID until we find one
-            for (int i = 0; i < 5; i++) {
-                try {
-                    auto extractor = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(track),
-                                             pfc::list_single_ref_t<GUID>(artwork_ids[i]),
-                                             fb2k::noAbort);
-                    
-                    auto art_data = extractor->query(artwork_ids[i], fb2k::noAbort);
-                    if (art_data.is_valid() && art_data->get_size() > 0) {
-                        result.data.set_size(art_data->get_size());
-                        memcpy(result.data.get_ptr(), art_data->get_ptr(), art_data->get_size());
-                        result.mime_type = detect_mime_type(result.data.get_ptr(), result.data.get_size());
-                        
-                        // Check if the tagged artwork format is supported
-                        if (is_supported_image_format(result.mime_type)) {
-                            result.success = true;
-                            result.source = "Local artwork";
-                            g_active_resolved_provider = "Local artwork";
-                            g_active_source = "Local artwork";
-                            titleformat_provider::set_status("Artwork loaded from Local artwork");
-                            
-                            async_io_manager::instance().post_to_main_thread([callback, result]() {
-                                callback(result);
-                            });
-                            return;
-                        } else {
-                            // Tagged artwork format not supported, continue checking other artwork types
-                            continue;
-                        }
-                    }
-                } catch (...) {
-                    // Continue to next artwork ID if this one fails
-                    continue;
-                }
-            }
-        } catch (const std::exception& e) {
-            result.error_message = "SDK artwork search exception";
-        } catch (...) {
-            result.error_message = "SDK artwork search failed with unknown exception";
-        }
-        
-        // No artwork found via SDK
-        result.error_message = "No artwork found via SDK";
-        async_io_manager::instance().post_to_main_thread([callback, result]() {
             callback(result);
         });
+    };
+
+    async_io_manager::instance().submit_task([track, is_local, generation, complete]() {
+        if (generation != g_search_generation.load()) return;
+        artwork_result result;
+        if (!track.is_valid()) {
+            result.error_message = "Invalid metadb handle";
+            complete(result);
+            return;
+        }
+
+        const GUID artwork_ids[] = {
+            album_art_ids::cover_front,
+            album_art_ids::disc,
+            album_art_ids::artist,
+            album_art_ids::icon,
+            album_art_ids::cover_back
+        };
+        auto accept_artwork = [&result, &complete](album_art_data::ptr art_data) {
+            if (!art_data.is_valid() || art_data->get_size() == 0) return false;
+            result.mime_type = detect_mime_type(
+                static_cast<const t_uint8*>(art_data->get_ptr()), art_data->get_size());
+            if (!is_supported_image_format(result.mime_type)) return false;
+            result.data.set_size(art_data->get_size());
+            memcpy(result.data.get_ptr(), art_data->get_ptr(), art_data->get_size());
+            result.success = true;
+            result.source = "Local artwork";
+            complete(result);
+            return true;
+        };
+
+        // Read the audio file's embedded images directly. The general artwork
+        // manager follows global display/search preferences and registered
+        // fallbacks, so a miss there does not establish that the file has no art.
+        if (is_local) {
+            try {
+                auto embedded = album_art_extractor::g_open(nullptr, track->get_path(), fb2k::noAbort);
+                for (const auto& id : artwork_ids) {
+                    try {
+                        if (accept_artwork(embedded->query(id, fb2k::noAbort))) return;
+                    } catch (...) {
+                        // Missing artwork type: try the remaining embedded images.
+                    }
+                }
+            } catch (...) {
+                // No embedded extractor (e.g. a proxy track): use the manager below.
+            }
+        }
+
+        // Preserve folder artwork, configured search patterns and proxy support.
+        try {
+            static_api_ptr_t<album_art_manager_v2> aam;
+            for (const auto& id : artwork_ids) {
+                try {
+                    auto extractor = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(track),
+                                             pfc::list_single_ref_t<GUID>(id), fb2k::noAbort);
+                    if (accept_artwork(extractor->query(id, fb2k::noAbort))) return;
+                } catch (...) {
+                    // Continue to the next artwork type.
+                }
+            }
+        } catch (...) {}
+
+        result.error_message = "No supported embedded or folder artwork found";
+        complete(result);
     });
 }
-
-
 
 void artwork_manager::search_itunes_api_async(const char* artist, const char* track, artwork_callback callback) {
     // iTunes Search API doesn't require an API key
@@ -5362,7 +5473,7 @@ pfc::string8 artwork_manager::generate_cache_key_for_track(metadb_handle_ptr tra
     }
 
     bool is_youtube = false;
-    bool is_internet_stream = (strstr(file_path.c_str(), "://") && !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
+    bool is_internet_stream = is_internet_stream_track(track);
 
     extract_track_metadata_dynamic(track, artist, track_name);
 
