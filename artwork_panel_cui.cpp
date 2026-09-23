@@ -641,7 +641,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                     metadb_handle_ptr track;
                     if (pc->get_now_playing(track) && track.is_valid()) {
                         pfc::string8 path = track->get_path();
-                        is_stream = strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://");
+                        is_stream = artwork_manager::is_internet_stream_track(track);
                     }
                     should_show = !is_stream;
                 }
@@ -858,7 +858,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
                     bool is_internet_stream = false;
                     // SAFE PATH ACCESS: Use safer helper function
                     if (get_safe_track_path(current_track, path)) {
-                        is_internet_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
+                        is_internet_stream = artwork_manager::is_internet_stream_track(current_track);
                     } else {
                         is_internet_stream = false;
                     }
@@ -950,7 +950,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
 
     case WM_USER + 12: // Artwork cleared on main thread
         m_last_event_bitmap = nullptr;
-        if (wParam) {
+        if (wParam && artwork_manager::is_noart_forced()) {
             KillTimer(m_hWnd, 100);
             KillTimer(m_hWnd, 101);
             m_artwork_source.clear();
@@ -1064,6 +1064,13 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
     
     if (pc->get_now_playing(current_track) && current_track.is_valid()) {
         try {
+            // YouTube decoder thumbnails must not overwrite the manager's API
+            // result or bypass its thumbnail-only preference and square cropping.
+            pfc::string8 stream_url;
+            artwork_manager::is_internet_stream_track(current_track, &stream_url);
+            if (!artwork_manager::extract_youtube_video_id(current_track->get_path()).is_empty() ||
+                !artwork_manager::extract_youtube_video_id(stream_url.c_str()).is_empty()) return;
+
             // Use album_art_manager_v2 to get artwork (embedded + external per user preferences)
             static_api_ptr_t<album_art_manager_v2> aam;
             auto extractor = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(current_track),
@@ -1096,7 +1103,7 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
                 // Check if this is an internet stream
                 pfc::string8 file_path;
                 if (get_safe_track_path(current_track, file_path)) {
-                    bool is_internet_stream = (strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
+                    bool is_internet_stream = artwork_manager::is_internet_stream_track(current_track);
                     
                     if (is_internet_stream) {
                         return; // Never use embedded artwork for internet streams
@@ -1112,7 +1119,7 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
                 // SAFE PATH ACCESS: Use safer helper function
                 pfc::string8 file_path;
                 if (get_safe_track_path(current_track, file_path)) {
-                    bool is_local_file = !(strstr(file_path.c_str(), "://") && !strstr(file_path.c_str(), "file://"));
+                    bool is_local_file = !artwork_manager::is_internet_stream_track(current_track);
                     
                     if (is_local_file) {
                         // Check if main component already found local artwork
@@ -1155,6 +1162,7 @@ void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
 
 void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
     if (!m_hWnd) return;
+    m_last_event_bitmap = nullptr;
     
     
 	 // Check if it's an internet stream and custom logos enabled
@@ -1191,8 +1199,7 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
         pfc::string8 file_path;
         bool is_internet_stream = false;
         if (get_safe_track_path(p_track, file_path)) {
-            is_internet_stream = (strstr(file_path.c_str(), "://") && 
-                                !(strstr(file_path.c_str(), "file://") == file_path.c_str()));
+            is_internet_stream = artwork_manager::is_internet_stream_track(p_track);
         }
         
         m_artwork_loaded = false;
@@ -1770,8 +1777,7 @@ void CUIArtworkPanel::show_osd(const std::string& text) {
         // SAFE PATH ACCESS: Use safer helper function
         pfc::string8 current_path;
         if (get_safe_track_path(current_track, current_path)) {
-            bool is_current_local = (strstr(current_path.c_str(), "file://") == current_path.c_str()) || 
-                                   !(strstr(current_path.c_str(), "://"));
+            bool is_current_local = !artwork_manager::is_internet_stream_track(current_track);
             if (is_current_local) {
                 return;
             }
