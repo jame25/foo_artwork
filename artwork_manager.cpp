@@ -11,6 +11,8 @@
 #include <chrono>
 #include <algorithm>
 #include <set>
+#include <regex>
+#include <tuple>
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
@@ -5137,152 +5139,269 @@ void artwork_manager::search_lastfm_api_async(const char* artist, const char* ti
     });
 }
 
-void artwork_manager::perform_deezer_fallback_search(const char* artist, const char* track, artwork_callback callback) {
+// Deezer's free-text results contain covers, compilations and alternate recordings.
+// Popularity (rank) says nothing about which release the listener is playing.
+static std::string deezer_string(const json& object, const char* key) {
+    auto it = object.find(key);
+    return it != object.end() && it->is_string() ? it->get<std::string>() : "";
+}
 
-    // Copy parameters to ensure they remain valid throughout async operations
-    pfc::string8 artist_copy = artist ? artist : "";
-    pfc::string8 track_copy = track ? track : "";
-    
-    pfc::string8 search_query;
-    pfc::string8 search_artist = "\"";
+static std::string deezer_artist_key(std::string artist) {
+    // Radio metadata commonly spells AC/DC as AC DC. Preserve word boundaries.
+    std::replace(artist.begin(), artist.end(), '/', ' ');
+    return normalize_for_matching(strip_the_prefix(artist));
+}
 
-    // Build search query: "artist"
-    search_query += search_artist;
-    search_query += artist;
-    search_query += "\"";
+static bool deezer_same_artist(const std::string& a, const std::string& b) {
+    const auto key = deezer_artist_key(a);
+    return !key.empty() && pfc::stringCompareCaseInsensitive(key.c_str(), deezer_artist_key(b).c_str()) == 0;
+}
 
+static int deezer_artist_quality(const std::string& result, const std::string& requested) {
+    if (deezer_same_artist(result, requested)) return 0;
+    // Permit primary-artist credits, but never accept an unrelated lead artist
+    // just because the requested artist appears as a guest or in a tribute name.
+    const auto primary_result = MetadataCleaner::extract_first_artist(result.c_str());
+    const auto primary_requested = MetadataCleaner::extract_first_artist(requested.c_str());
+    return deezer_same_artist(primary_result, primary_requested) ? 1 : -1;
+}
 
-    // Strategy 1: Try artist only
-    if (!artist_copy.is_empty()) {
-        pfc::string8 artist_only_url = "https://api.deezer.com/search?q=";
-        artist_only_url << artwork_manager::url_encode(search_query) << "&limit=5";
+static std::string deezer_without_remaster(const std::string& title) {
+    // A remaster preserves the recording. Do not strip arbitrary parentheses:
+    // "Live", "Remix", "Acoustic" and meaningful title text must stay distinct.
+    static const std::regex suffix(
+        R"(\s*(?:\((?:[0-9]{4}\s+)?remaster(?:ed)?(?:\s+[0-9]{4})?\)|\[(?:[0-9]{4}\s+)?remaster(?:ed)?(?:\s+[0-9]{4})?\]|-\s*(?:[0-9]{4}\s+)?remaster(?:ed)?(?:\s+[0-9]{4})?)\s*$)",
+        std::regex_constants::icase);
+    return std::regex_replace(title, suffix, "");
+}
 
-        async_io_manager::instance().http_get_async(artist_only_url, [artist_copy, track_copy, callback](bool success, const pfc::string8& response, const pfc::string8& error) {
-            if (success) {
-                pfc::string8 artwork_url;
-                pfc::string8 album_name;
-                pfc::string8 api_artist;
-                pfc::string8 api_title;
-                if (artwork_manager::parse_deezer_json(artist_copy, track_copy, response, artwork_url, &album_name, &api_artist, &api_title)) {
-                    // Download artwork
-                    async_io_manager::instance().http_get_binary_async(artwork_url, [callback, album_name, api_artist, api_title](bool dl_success, const pfc::array_t<t_uint8>& data, const pfc::string8& dl_error) {
-                        artwork_result result;
-                        if (dl_success && data.get_size() > 0) {
-                            result.success = true;
-                            result.data = data;
-                            result.album = album_name;
-                            result.artist = api_artist;
-                            result.title = api_title;
-                            result.mime_type = artwork_manager::detect_mime_type(data.get_ptr(), data.get_size());
-                            result.source = "Deezer";
-                        } else {
-                            result.success = false;
-                            result.error_message = "Failed to download Deezer artwork";
+static int deezer_title_quality(const json& item, const std::string& requested) {
+    auto title = deezer_string(item, "title");
+    if (title.empty() || requested.empty()) return -1;
+    const auto short_title = deezer_string(item, "title_short");
+    const auto version = deezer_string(item, "title_version");
+    // Some catalog entries keep the version only in title_version.
+    if (!version.empty() && title == short_title) title += " " + version;
+    if (strings_match_fuzzy(title, requested)) return 0;
+    const auto base = deezer_without_remaster(title);
+    const auto requested_base = deezer_without_remaster(requested);
+    if (!base.empty() && strings_match_fuzzy(base, requested_base)) return 0;
+    // Retain the version fallback added for Issue #54, after studio/remaster
+    // matches, and never remove an explicitly requested live/remix qualifier.
+    return !short_title.empty() && strings_match_fuzzy(short_title, requested) ? 1 : -1;
+}
+
+static int deezer_release_penalty(const json& album, const std::string& artist) {
+    const auto type = deezer_string(album, "record_type");
+    if (type == "compile") return 2;
+    auto album_artist = album.find("artist");
+    const auto name = album_artist != album.end() ? deezer_string(*album_artist, "name") : "";
+    if (!name.empty() && deezer_artist_quality(name, artist) < 0) return 2;
+    static const std::regex compilation(
+        R"(\b(best of|greatest hits|the hits|all the hits|essential|anthology|collection|compilation|various artists)\b)",
+        std::regex_constants::icase);
+    if (std::regex_search(deezer_string(album, "title"), compilation)) return 2;
+    // Verified artist releases outrank unknown releases. If detail requests fail,
+    // keep a validated track available instead of turning a usable cover into a miss.
+    return !name.empty() && (type == "album" || type == "ep" || type == "single") ? 0 : 1;
+}
+
+static std::string deezer_cover_url(const json& album) {
+    auto url = deezer_string(album, "cover_xl");
+    if (url.empty()) url = deezer_string(album, "cover_big");
+    return url;
+}
+
+struct deezer_candidate {
+    size_t index;
+    int title_quality;
+    int artist_quality;
+    int release_penalty;
+};
+
+static std::vector<deezer_candidate> deezer_candidates(const json& data,
+    const std::string& artist, const std::string& track) {
+    std::vector<deezer_candidate> candidates;
+    if (artist.empty() || track.empty() || !data.is_object() || data.contains("error")) return candidates;
+    auto results = data.find("data");
+    if (results == data.end() || !results->is_array()) return candidates;
+    for (size_t index = 0; index < results->size(); ++index) {
+        const auto& item = (*results)[index];
+        if (!item.is_object()) continue;
+        auto result_artist = item.find("artist");
+        auto album = item.find("album");
+        if (result_artist == item.end() || !result_artist->is_object() ||
+            album == item.end() || !album->is_object() || deezer_cover_url(*album).empty()) continue;
+        const int artist_quality = deezer_artist_quality(deezer_string(*result_artist, "name"), artist);
+        const int title_quality = deezer_title_quality(item, track);
+        if (artist_quality < 0 || title_quality < 0) continue;
+        candidates.push_back({index, title_quality, artist_quality, deezer_release_penalty(*album, artist)});
+    }
+    // Stable ties preserve the service's relevance order; never sort by popularity.
+    std::stable_sort(candidates.begin(), candidates.end(), [](const deezer_candidate& a, const deezer_candidate& b) {
+        return std::tie(a.title_quality, a.artist_quality, a.release_penalty) <
+               std::tie(b.title_quality, b.artist_quality, b.release_penalty);
+    });
+    return candidates;
+}
+
+static void enrich_deezer_albums_async(json data, const std::vector<deezer_candidate>& candidates,
+    uint64_t generation, std::function<void(const pfc::string8&)> callback) {
+    // Search results omit album artist/type. Check a bounded set of distinct
+    // matching releases concurrently; never fetch details for unrelated tracks.
+    std::set<uint64_t> album_ids;
+    for (const auto& candidate : candidates) {
+        const auto& album = data["data"][candidate.index]["album"];
+        auto id = album.find("id");
+        if (id != album.end() && id->is_number_integer() && id->get<int64_t>() > 0) {
+            album_ids.insert(id->get<uint64_t>());
+            if (album_ids.size() == 5) break;
+        }
+    }
+    if (album_ids.empty()) {
+        callback(data.dump().c_str());
+        return;
+    }
+    struct lookup_state {
+        json data;
+        size_t remaining;
+        std::mutex mutex;
+    };
+    auto state = std::make_shared<lookup_state>();
+    state->data = std::move(data);
+    state->remaining = album_ids.size();
+    for (const auto album_id : album_ids) {
+        if (generation != g_search_generation.load()) return;
+        pfc::string8 url = "https://api.deezer.com/album/";
+        url << std::to_string(album_id).c_str();
+        auto completed = [state, album_id, generation, callback](bool success, const pfc::string8& response, const pfc::string8&) {
+            if (generation != g_search_generation.load()) return;
+            pfc::string8 enriched;
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                try {
+                    const auto details = success ? json::parse(response.c_str()) : json();
+                    auto id = details.find("id");
+                    if (details.is_object() && !details.contains("error") && id != details.end() &&
+                        id->is_number_integer() && id->get<uint64_t>() == album_id) {
+                        for (auto& item : state->data["data"]) {
+                            if (!item.is_object() || !item.contains("album") || !item["album"].is_object()) continue;
+                            auto& album = item["album"];
+                            if (!album.contains("id") || album["id"] != album_id) continue;
+                            for (const auto* field : {"artist", "record_type"}) {
+                                if (details.contains(field)) album[field] = details[field];
+                            }
                         }
-                        callback(result);
-                    });
-                    return;
-                }
+                    }
+                } catch (...) {} // Malformed or unavailable details leave the track usable.
+                if (--state->remaining != 0) return;
+                enriched = state->data.dump().c_str();
             }
-            
-            // Skip track-only search as requested - only use artist fallback
-            artwork_result final_result;
-            final_result.success = false;
-            final_result.error_message = "No artwork found in Deezer (artist search failed)";
-            callback(final_result);
-        });
-    } else {
-        // No artist available - skip track-only search as requested
-        artwork_result result;
-        result.success = false;
-        result.error_message = "No artist available for Deezer search";
-        callback(result);
+            callback(enriched);
+        };
+        try {
+            async_io_manager::instance().http_get_async(url, completed);
+        } catch (...) {
+            completed(false, "", "");
+        }
     }
 }
 
+static pfc::string8 deezer_search_query(const char* artist, const char* track, bool quoted) {
+    // Quotes/backslashes in tags must not break the query's phrase boundaries.
+    auto clean = [](const char* text) {
+        std::string value = text ? text : "";
+        for (char& c : value) if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20) c = ' ';
+        return value;
+    };
+    const auto a = clean(artist);
+    const auto t = clean(track);
+    const auto query = quoted ? "\"" + a + "\" \"" + t + "\"" : a + " " + t;
+    return query.c_str();
+}
+
+void artwork_manager::perform_deezer_fallback_search(const char* artist, const char* track, artwork_callback callback) {
+    // Retry without phrase constraints, retaining BOTH artist and title.
+    search_deezer_query_async(artist, track, callback, false);
+}
+
 void artwork_manager::search_deezer_api_async(const char* artist, const char* track, artwork_callback callback) {
-   
-    // Use quoted free text because Deezer field-filter searches no longer work reliably.
-    pfc::string8 search_query;
-    pfc::string8 search_track = "\"";
-    pfc::string8 search_artist = "\"";
-    
-    // Build search query: "track"
-    // NOTE: Metadata cleaner (is valid for search) rule 1 stops it from being used
-    if (!artist || strlen(artist) == 0) {
-        search_query += search_track;
-        search_query += track;
-        search_query += "\"";
-    } else {
-        // Build search query: "artist" "track"
-        search_query += search_artist;
-        search_query += artist;
-        search_query += "\"";
-        search_query += " ";
-        search_query += search_track;
-        search_query += track;
-        search_query += "\"";
-    }
-    
-    pfc::string8 url = "https://api.deezer.com/search?q=";
-    url << url_encode(search_query) << "&limit=10";
+    search_deezer_query_async(artist, track, callback, true);
+}
 
-    // Copy parameters to avoid lambda capture corruption
-    pfc::string8 artist_str = artist;
-    pfc::string8 track_str = track;
-
-    // Make async HTTP request
-    try {
-        async_io_manager::instance().http_get_async(url, [artist_str, track_str, callback](bool success, const pfc::string8& response, const pfc::string8& error) {
-        if (!success) {
-            artwork_result result;
-            result.success = false;
-            result.error_message = "Deezer API request failed: ";
-            result.error_message << error;
-            callback(result);
-            return;
-        }
-        
-        // Parse JSON response to extract artwork URL
-        pfc::string8 artwork_url;
-        pfc::string8 album_name;
-        pfc::string8 api_artist;
-        pfc::string8 api_title;
-        if (!artwork_manager::parse_deezer_json(artist_str, track_str, response, artwork_url, &album_name, &api_artist, &api_title)) {
-            // Try fallback search strategies
-            artwork_manager::perform_deezer_fallback_search(artist_str, track_str, callback);
-            return;
-        }
-        
-        // Download the artwork image
-        async_io_manager::instance().http_get_binary_async(artwork_url, [callback, album_name, api_artist, api_title](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
-            artwork_result result;
-            if (success && data.get_size() > 0) {
-                result.success = true;
-                result.data = data;
-                result.album = album_name;
-                result.artist = api_artist;
-                result.title = api_title;
-                result.mime_type = artwork_manager::detect_mime_type(data.get_ptr(), data.get_size());
-                result.source = "Deezer";  // Set source for OSD display
-            } else {
-                result.success = false;
-                result.error_message = "Failed to download Deezer artwork: ";
-                result.error_message << error;
-            }
-            callback(result);
-        });
-        });
-    } catch (const std::exception& e) {
+void artwork_manager::search_deezer_query_async(const char* artist, const char* track, artwork_callback callback, bool quoted) {
+    const uint64_t generation = g_search_generation.load();
+    const pfc::string8 artist_str = artist ? artist : "";
+    const pfc::string8 track_str = track ? track : "";
+    if (artist_str.is_empty() || track_str.is_empty()) {
         artwork_result result;
-        result.success = false;
-        result.error_message = "Exception in Deezer HTTP request: ";
-        result.error_message += e.what();
+        result.error_message = "Deezer requires both artist and title";
         callback(result);
+        return;
+    }
+    // Field filters can return empty results for available songs. Keep free text,
+    // but inspect enough track candidates to find releases below compilations.
+    pfc::string8 url = "https://api.deezer.com/search/track?q=";
+    url << url_encode(deezer_search_query(artist, track, quoted)) << "&limit=50";
+    try {
+        async_io_manager::instance().http_get_async(url, [artist_str, track_str, callback, quoted, generation](bool success, const pfc::string8& response, const pfc::string8& error) {
+            if (generation != g_search_generation.load()) return;
+            if (!success) {
+                artwork_result result;
+                result.error_message = "Deezer API request failed: ";
+                result.error_message << error;
+                callback(result);
+                return;
+            }
+            json data;
+            std::vector<deezer_candidate> candidates;
+            try {
+                data = json::parse(response.c_str());
+                candidates = deezer_candidates(data, artist_str.c_str(), track_str.c_str());
+            } catch (...) {}
+            if (candidates.empty()) {
+                if (quoted) {
+                    perform_deezer_fallback_search(artist_str, track_str, callback);
+                } else {
+                    artwork_result result;
+                    result.error_message = "No matching artist and title found in Deezer";
+                    callback(result);
+                }
+                return;
+            }
+            enrich_deezer_albums_async(std::move(data), candidates, generation,
+                [artist_str, track_str, callback, generation](const pfc::string8& enriched) {
+                    if (generation != g_search_generation.load()) return;
+                    pfc::string8 artwork_url, album_name, api_artist, api_title;
+                    if (!parse_deezer_json(artist_str, track_str, enriched, artwork_url, &album_name, &api_artist, &api_title)) {
+                        artwork_result result;
+                        result.error_message = "No usable Deezer artwork";
+                        callback(result);
+                        return;
+                    }
+                    async_io_manager::instance().http_get_binary_async(artwork_url,
+                        [callback, album_name, api_artist, api_title, generation](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8& error) {
+                            if (generation != g_search_generation.load()) return;
+                            artwork_result result;
+                            if (success && data.get_size() > 0) {
+                                result.success = true;
+                                result.data = data;
+                                result.album = album_name;
+                                result.artist = api_artist;
+                                result.title = api_title;
+                                result.mime_type = artwork_manager::detect_mime_type(data.get_ptr(), data.get_size());
+                                result.source = "Deezer";
+                            } else {
+                                result.error_message = "Failed to download Deezer artwork: ";
+                                result.error_message << error;
+                            }
+                            callback(result);
+                        });
+                });
+        });
     } catch (...) {
         artwork_result result;
-        result.success = false;
-        result.error_message = "Unknown exception in Deezer HTTP request";
+        result.error_message = "Exception in Deezer HTTP request";
         callback(result);
     }
 }
@@ -5714,89 +5833,27 @@ bool artwork_manager::parse_itunes_json(const char* artist, const char* track, c
 
 bool artwork_manager::parse_deezer_json(const char* artist, const char* track, const pfc::string8& json_in, pfc::string8& artwork_url, pfc::string8* out_album, pfc::string8* out_artist, pfc::string8* out_title) {
     try {
-        std::string json_data;
-        json_data += json_in;
-
-        json data = json::parse(json_data);
-
-        if (!data.contains("total") || data["total"] == 0 || !data.contains("data") || !data["data"].is_array()) return false;
-
-        //sort by rank to get higher ratings values first
-        std::sort(data["data"].begin(), data["data"].end(),
-            [](const json& a, const json& b) {
-                int rank_a = (a.contains("rank") && a["rank"].is_number()) ? a["rank"].get<int>() : 0;
-                int rank_b = (b.contains("rank") && b["rank"].is_number()) ? b["rank"].get<int>() : 0;
-                return rank_a > rank_b;
-            });
-
-        json s = data["data"];
-        std::string artist_str(artist ? artist : "");
-        std::string track_str(track ? track : "");
-
-        auto unescape_url = [](const std::string& in_url) -> pfc::string8 {
-            pfc::string8 unescaped;
-            const char* src = in_url.c_str();
-            while (*src) {
-                if (*src == '\\' && *(src + 1) == '/') {
-                    unescaped += "/";
-                    src += 2;
-                } else {
-                    char single_char[2] = { *src, '\0' };
-                    unescaped += single_char;
-                    src++;
-                }
-            }
-            return unescaped;
-        };
-
-        auto extract_album = [&](const json& itm) {
-            if (out_album && itm.contains("album") && itm["album"].is_object() && itm["album"].contains("title") && itm["album"]["title"].is_string()) {
-                std::string alb = itm["album"]["title"].get<std::string>();
-                if (cfg_normalize_api_metadata_case) alb = MetadataCleaner::to_title_case(alb);
-                *out_album = alb.c_str();
-            }
-        };
-
-        // Prefer a full title match across all results before accepting Deezer's
-        // explicit base title (e.g. "Poder da Criacao" for "... (Ao Vivo)").
-        // Both passes still require the requested artist and song to match.
-        for (int match_pass = 0; match_pass < 2; ++match_pass) {
-            for (const auto& item : s.items()) {
-                if (!item.value().contains("title") || !item.value().contains("artist")) continue;
-                std::string result_title = item.value()["title"].is_string() ? item.value()["title"].get<std::string>() : "";
-                std::string result_artist = (item.value()["artist"].contains("name") && item.value()["artist"]["name"].is_string()) ? item.value()["artist"]["name"].get<std::string>() : "";
-
-                std::string match_title = result_title;
-                if (match_pass == 1) {
-                    if (!item.value().contains("title_short") || !item.value()["title_short"].is_string()) continue;
-                    match_title = item.value()["title_short"].get<std::string>();
-                }
-                if (!match_title.empty() && strings_match_fuzzy(match_title, track_str) && artists_match(result_artist, artist_str)) {
-                    if (item.value().contains("album") && item.value()["album"].is_object()) {
-                        if (item.value()["album"].contains("cover_xl") && item.value()["album"]["cover_xl"].is_string()) {
-                            artwork_url = unescape_url(item.value()["album"]["cover_xl"].get<std::string>());
-                            artwork_url = artwork_url.replace("1000x1000", "1200x1200");
-                            extract_album(item.value());
-                            if (out_artist && !result_artist.empty()) *out_artist = result_artist.c_str();
-                            if (out_title && !result_title.empty()) *out_title = (cfg_normalize_api_metadata_case ? MetadataCleaner::to_title_case(result_title) : result_title).c_str();
-                            return true;
-                        }
-                        if (item.value()["album"].contains("cover_big") && item.value()["album"]["cover_big"].is_string()) {
-                            artwork_url = unescape_url(item.value()["album"]["cover_big"].get<std::string>());
-                            extract_album(item.value());
-                            if (out_artist && !result_artist.empty()) *out_artist = result_artist.c_str();
-                            if (out_title && !result_title.empty()) *out_title = (cfg_normalize_api_metadata_case ? MetadataCleaner::to_title_case(result_title) : result_title).c_str();
-                            return true;
-                        }
-                    }
-                }
-            }
+        const auto data = json::parse(json_in.c_str());
+        const auto candidates = deezer_candidates(data, artist ? artist : "", track ? track : "");
+        if (candidates.empty()) return false;
+        const auto& item = data["data"][candidates.front().index];
+        const auto& album = item["album"];
+        // JSON parsing already unescapes URLs. Keep the provider's actual image
+        // size/path instead of inventing a 1200x1200 URL that may not exist.
+        artwork_url = deezer_cover_url(album).c_str();
+        auto album_name = deezer_string(album, "title");
+        auto title = deezer_string(item, "title");
+        if (cfg_normalize_api_metadata_case) {
+            album_name = MetadataCleaner::to_title_case(album_name);
+            title = MetadataCleaner::to_title_case(title);
         }
+        if (out_album) *out_album = album_name.c_str();
+        if (out_artist) *out_artist = deezer_string(item["artist"], "name").c_str();
+        if (out_title) *out_title = title.c_str();
+        return true;
     } catch (...) {
         return false;
     }
-
-    return false;
 }
 
 bool artwork_manager::parse_lastfm_json(const pfc::string8& json_in, pfc::string8& artwork_url, pfc::string8* out_album, pfc::string8* out_artist, pfc::string8* out_title) {
