@@ -35,6 +35,7 @@ public:
     
     // Manual trigger & cooldown management for ACRCloud audio recognition
     static void force_acrcloud_lookup();
+    static void rescan_stream_acrcloud(); // Automatic acoustic transition/safety timer.
     static void reset_acrcloud_cooldown();
     static void cancel_acrcloud_tasks();
     static void on_stream_metadata_changed(const char* artist, const char* title, const char* artist_full = nullptr, const char* album = nullptr, const char* listeners = nullptr);
