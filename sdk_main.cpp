@@ -2716,7 +2716,8 @@ void trigger_main_component_search(metadb_handle_ptr track) {
         std::thread([track]() {
             try {
                 // Extract metadata (replicate the main component's logic)
-                const file_info& info = track->get_info_ref()->info();
+                auto info_container = track->get_info_ref();
+                const file_info& info = info_container->info();
                 std::string artist, title;
                 
                 if (info.meta_get("ARTIST", 0)) {
@@ -6939,7 +6940,8 @@ void standalone_deezer_search(metadb_handle_ptr track) {
     
     try {
         // Extract metadata (same as main component)
-        const file_info& info = track->get_info_ref()->info();
+        auto info_container = track->get_info_ref();
+        const file_info& info = info_container->info();
         std::string artist, title;
         
         if (info.meta_get("ARTIST", 0)) {
