@@ -230,6 +230,9 @@ public:
         return b ? "true" : "false";
     }
 private:
+    // Invalidated on window destruction, independently of other panel instances.
+    std::shared_ptr<bool> m_artwork_lifetime = std::make_shared<bool>(true);
+
     // Window state (managed by container_uie_window_v3)
     HWND m_hWnd;
     
@@ -506,6 +509,7 @@ CUIArtworkPanel::CUIArtworkPanel()
 }
 
 CUIArtworkPanel::~CUIArtworkPanel() {
+    m_artwork_lifetime.reset();
     // Remove from global list
     g_cui_artwork_panels.remove_item(this);
     
@@ -560,6 +564,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
     }
     switch (msg) {
     case WM_CREATE:
+        m_artwork_lifetime = std::make_shared<bool>(true);
         // Initialize GDI+
         initialize_gdiplus();
         
@@ -595,6 +600,7 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         break;
         
     case WM_DESTROY:
+        m_artwork_lifetime.reset();
         // Stop timers
         if (m_osd_timer_id) {
             KillTimer(m_hWnd, m_osd_timer_id);
@@ -1207,7 +1213,9 @@ void CUIArtworkPanel::on_playback_new_track(metadb_handle_ptr p_track) {
         // Invoke artwork manager pipeline for all tracks (local files and internet streams)
         // artwork_manager handles embedded artwork, cache, stream monitoring, and ACRCloud fallback
         try {
-            artwork_manager::get_artwork_async(p_track, [this, p_track](const artwork_manager::artwork_result& result) {
+            std::weak_ptr<bool> lifetime = m_artwork_lifetime;
+            artwork_manager::get_artwork_async(p_track, [this, lifetime](const artwork_manager::artwork_result& result) {
+                if (lifetime.expired()) return;
                 // Handle the result - load artwork directly instead of using events
                 if (result.success && result.data.get_size() > 0) {
                     // Convert pfc::array_t to album_art_data::ptr and load it
