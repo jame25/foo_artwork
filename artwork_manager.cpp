@@ -346,7 +346,20 @@ static std::atomic<uint64_t> g_search_generation{0};
 static bool g_force_noart = false; // Main-thread state, reset on the next song or manual search.
 static bool g_manual_external_probe = false;
 static uint64_t g_manual_search_generation = 0;
+// Keep the query that belongs to this playback cue, independently of raw tags
+// and display metadata. Manual provider cycling must reuse the same song.
+static pfc::string8 g_search_artist, g_search_title;
+static uint64_t g_search_metadata_generation = 0;
 
+static void remember_search_metadata(const pfc::string8& artist, const pfc::string8& title,
+    const pfc::string8& cache_key) {
+    g_search_artist = artist;
+    g_search_title = title;
+    g_active_cache_key = cache_key;
+    g_search_metadata_generation = g_search_generation.load();
+}
+
+uint64_t artwork_manager::get_search_generation() { return g_search_generation.load(); }
 
 bool artwork_manager::is_noart_forced() { return g_force_noart; }
 bool artwork_manager::is_manual_artwork_search() {
@@ -714,7 +727,10 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
                 metadb_handle_ptr now_track;
                 static_api_ptr_t<playback_control> pc;
                 if (pc->get_now_playing(now_track)) {
-                    titleformat_provider::set_track_artwork_info(now_track, artist_str.c_str(), track_str.c_str(), cache_file.c_str(), effective_source.c_str());
+                    const pfc::string8 display_artist = !res.artist.is_empty() ? res.artist : artist_str;
+                    const pfc::string8 display_title = !res.title.is_empty() ? res.title : track_str;
+                    titleformat_provider::set_track_artwork_info(now_track, display_artist.c_str(), display_title.c_str(),
+                        cache_file.c_str(), effective_source.c_str(), display_artist.c_str(), res.album.c_str());
                 }
                 titleformat_provider::set_status((pfc::string8("Artwork loaded from ") + effective_source).c_str());
                 artwork_result final_res = res;
@@ -2329,6 +2345,10 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                                     album_c = meta.clean_album;
                                 }
 
+                                reset_acrcloud_cooldown();
+                                remember_search_metadata(clean_art, clean_tit, cfg_single_file_cache ? pfc::string8("current") :
+                                    generate_cache_key(clean_art.c_str(), clean_tit.c_str()));
+
                                 metadb_handle_ptr track;
                                 if (pc_cue->get_now_playing(track) && track.is_valid()) {
                                     titleformat_provider::set_track_artwork_info(track, clean_art_full.c_str(), clean_tit.c_str(), "", "", clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str());
@@ -2482,6 +2502,33 @@ static void display_manual_artwork(const artwork_manager::artwork_result& result
     });
 }
 
+static void get_provider_retry_metadata(metadb_handle_ptr track, pfc::string8& artist, pfc::string8& title) {
+    if (g_search_metadata_generation == g_search_generation.load() &&
+        !g_search_artist.is_empty() && !g_search_title.is_empty()) {
+        artist = g_search_artist;
+        title = g_search_title;
+        return;
+    }
+    if (!g_last_recognized_artist.is_empty() && !g_last_recognized_title.is_empty()) {
+        artist = g_last_recognized_artist;
+        title = g_last_recognized_title;
+        return;
+    }
+    if (!g_last_stream_artist.is_empty() && !g_last_stream_title.is_empty()) {
+        artist = g_last_stream_artist;
+        title = g_last_stream_title;
+        return;
+    }
+
+    extract_track_metadata_dynamic(track, artist, title);
+    const bool is_youtube = !artwork_manager::extract_youtube_video_id(track->get_path()).is_empty() ||
+        !artwork_manager::extract_youtube_video_id(g_current_stream_url.c_str()).is_empty();
+    const auto meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), title.c_str(),
+        is_youtube, is_youtube && (g_is_youtube_art_track || g_is_youtube_topic_track));
+    artist = meta.is_valid_search && !meta.is_station_or_url ? meta.first_artist.c_str() : "";
+    title = meta.is_valid_search && !meta.is_station_or_url ? meta.clean_title.c_str() : "";
+}
+
 void artwork_manager::reject_current_artwork() {
     ASSERT_MAIN_THREAD();
 
@@ -2554,8 +2601,15 @@ void artwork_manager::reject_current_artwork() {
         g_rejected_providers_for_current_track.clear();
     }
 
+    // Reuse the cleaned/recognized query and its actual cache key before resetting
+    // recognition state. Raw station tags may differ from the active radio cue.
+    pfc::string8 artist, title;
+    get_provider_retry_metadata(track, artist, title);
+    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") :
+        (g_search_metadata_generation == g_search_generation.load() && !g_active_cache_key.is_empty()
+            ? g_active_cache_key : generate_cache_key_for_track(track));
+
     // Invalidate current cache on disk
-    pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key_for_track(track);
     async_io_manager::instance().cache_remove(cache_key);
     if (cfg_single_file_cache) {
         async_io_manager::instance().cache_remove("current");
@@ -2569,12 +2623,11 @@ void artwork_manager::reject_current_artwork() {
     }
 
     // Search providers directly: local/disk/recognized artwork must not win again.
-    pfc::string8 artist = g_last_recognized_artist, title = g_last_recognized_title;
-    if (artist.is_empty() || title.is_empty()) extract_track_metadata_dynamic(track, artist, title);
     g_force_noart = false;
     reset_acrcloud_cooldown();
     const uint64_t generation = ++g_search_generation;
     g_manual_search_generation = generation;
+    remember_search_metadata(artist, title, cache_key);
     search_rejected_artwork_pass(track, artist, title, cache_key, generation, true);
 }
 
@@ -2605,16 +2658,20 @@ void artwork_manager::search_rejected_artwork_pass(metadb_handle_ptr track,
         }
     };
     const pfc::string8 broadcast_url = extract_broadcast_artwork_url(track);
-    search_apis_by_priority(artist, title, cache_key,
-        [broadcast_url, cache_key, generation, thumbnail_fallback](const artwork_result& result) {
-            if (generation != g_search_generation.load()) return;
-            if (!result.success && !broadcast_url.is_empty() && !cfg_disable_instream_artwork &&
-                !g_rejected_providers_for_current_track.count("Broadcast Artwork")) {
-                search_broadcast_artwork_async(broadcast_url, cache_key, thumbnail_fallback);
-            } else {
-                thumbnail_fallback(result);
-            }
-        }, get_api_search_order(), 0, false);
+    auto provider_fallback = [broadcast_url, cache_key, generation, thumbnail_fallback](const artwork_result& result) {
+        if (generation != g_search_generation.load()) return;
+        if (!result.success && !broadcast_url.is_empty() && !cfg_disable_instream_artwork &&
+            !g_rejected_providers_for_current_track.count("Broadcast Artwork")) {
+            search_broadcast_artwork_async(broadcast_url, cache_key, thumbnail_fallback);
+        } else {
+            thumbnail_fallback(result);
+        }
+    };
+    if (artist.is_empty() || title.is_empty()) {
+        provider_fallback(artwork_result());
+    } else {
+        search_apis_by_priority(artist, title, cache_key, provider_fallback, get_api_search_order(), 0, false);
+    }
 }
 
 void artwork_manager::force_show_noart() {
@@ -3053,6 +3110,8 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         } else {
             cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art, clean_tit);
         }
+
+        remember_search_metadata(clean_art, clean_tit, cache_key);
 
         pfc::string8 broadcast_art_url = extract_broadcast_artwork_url(track);
         bool try_broadcast_artwork = !broadcast_art_url.is_empty() &&
@@ -3524,27 +3583,9 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     
     pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key_for_track(track);
 
-    bool is_different_track = false;
-    if (!g_active_playing_track.is_valid() || !track.is_valid()) {
-        is_different_track = true;
-    } else if (strcmp(g_active_playing_track->get_path(), track->get_path()) != 0) {
-        is_different_track = true;
-    } else if (is_internet_stream) {
-        StreamMetadataResult cur_meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str(), is_youtube, is_youtube && (g_is_youtube_art_track || g_is_youtube_topic_track));
-        if (pfc::stricmp_ascii(cur_meta.first_artist.c_str(), g_last_stream_artist.c_str()) != 0 ||
-            pfc::stricmp_ascii(cur_meta.clean_title.c_str(), g_last_stream_title.c_str()) != 0) {
-            is_different_track = true;
-        }
-    }
-
-    if (is_different_track) {
-        g_active_playing_track = track;
-        g_rejected_providers_for_current_track.clear();
-        g_active_resolved_provider.reset();
-    }
-    g_active_cache_key = cache_key;
-
-    uint64_t gen = ++g_search_generation;
+    // Requests from different panels are subscribers to the same playback cue.
+    // Only lifecycle/cue changes and explicit manual commands supersede it.
+    const uint64_t gen = g_search_generation.load();
     auto original_callback = callback;
     auto wrapped_callback = [gen, track, artist, track_name, cache_key, original_callback](const artwork_result& res) {
         if (gen != g_search_generation.load()) {
@@ -3991,6 +4032,8 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
         callback(fail_res);
         return;
     }
+
+    remember_search_metadata(meta.first_artist.c_str(), meta.clean_title.c_str(), cache_key);
 
     // Deduplicate in-flight search requests for identical metadata
     pfc::string8 dedup_key_pfc = generate_cache_key(meta.clean_artist.c_str(), meta.clean_title.c_str());
@@ -4496,6 +4539,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
 
                     g_last_recognized_artist = rec_meta.first_artist.c_str();
                     g_last_recognized_title = rec_meta.clean_title.c_str();
+                    remember_search_metadata(rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str(), cache_key);
 
                     foo_artwork::log_printf("foo_artwork: Querying online APIs with ACRCloud recognized track '%s - %s'...", rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str());
                     auto api_order = get_api_search_order();
@@ -4562,14 +4606,6 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         original_callback(result);
     };
     
-    if (index == 0) {
-        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track.c_str());
-        if (meta.is_valid_search && !meta.is_station_or_url) {
-            log_simplified_track_info(meta.first_artist.c_str(), meta.clean_title.c_str());
-        }
-        foo_artwork::log_printf("foo_artwork: Querying online APIs for '%s - %s'...", artist.c_str(), track.c_str());
-    }
-
     if (index >= api_order.size()) {
         // No more APIs to try
         artwork_result final_result;
@@ -4618,9 +4654,6 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
         case ApiType::MusicBrainz: current_api_name = "MusicBrainz"; break;
         case ApiType::Discogs: current_api_name = "Discogs"; break;
     }
-
-    pfc::string8 status_str = pfc::string8("Querying ") + current_api_name + "...";
-    titleformat_provider::set_status(status_str.c_str());
 
     // Check if this provider has been rejected by user for current track
     if (g_rejected_providers_for_current_track.find(current_api_name.c_str()) != g_rejected_providers_for_current_track.end()) {
@@ -4704,6 +4737,7 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
             foo_artwork::log_printf("foo_artwork: SUCCESS - Artwork retrieved from %s for '%s - %s' (%u bytes)", api_name.c_str(), artist.c_str(), track.c_str(), (unsigned int)result.data.get_size());
             g_active_resolved_provider = api_name;
             g_active_source = api_name;
+            remember_search_metadata(artist, track, cache_key);
 
             int w = 0, h = 0;
             if (result.data.get_size() > 0) get_image_dimensions_from_data(result.data.get_ptr(), result.data.get_size(), w, h);
@@ -4770,6 +4804,9 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
             search_apis_by_priority(artist, track, cache_key, combined_cb, api_order, index + 1, force_enable_apis);
         }
     };
+
+    pfc::string8 status_str = pfc::string8("Querying ") + current_api_name + "...";
+    titleformat_provider::set_status(status_str.c_str());
 
     foo_artwork::log_printf("foo_artwork: Querying %s for '%s - %s'...", current_api_name.c_str(), artist.c_str(), track.c_str());
     
