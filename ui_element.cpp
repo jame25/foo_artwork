@@ -972,7 +972,8 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
         }
 
         if (artist.is_empty() && title.is_empty()) {
-            const file_info& info = track->get_info_ref()->info();
+            auto info_container = track->get_info_ref();
+            const file_info& info = info_container->info();
             if (info.meta_get("ARTIST", 0)) artist = info.meta_get("ARTIST", 0);
             if (info.meta_get("TITLE", 0)) title = info.meta_get("TITLE", 0);
             if (album.is_empty() && info.meta_get("ALBUM", 0)) album = info.meta_get("ALBUM", 0);
