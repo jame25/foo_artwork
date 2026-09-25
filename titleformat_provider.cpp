@@ -17,6 +17,78 @@ static pfc::string8 g_tf_cover;
 static pfc::string8 g_tf_source;
 static pfc::string8 g_tf_status;
 static pfc::string8 g_tf_track_path;
+static unsigned g_tf_track_subsong = 0;
+
+// process_field may run under a metadb lock on any thread. Playback services
+// and nested title formatting are forbidden there; publish a plain snapshot
+// from the playback callbacks instead.
+static pfc::string8 g_tf_playback_path;
+static unsigned g_tf_playback_subsong = 0;
+static bool g_tf_playback_is_stream = false;
+static double g_tf_playback_position = 0.0;
+
+class artwork_titleformat_playback_callback : public play_callback_static {
+public:
+    unsigned get_flags() override {
+        return flag_on_playback_new_track | flag_on_playback_stop |
+            flag_on_playback_seek | flag_on_playback_time;
+    }
+    void on_playback_new_track(metadb_handle_ptr track) override {
+        const bool is_stream = artwork_manager::is_internet_stream_track(track);
+        std::lock_guard<std::mutex> lock(g_tf_mutex);
+        g_tf_playback_path = track.is_valid() ? track->get_path() : "";
+        g_tf_playback_subsong = track.is_valid() ? track->get_subsong_index() : 0;
+        g_tf_playback_is_stream = is_stream;
+        g_tf_playback_position = 0.0;
+    }
+    void on_playback_stop(play_control::t_stop_reason) override {
+        std::lock_guard<std::mutex> lock(g_tf_mutex);
+        g_tf_playback_path.reset();
+        g_tf_playback_subsong = 0;
+        g_tf_playback_position = 0.0;
+        g_tf_playback_is_stream = false;
+    }
+    void on_playback_time(double time) override {
+        std::lock_guard<std::mutex> lock(g_tf_mutex);
+        g_tf_playback_position = time;
+    }
+    void on_playback_seek(double time) override { on_playback_time(time); }
+    void on_playback_starting(play_control::t_track_command, bool) override {}
+    void on_playback_pause(bool) override {}
+    void on_playback_edited(metadb_handle_ptr) override {}
+    void on_playback_dynamic_info(const file_info&) override {}
+    void on_playback_dynamic_info_track(const file_info&) override {}
+    void on_volume_change(float) override {}
+};
+static play_callback_static_factory_t<artwork_titleformat_playback_callback> g_artwork_titleformat_playback_callback;
+
+// Static cache fallback must never call generate_cache_key_for_track(): it
+// formats live playback metadata and can re-enter this display-field provider.
+static pfc::string8 get_static_track_cache_key(metadb_handle* handle) {
+    if (!handle) return "";
+    const char* path = handle->get_path();
+    pfc::string8 video_id = artwork_manager::extract_youtube_video_id(path);
+    if (!video_id.is_empty()) return pfc::string8("yt_") + video_id;
+    auto container = handle->get_info_ref();
+    if (container.is_valid()) {
+        const file_info& info = container->info();
+        const char* artist = info.meta_get("ARTIST", 0);
+        const char* title = info.meta_get("TITLE", 0);
+        if (artist && *artist && title && *title &&
+            strcmp(artist, "Unknown Artist") != 0 && strcmp(title, "Unknown Track") != 0)
+            return artwork_manager::generate_cache_key(artist, title);
+        // Untagged proxies must not use their station file name as a song key.
+        if (info.meta_get("@", 0)) return "";
+    }
+    if (!path || !*path || strstr(path, ".tags")) return "";
+    std::string local_path = path;
+    if (local_path.find("file://") == 0) local_path.erase(0, 7);
+    else if (local_path.find("file-relative://") == 0) local_path.erase(0, 16);
+    else if (local_path.find("://") != std::string::npos) return "";
+    const auto slash = local_path.find_last_of("/\\");
+    const std::string filename = slash == std::string::npos ? local_path : local_path.substr(slash + 1);
+    return artwork_manager::generate_cache_key("_local", filename.c_str());
+}
 
 static double g_stream_duration = 0.0;
 static double g_stream_elapsed_base = 0.0;
@@ -51,6 +123,7 @@ void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track,
     {
         std::lock_guard<std::mutex> lock(g_tf_mutex);
         pfc::string8 new_path = track.is_valid() ? track->get_path() : "";
+        const unsigned new_subsong = track.is_valid() ? track->get_subsong_index() : 0;
         pfc::string8 new_artist_full = (artist_full && artist_full[0] != '\0') ? artist_full : (artist ? artist : "");
         pfc::string8 new_artist = new_artist_full;
         if (new_artist.is_empty() && artist) {
@@ -66,7 +139,7 @@ void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track,
         // every supplied identity field still agrees with the current song.
         const bool same_song = (new_artist.is_empty() || new_artist == g_tf_artist) &&
                                (new_title.is_empty() || new_title == g_tf_title);
-        if (g_tf_track_path == new_path && !new_path.is_empty() && same_song) {
+        if (g_tf_track_path == new_path && g_tf_track_subsong == new_subsong && !new_path.is_empty() && same_song) {
             if (new_artist_full.is_empty() && !g_tf_artist_full.is_empty()) new_artist_full = g_tf_artist_full;
             if (new_artist.is_empty() && !g_tf_artist.is_empty()) new_artist = g_tf_artist;
             // Never downgrade an existing full collaboration/duet to a single trimmed artist
@@ -97,7 +170,7 @@ void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track,
 
         // If this is the same track/metadata and we already have a resolved non-Cache provider,
         // do not let a subsequent "Cache" source downgrade it.
-        if (g_tf_track_path == new_path && g_tf_artist == new_artist && g_tf_title == new_title &&
+        if (g_tf_track_path == new_path && g_tf_track_subsong == new_subsong && g_tf_artist == new_artist && g_tf_title == new_title &&
             !g_tf_source.is_empty() && g_tf_source != "Cache" && new_source == "Cache") {
             new_source = g_tf_source;
         }
@@ -110,11 +183,12 @@ void titleformat_provider::set_track_artwork_info(metadb_handle_ptr track,
             }
         }
 
-        if (g_tf_track_path != new_path || g_tf_artist != new_artist || g_tf_artist_full != new_artist_full ||
+        if (g_tf_track_path != new_path || g_tf_track_subsong != new_subsong || g_tf_artist != new_artist || g_tf_artist_full != new_artist_full ||
             g_tf_title != new_title || g_tf_album != new_album || g_tf_listeners != new_listeners ||
             g_tf_cover != new_cover || g_tf_source != new_source) {
             changed = true;
             g_tf_track_path = new_path;
+            g_tf_track_subsong = new_subsong;
             g_tf_artist = new_artist;
             g_tf_artist_full = new_artist_full;
             g_tf_title = new_title;
@@ -187,6 +261,7 @@ void titleformat_provider::clear_track_artwork_info() {
     {
         std::lock_guard<std::mutex> lock(g_tf_mutex);
         g_tf_track_path.reset();
+        g_tf_track_subsong = 0;
         g_tf_artist.reset();
         g_tf_artist_full.reset();
         g_tf_title.reset();
@@ -267,6 +342,10 @@ public:
         try {
             pfc::string8 current_artist, current_artist_full, current_title, current_album, current_listeners;
             pfc::string8 current_cover, current_source, current_status, current_path;
+            pfc::string8 playback_path;
+            unsigned current_subsong = 0, playback_subsong = 0;
+            bool playback_is_stream = false;
+            double playback_position = 0.0;
             {
                 std::lock_guard<std::mutex> lock(g_tf_mutex);
                 current_artist = g_tf_artist;
@@ -278,6 +357,11 @@ public:
                 current_source = g_tf_source;
                 current_status = g_tf_status;
                 current_path = g_tf_track_path;
+                current_subsong = g_tf_track_subsong;
+                playback_path = g_tf_playback_path;
+                playback_subsong = g_tf_playback_subsong;
+                playback_is_stream = g_tf_playback_is_stream;
+                playback_position = g_tf_playback_position;
             }
 
             pfc::string8 field_val;
@@ -285,7 +369,7 @@ public:
 
             if (handle != nullptr && !current_path.is_empty()) {
                 const char* h_path = handle->get_path();
-                if (h_path && strcmp(h_path, current_path.c_str()) == 0) {
+                if (h_path && strcmp(h_path, current_path.c_str()) == 0 && handle->get_subsong_index() == current_subsong) {
                     is_current_track = true;
                 }
             } else if (handle == nullptr) {
@@ -322,18 +406,10 @@ public:
                         break;
                     }
                     case field_playback_time: {
-                        static_api_ptr_t<playback_control> pc;
-                        if (pc->is_playing()) {
-                            metadb_handle_ptr np;
-                            if (pc->get_now_playing(np) && np.is_valid()) {
-                                pfc::string8 path = np->get_path();
-                                bool is_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
-                                if (!is_stream) {
-                                    double pos = pc->playback_get_position();
-                                    field_val = format_time_seconds(pos);
-                                    break;
-                                }
-                            }
+                        if (handle && playback_path == handle->get_path() &&
+                            playback_subsong == handle->get_subsong_index() && !playback_is_stream) {
+                            field_val = format_time_seconds(playback_position);
+                            break;
                         }
                         std::lock_guard<std::mutex> lock(g_tf_mutex);
                         auto now = std::chrono::steady_clock::now();
@@ -347,21 +423,12 @@ public:
                         break;
                     }
                     case field_playback_remaining: {
-                        static_api_ptr_t<playback_control> pc;
-                        if (pc->is_playing()) {
-                            metadb_handle_ptr np;
-                            if (pc->get_now_playing(np) && np.is_valid()) {
-                                pfc::string8 path = np->get_path();
-                                bool is_stream = (strstr(path.c_str(), "://") && !strstr(path.c_str(), "file://"));
-                                if (!is_stream) {
-                                    double len = np->get_length();
-                                    double pos = pc->playback_get_position();
-                                    if (len > 0 && len >= pos) {
-                                        field_val = format_time_seconds(len - pos);
-                                    }
-                                    break;
-                                }
-                            }
+                        if (handle && playback_path == handle->get_path() &&
+                            playback_subsong == handle->get_subsong_index() && !playback_is_stream) {
+                            const double len = handle->get_length();
+                            if (len > 0 && len >= playback_position)
+                                field_val = format_time_seconds(len - playback_position);
+                            break;
                         }
                         std::lock_guard<std::mutex> lock(g_tf_mutex);
                         if (g_stream_has_duration && g_stream_duration > 0) {
@@ -382,7 +449,7 @@ public:
 
             // 2. If field_val is empty and handle is provided, extract directly from disk cache metadata or handle's metadata / disk cache
             if (field_val.is_empty() && handle != nullptr && !core_api::is_shutting_down()) {
-                pfc::string8 key = artwork_manager::generate_cache_key_for_track(handle);
+                pfc::string8 key = get_static_track_cache_key(handle);
                 pfc::string8 c_source;
                 if (!key.is_empty()) {
                     pfc::string8 c_artist, c_title, c_album;
