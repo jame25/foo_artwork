@@ -257,6 +257,9 @@ private:
     std::string m_delayed_title;
     bool m_has_delayed_metadata;
     
+    // Invalidated on window destruction; asynchronous results must not retain this panel.
+    std::shared_ptr<bool> m_artwork_lifetime = std::make_shared<bool>(true);
+
     //Metadata infobar
 
     void clear_infobar();
@@ -483,6 +486,7 @@ artwork_ui_element::artwork_ui_element(ui_element_config::ptr cfg, ui_element_in
 }
 
 artwork_ui_element::~artwork_ui_element() {
+    m_artwork_lifetime.reset();
     g_dui_artwork_panels.remove_item(this);
     // Unsubscribe from artwork events
     unsubscribe_from_artwork_events(this);
@@ -650,6 +654,7 @@ void artwork_ui_element::notify(const GUID& p_what, t_size p_param1, const void*
 }
 
 LRESULT artwork_ui_element::OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    m_artwork_lifetime.reset();
     if (m_download_fade_timer_id) {
         KillTimer(1002);
         m_download_fade_timer_id = 0;
@@ -740,6 +745,7 @@ LRESULT artwork_ui_element::OnSize(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 }
 
 LRESULT artwork_ui_element::OnCreate(UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    m_artwork_lifetime = std::make_shared<bool>(true);
     // Start the clear panel monitoring timer if enabled
     update_clear_panel_timer();
     
@@ -1008,9 +1014,12 @@ void artwork_ui_element::on_playback_new_track(metadb_handle_ptr track) {
             cleanup_gdiplus_image();
             m_artwork_loading = true;
             
-            artwork_manager::get_artwork_async(track, [this, track](const artwork_manager::artwork_result& result) {
-                auto* heap_result = new artwork_manager::artwork_result(result);
-                ::PostMessage(m_hWnd, WM_USER_ARTWORK_LOADED, 0, reinterpret_cast<LPARAM>(heap_result));
+            std::weak_ptr<bool> lifetime = m_artwork_lifetime;
+            artwork_manager::get_artwork_async(track, [this, lifetime](const artwork_manager::artwork_result& result) {
+                if (lifetime.expired()) return;
+                // Manager completions are already on the main thread. Deliver now,
+                // before another cue can invalidate a queued window message.
+                on_artwork_loaded(result);
             });
         } else {
             
