@@ -45,6 +45,8 @@ public:
     static void force_show_noart();
     static bool is_noart_forced();
     static bool is_manual_artwork_search();
+    // Stable for all subscribers to a playback cue; changes on track/cue/manual transitions.
+    static uint64_t get_search_generation();
     static void force_external_api_autoprobe();
 
     // YouTube Video ID and direct thumbnail extraction
