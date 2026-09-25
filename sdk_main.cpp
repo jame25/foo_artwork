@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <set>
 #include <regex>
 #include <shlobj.h>
 #include <shellapi.h>
@@ -401,7 +402,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.6",
+    "1.7.7",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -418,7 +419,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.6",
+    "1.7.7",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -2618,16 +2619,48 @@ void notify_artwork_cleared(const char* source) {
 
 // Function to trigger main component search from CUI panels with metadata
 static std::atomic<uint64_t> g_main_search_generation{0};
+// Shared broadcasts can cause integrations to request artwork again. Deduplicate
+// both pending and completed bridge requests for the current cue, including
+// alternating raw/canonical metadata pairs from multiple subscribers.
+static uint64_t g_main_metadata_generation = 0;
+static std::set<std::pair<std::string, std::string>> g_main_metadata_requests;
 
 void trigger_main_component_search_with_metadata(const std::string& artist, const std::string& title) {
-	
-    // Use artwork manager directly instead of bridge functions
+    if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
+    if (!core_api::is_main_thread()) {
+        const auto generation = artwork_manager::get_search_generation();
+        fb2k::inMainThread([artist, title, generation]() {
+            if (generation != artwork_manager::get_search_generation()) return;
+            trigger_main_component_search_with_metadata(artist, title);
+        });
+        return;
+    }
+
+    // Initialize playback before recording the generation, even if a panel or
+    // external subscriber runs before the manager's playback callback.
+    metadb_handle_ptr now_playing;
+    if (playback_control::get()->get_now_playing(now_playing) && now_playing.is_valid()) {
+        artwork_manager::on_playback_new_track(now_playing);
+    }
+    if (artwork_manager::is_noart_forced()) {
+        artwork_manager::on_stream_metadata_changed(artist.c_str(), title.c_str());
+        if (artwork_manager::is_noart_forced()) return;
+    }
+    const auto generation = artwork_manager::get_search_generation();
+    if (g_main_metadata_generation != generation) {
+        g_main_metadata_requests.clear();
+        g_main_metadata_generation = generation;
+    }
+    if (!g_main_metadata_requests.emplace(artist, title).second) return;
+
+    // Register before dispatch: synchronous and deferred consumer callbacks must
+    // observe this request as already handled, including when no cover was found.
     g_artwork_loading = true;
     uint64_t gen = ++g_main_search_generation;
     
     // Call artwork manager from main thread
-    auto callback = [gen, artist, title](const artwork_manager::artwork_result& result) {
-        if (gen != g_main_search_generation.load()) {
+    auto callback = [gen, generation](const artwork_manager::artwork_result& result) {
+        if (gen != g_main_search_generation.load() || generation != artwork_manager::get_search_generation()) {
             // Stale callback from previous track/metadata - discard it!
             return;
         }
@@ -8503,8 +8536,15 @@ extern "C" __declspec(dllexport) bool foo_artwork_is_api_enabled(const char* api
 
 extern "C" __declspec(dllexport) void foo_artwork_cache_remove(const char* artist, const char* track) {
     if (!artist || !track) return;
-    pfc::string8 key = artwork_manager::generate_cache_key(artist, track);
-    async_io_manager::instance().cache_remove(key);
+    const std::string artist_copy = artist, title_copy = track;
+    auto remove = [artist_copy, title_copy]() {
+        if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
+        g_main_metadata_requests.erase({artist_copy, title_copy});
+        pfc::string8 key = artwork_manager::generate_cache_key(artist_copy.c_str(), title_copy.c_str());
+        async_io_manager::instance().cache_remove(key);
+    };
+    if (core_api::is_main_thread()) remove();
+    else fb2k::inMainThread(remove);
 }
 
 extern void refresh_all_dui_artwork_panels();
