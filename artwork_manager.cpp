@@ -347,6 +347,14 @@ static std::set<std::string> g_rejected_providers_for_current_track;
 static std::atomic<uint64_t> g_search_generation{0};
 static bool g_force_noart = false; // Main-thread state, reset on the next song or manual search.
 static bool g_manual_external_probe = false;
+// Main-thread subscribers share one recognition task per playback cue. Starting
+// a second panel/metadata request must not cancel the first panel's PCM capture.
+struct AcrPendingRequest {
+    uint64_t generation;
+    uint64_t task_id;
+    std::vector<artwork_manager::artwork_callback> callbacks;
+};
+static std::shared_ptr<AcrPendingRequest> g_pending_acrcloud_request;
 static uint64_t g_manual_search_generation = 0;
 // Keep the query that belongs to this playback cue, independently of raw tags
 // and display metadata. Manual provider cycling must reuse the same song.
@@ -751,6 +759,13 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
             return;
         }
 
+        // Explicit acoustic recognition takes precedence over cached tag matches
+        // and broadcast logos, just as it does in the track-based pipeline.
+        if (has_url_flag(g_current_stream_url.c_str(), "forceacr", now_playing)) {
+            search_acrcloud_fallback_async(cache_key, callback);
+            return;
+        }
+
         // Extract broadcast artwork if currently playing an internet stream
         pfc::string8 broadcast_art_url;
         if (is_stream) {
@@ -1073,8 +1088,8 @@ static bool check_url_string_has_flag(const char* url, const char* flag) {
     if (!url || !flag || url[0] == '\0' || flag[0] == '\0') return false;
     std::string u = normalize_url_param_delimiters(url);
     std::string f(flag);
-    std::transform(u.begin(), u.end(), u.begin(), ::tolower);
-    std::transform(f.begin(), f.end(), f.begin(), ::tolower);
+    std::transform(u.begin(), u.end(), u.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(f.begin(), f.end(), f.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     const char* prefixes[] = { "?", "&", "#", ";" };
     for (const char* p : prefixes) {
@@ -1109,9 +1124,9 @@ static pfc::string8 extract_param_value_from_url_string(const char* url, const c
     std::string u = normalize_url_param_delimiters(url);
     std::string p(param_name);
     std::string u_lower = u;
-    std::transform(u_lower.begin(), u_lower.end(), u_lower.begin(), ::tolower);
+    std::transform(u_lower.begin(), u_lower.end(), u_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     std::string p_lower = p;
-    std::transform(p_lower.begin(), p_lower.end(), p_lower.begin(), ::tolower);
+    std::transform(p_lower.begin(), p_lower.end(), p_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     const char* prefixes[] = { "?", "&", "#", ";" };
     size_t pos = std::string::npos;
@@ -1202,8 +1217,12 @@ bool artwork_manager::has_url_flag(const char* url, const char* flag, metadb_han
         return true;
     }
 
-    // 2. Check current stream URL if different from url
-    if (!g_current_stream_url.is_empty() && (!url || strcmp(url, g_current_stream_url.c_str()) != 0)) {
+    // A proxy path can carry modifiers separately from its underlying @ URL.
+    if (track.is_valid() && check_url_string_has_flag(track->get_path(), flag)) return true;
+
+    // Only inherit the active connection's flags for that connection.
+    if ((!track.is_valid() || track == g_active_playing_track) &&
+        !g_current_stream_url.is_empty() && (!url || strcmp(url, g_current_stream_url.c_str()) != 0)) {
         if (check_url_string_has_flag(g_current_stream_url.c_str(), flag)) {
             return true;
         }
@@ -1231,9 +1250,9 @@ bool artwork_manager::has_url_flag(const char* url, const char* flag, metadb_han
 
                 // Check custom tag fields directly (case-insensitive)
                 std::string f_low(flag);
-                std::transform(f_low.begin(), f_low.end(), f_low.begin(), ::tolower);
+                std::transform(f_low.begin(), f_low.end(), f_low.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 std::string f_up(flag);
-                std::transform(f_up.begin(), f_up.end(), f_up.begin(), ::toupper);
+                std::transform(f_up.begin(), f_up.end(), f_up.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
 
                 const char* tag_val = info.meta_get(f_low.c_str(), 0);
                 if (!tag_val) tag_val = info.meta_get(f_up.c_str(), 0);
@@ -1241,7 +1260,7 @@ bool artwork_manager::has_url_flag(const char* url, const char* flag, metadb_han
 
                 if (tag_val && tag_val[0] != '\0') {
                     std::string v(tag_val);
-                    std::transform(v.begin(), v.end(), v.begin(), ::tolower);
+                    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                     if (v != "0" && v != "false" && v != "no" && v != "off" && v != "disabled") {
                         return true;
                     }
@@ -1282,9 +1301,9 @@ pfc::string8 artwork_manager::get_url_param_value(const char* url, const char* p
 
                 // Check custom tag fields directly (case-insensitive)
                 std::string p_low(param_name);
-                std::transform(p_low.begin(), p_low.end(), p_low.begin(), ::tolower);
+                std::transform(p_low.begin(), p_low.end(), p_low.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 std::string p_up(param_name);
-                std::transform(p_up.begin(), p_up.end(), p_up.begin(), ::toupper);
+                std::transform(p_up.begin(), p_up.end(), p_up.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
 
                 const char* tag_val = info.meta_get(p_low.c_str(), 0);
                 if (!tag_val) tag_val = info.meta_get(p_up.c_str(), 0);
@@ -1354,7 +1373,7 @@ pfc::string8 artwork_manager::extract_broadcast_artwork_url_from_info(const file
     for (const char* field : info_field_names) {
         if (reject_station) {
             std::string fl(field);
-            std::transform(fl.begin(), fl.end(), fl.begin(), ::tolower);
+            std::transform(fl.begin(), fl.end(), fl.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (fl.find("station") != std::string::npos || fl.find("logo") != std::string::npos || 
                 fl.find("radio_cover") != std::string::npos || fl.find("stream_cover") != std::string::npos) {
                 continue;
@@ -1381,7 +1400,7 @@ pfc::string8 artwork_manager::extract_broadcast_artwork_url_from_info(const file
     for (const char* tag : tag_names) {
         if (reject_station) {
             std::string tl(tag);
-            std::transform(tl.begin(), tl.end(), tl.begin(), ::tolower);
+            std::transform(tl.begin(), tl.end(), tl.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (tl.find("station") != std::string::npos || tl.find("logo") != std::string::npos || 
                 tl.find("radio_cover") != std::string::npos || tl.find("stream_cover") != std::string::npos) {
                 continue;
@@ -1670,7 +1689,7 @@ pfc::string8 artwork_manager::extract_station_slug_from_url(const char* url) {
 
     for (size_t i = 0; i < segments.size(); ++i) {
         std::string seg_lower = segments[i];
-        std::transform(seg_lower.begin(), seg_lower.end(), seg_lower.begin(), ::tolower);
+        std::transform(seg_lower.begin(), seg_lower.end(), seg_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if ((seg_lower == "hls" || seg_lower == "listen" || seg_lower == "radio" || seg_lower == "stream") && i + 1 < segments.size()) {
             return segments[i + 1].c_str();
         }
@@ -1700,7 +1719,7 @@ static const json* find_matching_station_in_array(const json& j_array, const std
     std::string stream_lower = stream_url;
     size_t q_pos = stream_lower.find_first_of("?#;&");
     if (q_pos != std::string::npos) stream_lower = stream_lower.substr(0, q_pos);
-    std::transform(stream_lower.begin(), stream_lower.end(), stream_lower.begin(), ::tolower);
+    std::transform(stream_lower.begin(), stream_lower.end(), stream_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     // Extract path of stream_url for mount/path comparison
     std::string stream_path = stream_lower;
@@ -1726,7 +1745,7 @@ static const json* find_matching_station_in_array(const json& j_array, const std
                     if (m.is_object()) {
                         if (m.contains("path") && m["path"].is_string()) {
                             std::string path = m["path"].get<std::string>();
-                            std::transform(path.begin(), path.end(), path.begin(), ::tolower);
+                            std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                             if (!path.empty()) {
                                 if (stream_path == path || stream_path.find(path) != std::string::npos || path.find(stream_path) != std::string::npos) {
                                     return &item;
@@ -1735,7 +1754,7 @@ static const json* find_matching_station_in_array(const json& j_array, const std
                         }
                         if (m.contains("url") && m["url"].is_string()) {
                             std::string m_url = m["url"].get<std::string>();
-                            std::transform(m_url.begin(), m_url.end(), m_url.begin(), ::tolower);
+                            std::transform(m_url.begin(), m_url.end(), m_url.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                             if (!m_url.empty()) {
                                 if (stream_lower == m_url || stream_lower.find(m_url) != std::string::npos || m_url.find(stream_lower) != std::string::npos) {
                                     return &item;
@@ -1749,7 +1768,7 @@ static const json* find_matching_station_in_array(const json& j_array, const std
             // Compare against station.hls_url
             if (st.contains("hls_url") && st["hls_url"].is_string()) {
                 std::string hls = st["hls_url"].get<std::string>();
-                std::transform(hls.begin(), hls.end(), hls.begin(), ::tolower);
+                std::transform(hls.begin(), hls.end(), hls.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 if (!hls.empty()) {
                     if (stream_lower == hls || stream_lower.find(hls) != std::string::npos || hls.find(stream_lower) != std::string::npos) {
                         return &item;
@@ -1763,7 +1782,7 @@ static const json* find_matching_station_in_array(const json& j_array, const std
     // Match URL path segments (e.g. /powerhouse/) against station shortcode or mount slugs
     pfc::string8 slug_pfc = artwork_manager::extract_station_slug_from_url(stream_url.c_str());
     std::string slug = slug_pfc.c_str();
-    std::transform(slug.begin(), slug.end(), slug.begin(), ::tolower);
+    std::transform(slug.begin(), slug.end(), slug.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     for (const auto& item : j_array) {
         if (!item.is_object()) continue;
@@ -1773,7 +1792,7 @@ static const json* find_matching_station_in_array(const json& j_array, const std
 
             if (st.contains("shortcode") && st["shortcode"].is_string()) {
                 std::string sc = st["shortcode"].get<std::string>();
-                std::transform(sc.begin(), sc.end(), sc.begin(), ::tolower);
+                std::transform(sc.begin(), sc.end(), sc.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 if (!sc.empty()) {
                     std::string sc_slash = "/" + sc + "/";
                     std::string sc_end = "/" + sc;
@@ -2039,6 +2058,8 @@ void artwork_manager::start_external_stream_api_poller(const pfc::string8& strea
     if (!now_playing.is_valid() && core_api::is_main_thread()) {
         playback_control::get()->get_now_playing(now_playing);
     }
+
+    if (has_url_flag(stream_url.c_str(), "forceacr", now_playing)) return;
 
     pfc::string8 azuracast_val = get_url_param_value(stream_url.c_str(), "azuracast_api", now_playing);
     pfc::string8 radioreg_val = get_url_param_value(stream_url.c_str(), "radioreg_api", now_playing);
@@ -2832,50 +2853,45 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
         return; // Never run acoustic shift detector for local music files
     }
 
+    const bool is_force_acr_stream = artwork_manager::has_url_flag(resolved_url.c_str(), "forceacr", g_active_playing_track);
     uint64_t current_token = ++g_rms_detector_token;
 
-    async_io_manager::instance().submit_task([resolved_url, current_token]() {
+    async_io_manager::instance().submit_task([resolved_url, current_token, is_force_acr_stream]() {
         PerceptualVector prev_vec;
         auto last_trigger_time = std::chrono::steady_clock::now();
-        metadb_handle_ptr track_ref = g_active_playing_track;
-        bool is_force_acr_stream = artwork_manager::has_url_flag(resolved_url.c_str(), "forceacr", track_ref);
 
         while (true) {
             // Stable 3-second background poll sleep
             std::this_thread::sleep_for(std::chrono::seconds(3));
 
-            if (g_is_shutting_down.load() || current_token != g_rms_detector_token.load() || g_current_stream_url != resolved_url || g_current_stream_url.is_empty()) {
+            if (g_is_shutting_down.load() || current_token != g_rms_detector_token.load()) {
                 return; // Stream changed, stopped, or app exiting -> exit worker thread cleanly
             }
 
             auto now = std::chrono::steady_clock::now();
 
-            // Lock out background scans while playing a recognized track (unless forceacr stream)
-            if (!is_force_acr_stream && now < g_acrcloud_cooldown_until) {
-                prev_vec = PerceptualVector(); // Reset previous vector while cooldown is active
-                continue;
-            }
-
-            if (!g_vis_stream.is_valid()) {
-                async_io_manager::instance().post_to_main_thread([]() {
-                    get_persistent_vis_stream();
-                });
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            }
-
             PerceptualVector curr_vec;
             auto vec_promise = std::make_shared<std::promise<PerceptualVector>>();
             auto vec_future = vec_promise->get_future();
 
-            async_io_manager::instance().post_to_main_thread([vec_promise]() {
+            async_io_manager::instance().post_to_main_thread([vec_promise, current_token, is_force_acr_stream]() {
                 PerceptualVector vec;
+                // Playback handles, visualisation streams and cooldown state are
+                // owned by the main thread; the worker only reads atomic tokens.
+                if (current_token != g_rms_detector_token.load() ||
+                    (!is_force_acr_stream && std::chrono::steady_clock::now() < g_acrcloud_cooldown_until)) {
+                    vec_promise->set_value(vec);
+                    return;
+                }
                 try {
                     auto stream = get_persistent_vis_stream();
                     if (stream.is_valid()) {
                         double abs_time = 0;
                         if (stream->get_absolute_time(abs_time) && abs_time >= 0.6) {
+                            // Stay behind the playback clock, as in PCM capture.
+                            // Asking for audio ending at the clock can miss forever.
                             audio_chunk_impl chunk;
-                            if (stream->get_chunk_absolute(chunk, abs_time - 0.5, 0.5)) {
+                            if (stream->get_chunk_absolute(chunk, abs_time - 0.6, 0.5)) {
                                 vec = extract_5band_vector(chunk);
                             }
                         }
@@ -2919,7 +2935,6 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
             }
 
             // Fallback Safety Rescan: Force ACRCloud rescan every 90 seconds only for ?forceacr tagged streams
-            bool is_force_acr_stream = artwork_manager::has_url_flag(resolved_url.c_str(), "forceacr", track_ref);
             if (!trigger_needed && is_force_acr_stream && time_since_last_trigger >= 90) {
                 trigger_needed = true;
                 trigger_reason = "90-second safety periodic rescan timer elapsed";
@@ -2939,9 +2954,7 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
                             async_io_manager::instance().post_to_main_thread([resolved_url, current_token]() {
                                 if (current_token == g_rms_detector_token.load() && g_current_stream_url == resolved_url) {
                                     foo_artwork::log_printf("foo_artwork: Settling period complete. Initiating ACRCloud audio recognition...");
-                                    g_acrcloud_cooldown_until = std::chrono::steady_clock::time_point{};
-                                    refresh_all_dui_artwork_panels();
-                                    refresh_all_cui_artwork_panels();
+                                    artwork_manager::rescan_stream_acrcloud();
                                 }
                             });
                         });
@@ -3002,6 +3015,8 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
     // Local decoders can emit dynamic metadata too. Do not let those events
     // supersede local artwork with the radio cache/API-only search pipeline.
     if (active_track.is_valid() && !is_internet_stream_track(active_track)) return;
+
+    if (has_url_flag(g_current_stream_url.c_str(), "forceacr", active_track)) return;
 
     bool is_youtube = false;
     if (active_track.is_valid()) {
@@ -3311,6 +3326,7 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                     pfc::string8 track_stream_url;
                     bool is_st = artwork_manager::is_internet_stream_track(track, &track_stream_url);
                     if (is_st && (track->get_path() == stream_url || track_stream_url == stream_url || g_current_stream_url == stream_url)) {
+                    if (has_url_flag(stream_url.c_str(), "forceacr", track)) return;
                     pfc::string8 artist, title;
                     service_ptr_t<titleformat_object> script_art, script_tit;
                     static_api_ptr_t<titleformat_compiler>()->compile_safe(script_art, "%artist%");
@@ -3355,11 +3371,10 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                             if (now >= g_acrcloud_cooldown_until) {
                                 foo_artwork::log_printf("foo_artwork: Triggering ACRCloud audio recognition fallback for stream without song metadata...");
                                 pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : pfc::string8("stream_fallback");
-                                search_acrcloud_fallback_async(cache_key, [](const artwork_result& res) {
-                                    if (res.success && res.data.get_size() > 0) {
-                                        refresh_all_dui_artwork_panels();
-                                        refresh_all_cui_artwork_panels();
-                                    }
+                                const auto track = g_active_playing_track;
+                                const auto generation = g_search_generation.load();
+                                search_acrcloud_fallback_async(cache_key, [track, cache_key, generation](const artwork_result& res) {
+                                    display_manual_artwork(res, track, cache_key, generation);
                                 });
                             }
                         }
@@ -3371,6 +3386,7 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
 }
 
 void artwork_manager::cancel_acrcloud_tasks() {
+    g_pending_acrcloud_request.reset();
     g_acrcloud_task_id++;
     g_stream_monitor_token++;
     stop_rms_silence_detector();
@@ -3408,23 +3424,23 @@ void artwork_manager::force_acrcloud_lookup() {
     }, true /* is_manual_trigger */);
 }
 
-static void schedule_periodic_acrcloud_rescan(uint32_t delay_ms) {
-    pfc::string8 current_url = g_current_stream_url;
-    uint64_t current_task_id = g_acrcloud_task_id.load();
+void artwork_manager::rescan_stream_acrcloud() {
+    ASSERT_MAIN_THREAD();
+    if (g_is_shutting_down.load() || g_force_noart || !cfg_enable_acrcloud || !is_acrcloud_configured()) return;
+    metadb_handle_ptr track;
+    if (!playback_control::get()->get_now_playing(track) || !track.is_valid() ||
+        !is_internet_stream_track(track)) return;
+    if (g_pending_acrcloud_request && g_pending_acrcloud_request->task_id == g_acrcloud_task_id.load() &&
+        g_pending_acrcloud_request->generation == g_search_generation.load()) return;
 
-    async_io_manager::instance().submit_task([current_url, current_task_id, delay_ms]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms + 1000));
-
-        async_io_manager::instance().post_to_main_thread([current_url, current_task_id]() {
-            if (current_task_id == g_acrcloud_task_id.load() && g_current_stream_url == current_url) {
-                foo_artwork::log_printf("foo_artwork: Stream circuit-breaker expired. Triggering automatic periodic ACRCloud recognition...");
-                g_last_recognized_result = artwork_manager::artwork_result();
-                g_acrcloud_cooldown_until = std::chrono::steady_clock::time_point{};
-                g_vis_stream.release();
-                refresh_all_dui_artwork_panels();
-                refresh_all_cui_artwork_panels();
-            }
-        });
+    // A repaint does not request artwork. Start a new acoustic scan and deliver
+    // its result explicitly, also when there is no artwork panel subscribed.
+    g_acrcloud_cooldown_until = std::chrono::steady_clock::time_point{};
+    const uint64_t generation = ++g_search_generation;
+    g_rejected_providers_for_current_track.clear();
+    const pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : pfc::string8("stream_fallback");
+    search_acrcloud_fallback_async(cache_key, [track, cache_key, generation](const artwork_result& result) {
+        display_manual_artwork(result, track, cache_key, generation);
     });
 }
 
@@ -4288,9 +4304,20 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
         return;
     }
 
+    if (!is_manual_trigger && g_pending_acrcloud_request &&
+        g_pending_acrcloud_request->generation == request_generation &&
+        g_pending_acrcloud_request->task_id == g_acrcloud_task_id.load()) {
+        g_pending_acrcloud_request->callbacks.push_back(callback);
+        return;
+    }
+
     // Smart Trigger & Circuit-Breaker Cooldown Check (Bypassed if manual hotkey trigger)
     auto now = std::chrono::steady_clock::now();
     if (!is_manual_trigger && now < g_acrcloud_cooldown_until) {
+        if (g_last_recognized_stream_url == g_current_stream_url && g_last_recognized_result.success) {
+            callback(g_last_recognized_result);
+            return;
+        }
         auto remaining_sec = std::chrono::duration_cast<std::chrono::seconds>(g_acrcloud_cooldown_until - now).count();
         foo_artwork::log_printf("foo_artwork: ACRCloud recognition on cooldown (%d seconds remaining). Skipping scan to protect API quota.", (int)remaining_sec);
 
@@ -4302,6 +4329,20 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
     }
 
     uint64_t current_task_id = ++g_acrcloud_task_id;
+    auto request = std::make_shared<AcrPendingRequest>();
+    request->generation = request_generation;
+    request->task_id = current_task_id;
+    request->callbacks.push_back(callback);
+    g_pending_acrcloud_request = request;
+    callback = [request](const artwork_result& result) {
+        async_io_manager::instance().post_to_main_thread([request, result]() {
+            if (g_is_shutting_down.load() || request->generation != g_search_generation.load() ||
+                request->task_id != g_acrcloud_task_id.load() || g_force_noart) return;
+            if (g_pending_acrcloud_request == request) g_pending_acrcloud_request.reset();
+            auto callbacks = std::move(request->callbacks);
+            for (const auto& subscriber : callbacks) subscriber(result);
+        });
+    };
 
     if (is_manual_trigger) {
         foo_artwork::log_printf("foo_artwork: Manual Trigger: Bypassing Circuit-Breaker cooldown to force ACRCloud audio recognition...");
@@ -4395,11 +4436,13 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
 
         if (pcm_samples.empty() || pcm_samples.size() < (size_t)(sample_rate * 3.5)) {
             foo_artwork::log_printf("foo_artwork: Stream audio buffering (%u samples). Setting short 4s grace period for audio playback to settle.", (unsigned int)pcm_samples.size());
-            g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
-            artwork_result fail_res;
-            fail_res.success = false;
-            fail_res.error_message = "Stream audio buffering";
-            callback(fail_res);
+            async_io_manager::instance().post_to_main_thread([current_task_id, callback]() {
+                if (current_task_id != g_acrcloud_task_id.load()) return;
+                g_acrcloud_cooldown_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+                artwork_result fail_res;
+                fail_res.error_message = "Stream audio buffering";
+                callback(fail_res);
+            });
             return;
         }
 
