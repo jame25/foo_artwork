@@ -89,6 +89,8 @@ private:
         uint64_t generation, bool allow_wrap);
 
     // Internal async pipeline methods
+    static void check_youtube_cache_async(const pfc::string8& cache_key, bool thumbnail_only, artwork_callback callback);
+    static void search_youtube_artwork_async(const pfc::string8& artist, const pfc::string8& title, const pfc::string8& cache_key, artwork_callback callback);
     static void check_cache_async_metadata(const pfc::string8& cache_key, const pfc::string8& artist, const pfc::string8& track, artwork_callback callback);
     static void search_apis_async_metadata(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback);
 
