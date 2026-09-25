@@ -1062,107 +1062,27 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
 //=============================================================================
 
 void CUIArtworkPanel::on_album_art(album_art_data::ptr data) noexcept {
-    if (!m_hWnd) return;
-    
-    // Instead of using the provided data, use album_art_manager_v2 directly
-    static_api_ptr_t<playback_control> pc;
-    metadb_handle_ptr current_track;
-    
-    if (pc->get_now_playing(current_track) && current_track.is_valid()) {
-        try {
-            // YouTube decoder thumbnails must not overwrite the manager's API
-            // result or bypass its thumbnail-only preference and square cropping.
-            pfc::string8 stream_url;
-            artwork_manager::is_internet_stream_track(current_track, &stream_url);
-            if (!artwork_manager::extract_youtube_video_id(current_track->get_path()).is_empty() ||
-                !artwork_manager::extract_youtube_video_id(stream_url.c_str()).is_empty()) return;
-
-            // Use album_art_manager_v2 to get artwork (embedded + external per user preferences)
-            static_api_ptr_t<album_art_manager_v2> aam;
-            auto extractor = aam->open(pfc::list_single_ref_t<metadb_handle_ptr>(current_track),
-                                     pfc::list_single_ref_t<GUID>(album_art_ids::cover_front),
-                                     fb2k::noAbort);
-            
-            auto art_data = extractor->query(album_art_ids::cover_front, fb2k::noAbort);
-            if (art_data.is_valid() && art_data->get_size() > 0) {
-                load_artwork_from_data(art_data);
-                m_artwork_source = "Local artwork";
-                InvalidateRect(m_hWnd, NULL, FALSE);
-                UpdateWindow(m_hWnd);
-                return;
-            }
-        } catch (...) {
-            // SDK artwork search failed, continue with fallback
-        }
-    }
-    
-    // Fallback to original behavior if SDK fails
+    if (!m_hWnd || artwork_manager::is_noart_forced() || cfg_skip_local_artwork) return;
     try {
+        static_api_ptr_t<playback_control> pc;
+        metadb_handle_ptr current_track;
+        if (!pc->get_now_playing(current_track) || !current_track.is_valid()) return;
+
+        // Stream artwork (including local covers for m-TAGS radio) is selected
+        // by the async manager. Decoder notifications must not replace a cover
+        // chosen by APIs/ACRCloud or bypass the YouTube policy.
+        if (artwork_manager::is_internet_stream_track(current_track)) return;
+
+        // The SDK notification already contains the loaded image. Reopening
+        // album_art_manager here runs file/decoder/network I/O on the UI thread
+        // and can stall playback of m-TAGS proxies.
         if (data.is_valid() && data->get_size() > 0) {
-            
-            // CRITICAL: Block embedded artwork completely for internet streams
-            // User requirement: never check embedded artwork on internet streams
-            static_api_ptr_t<playback_control> pc;
-            metadb_handle_ptr current_track;
-            
-            if (pc->get_now_playing(current_track) && current_track.is_valid()) {
-                // Check if this is an internet stream
-                pfc::string8 file_path;
-                if (get_safe_track_path(current_track, file_path)) {
-                    bool is_internet_stream = artwork_manager::is_internet_stream_track(current_track);
-                    
-                    if (is_internet_stream) {
-                        return; // Never use embedded artwork for internet streams
-                    }
-                }
-            }
-            
-            // PRIORITY CHECK: For local files, prefer local artwork files over embedded artwork
-            bool should_prefer_local = false;
-            
-            if (current_track.is_valid()) {
-                // SAFE PATH ACCESS: Add try-catch to prevent crashes
-                // SAFE PATH ACCESS: Use safer helper function
-                pfc::string8 file_path;
-                if (get_safe_track_path(current_track, file_path)) {
-                    bool is_local_file = !artwork_manager::is_internet_stream_track(current_track);
-                    
-                    if (is_local_file) {
-                        // Check if main component already found local artwork
-                        HBITMAP main_bitmap = get_main_component_artwork_bitmap();
-                        if (main_bitmap) {
-                            should_prefer_local = true;
-                            
-                            if (copy_bitmap_from_main_component(main_bitmap)) {
-                                m_artwork_source = "Local file";
-                                // No OSD for local files - they should load silently
-                                InvalidateRect(m_hWnd, NULL, FALSE);
-                                UpdateWindow(m_hWnd); // Force immediate repaint
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // If no local artwork found or this is a stream, use embedded artwork
-            if (!should_prefer_local) {
-                load_artwork_from_data(data);
-                m_artwork_source = "Local file"; // Use consistent label for all local sources
-            }
-        } else {
-            // Keep previous artwork visible - don't clear source info
-            // m_artwork_source remains unchanged to preserve last known source
+            m_artwork_source = "Local artwork";
+            load_artwork_from_data(data);
+            InvalidateRect(m_hWnd, NULL, FALSE);
         }
-        
-        InvalidateRect(m_hWnd, NULL, FALSE);
-        UpdateWindow(m_hWnd); // Force immediate repaint
     } catch (...) {
-        // Handle any exceptions gracefully
-        // Keep previous artwork visible - don't clear source info
-        // m_artwork_source remains unchanged to preserve last known source
-        InvalidateRect(m_hWnd, NULL, FALSE);
-        UpdateWindow(m_hWnd); // Force immediate repaint
+        // Keep the selected artwork if the notification cannot be displayed.
     }
 }
 
