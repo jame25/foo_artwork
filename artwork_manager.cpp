@@ -710,10 +710,12 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
         bool is_youtube = !yt_video_id.is_empty();
 
         pfc::string8 cache_key;
-        if (is_youtube) {
+        if (cfg_single_file_cache) {
+            cache_key = "current";
+        } else if (is_youtube) {
             cache_key = pfc::string8("yt_") + yt_video_id;
         } else {
-            cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(artist_str, track_str);
+            cache_key = generate_cache_key(artist_str, track_str);
         }
 
         uint64_t gen = g_search_generation.load();
@@ -753,9 +755,9 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
         };
         callback = wrapped_callback;
 
-        // YouTube decoder artwork and cached thumbnails must not bypass API policy.
+        // Reuse YouTube cache entries without bypassing the selected provider policy.
         if (is_youtube) {
-            search_apis_async(artist_str, track_str, cache_key, callback);
+            search_youtube_artwork_async(artist_str, track_str, cache_key, callback);
             return;
         }
 
@@ -961,6 +963,64 @@ bool artwork_manager::crop_image_to_square_jpeg(const t_uint8* in_data, size_t i
     return (bytes_read == out_size && out_size > 0);
 }
 
+void artwork_manager::check_youtube_cache_async(const pfc::string8& cache_key, bool thumbnail_only, artwork_callback callback) {
+    // "current" belongs to the previous track until a new result is written.
+    if (!cfg_enable_disk_cache || cfg_single_file_cache || cache_key.is_empty() || cache_key == "current") {
+        callback(artwork_result());
+        return;
+    }
+
+    const uint64_t generation = g_search_generation.load();
+    async_io_manager::instance().cache_get_async(cache_key,
+        [cache_key, thumbnail_only, callback, generation](bool success, const pfc::array_t<t_uint8>& data, const pfc::string8&) {
+            if (generation != g_search_generation.load() || g_force_noart) return;
+
+            pfc::string8 artist, title, album, source;
+            if (!success || data.get_size() == 0 ||
+                !async_io_manager::instance().cache_get_metadata(cache_key, artist, title, album, source)) {
+                callback(artwork_result());
+                return;
+            }
+
+            // Older caches can contain decoder art or thumbnails from thumbnail-only
+            // mode. Only a known API result may satisfy an API-first lookup.
+            const bool allowed_source = thumbnail_only ? source == "YouTube Thumbnail" :
+                (source == "iTunes" || source == "Deezer" || source == "Last.fm" ||
+                 source == "MusicBrainz" || source == "Discogs");
+            if (!allowed_source || g_rejected_providers_for_current_track.count(source.c_str())) {
+                callback(artwork_result());
+                return;
+            }
+
+            validate_and_complete_result(data, [callback, source, generation](const artwork_result& cached) {
+                if (generation != g_search_generation.load() || g_force_noart) return;
+                artwork_result result = cached;
+                // Use the cached provider even if another panel has resolved artwork.
+                result.source = source;
+                if (result.success) foo_artwork::log_printf("foo_artwork: SUCCESS - YouTube artwork loaded from cache (%s)", source.c_str());
+                callback(result);
+            }, cache_key.c_str());
+        });
+}
+
+void artwork_manager::search_youtube_artwork_async(const pfc::string8& artist, const pfc::string8& title, const pfc::string8& cache_key, artwork_callback callback) {
+    // Thumbnail-only mode performs its cache lookup in the thumbnail fetcher.
+    // Explicit recognition must still take precedence over cached API results.
+    if (cfg_skip_youtube_apis || has_url_flag(g_current_stream_url.c_str(), "forceacr", g_active_playing_track)) {
+        search_apis_async(artist, title, cache_key, callback);
+        return;
+    }
+    check_youtube_cache_async(cache_key, false, [artist, title, cache_key, callback](const artwork_result& result) {
+        if (result.success) {
+            remember_search_metadata(!result.artist.is_empty() ? result.artist : artist,
+                !result.title.is_empty() ? result.title : title, cache_key);
+            callback(result);
+        } else {
+            search_apis_async(artist, title, cache_key, callback);
+        }
+    });
+}
+
 void artwork_manager::search_youtube_thumbnail_async(const pfc::string8& video_id, const pfc::string8& cache_key, artwork_callback callback, bool crop_to_square) {
     if (video_id.is_empty()) {
         artwork_result fail;
@@ -975,10 +1035,6 @@ void artwork_manager::search_youtube_thumbnail_async(const pfc::string8& video_i
     const pfc::string8 artist = !g_last_stream_artist_full.is_empty() ? g_last_stream_artist_full : g_last_stream_artist;
     const pfc::string8 title = g_last_stream_title;
     const pfc::string8 album = g_youtube_extracted_album;
-    foo_artwork::log_printf("foo_artwork: Fetching YouTube thumbnail '%s' (crop_to_square=%s)",
-                            video_id.c_str(), should_crop ? "true" : "false");
-    titleformat_provider::set_status("Fetching YouTube thumbnail...");
-
     auto prepare_thumbnail = [should_crop, artist, title, album](const artwork_result& downloaded) {
         artwork_result result = downloaded;
         if (!result.success || result.data.get_size() == 0) {
@@ -1010,7 +1066,7 @@ void artwork_manager::search_youtube_thumbnail_async(const pfc::string8& video_i
                 async_io_manager::instance().cache_set_async(cache_key, result.data);
                 async_io_manager::instance().cache_set_metadata(cache_key, result.artist, result.title, result.album, result.source);
             }
-            if (cfg_single_file_cache) {
+            if (cfg_single_file_cache && (!cfg_enable_disk_cache || cache_key != "current")) {
                 async_io_manager::instance().cache_set_async("current", result.data);
                 async_io_manager::instance().cache_set_metadata("current", result.artist, result.title, result.album, result.source);
             }
@@ -1022,19 +1078,42 @@ void artwork_manager::search_youtube_thumbnail_async(const pfc::string8& video_i
         callback(result);
     };
 
-    pfc::string8 maxres_url = pfc::string8("https://img.youtube.com/vi/") + video_id + "/maxresdefault.jpg";
-    download_image_async(maxres_url.c_str(), [video_id, prepare_thumbnail, complete, generation](const artwork_result& res) {
-        if (generation != g_search_generation.load()) return;
-        artwork_result result = prepare_thumbnail(res);
-        if (result.success && res.data.get_size() > 1024) {
-            complete(result);
-            return;
-        }
-        pfc::string8 hq_url = pfc::string8("https://img.youtube.com/vi/") + video_id + "/hqdefault.jpg";
-        download_image_async(hq_url.c_str(), [prepare_thumbnail, complete](const artwork_result& res) {
-            complete(prepare_thumbnail(res));
+    // A cached thumbnail is eligible only after the API/recognition fallback has
+    // selected it, or when the user explicitly chose thumbnail-only mode.
+    check_youtube_cache_async(cache_key, true,
+        [video_id, should_crop, prepare_thumbnail, complete, generation](const artwork_result& cached) {
+            if (generation != g_search_generation.load()) return;
+            if (cached.success) {
+                artwork_result result = cached;
+                if (should_crop) {
+                    pfc::array_t<t_uint8> cropped;
+                    result.success = crop_image_to_square_jpeg(result.data.get_ptr(), result.data.get_size(), cropped);
+                    if (result.success) result.data = cropped;
+                }
+                if (result.success) {
+                    result.mime_type = detect_mime_type(result.data.get_ptr(), result.data.get_size());
+                    complete(result);
+                    return;
+                }
+            }
+
+            foo_artwork::log_printf("foo_artwork: Fetching YouTube thumbnail '%s' (crop_to_square=%s)",
+                                    video_id.c_str(), should_crop ? "true" : "false");
+            titleformat_provider::set_status("Fetching YouTube thumbnail...");
+            pfc::string8 maxres_url = pfc::string8("https://img.youtube.com/vi/") + video_id + "/maxresdefault.jpg";
+            download_image_async(maxres_url.c_str(), [video_id, prepare_thumbnail, complete, generation](const artwork_result& res) {
+                if (generation != g_search_generation.load()) return;
+                artwork_result result = prepare_thumbnail(res);
+                if (result.success && res.data.get_size() > 1024) {
+                    complete(result);
+                    return;
+                }
+                pfc::string8 hq_url = pfc::string8("https://img.youtube.com/vi/") + video_id + "/hqdefault.jpg";
+                download_image_async(hq_url.c_str(), [prepare_thumbnail, complete](const artwork_result& res) {
+                    complete(prepare_thumbnail(res));
+                });
+            });
         });
-    });
 }
 static std::string normalize_url_param_delimiters(const char* url) {
     if (!url || url[0] == '\0') return "";
@@ -3122,10 +3201,12 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         bool is_youtube = !yt_video_id.is_empty();
 
         pfc::string8 cache_key;
-        if (is_youtube) {
+        if (cfg_single_file_cache) {
+            cache_key = "current";
+        } else if (is_youtube) {
             cache_key = pfc::string8("yt_") + yt_video_id;
         } else {
-            cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art, clean_tit);
+            cache_key = generate_cache_key(clean_art, clean_tit);
         }
 
         remember_search_metadata(clean_art, clean_tit, cache_key);
@@ -3179,7 +3260,7 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
 
         // Apply the same YouTube policy to later metadata cues.
         if (is_youtube) {
-            search_apis_async(clean_art, clean_tit, cache_key, [apply_success_result](const artwork_result& res) {
+            search_youtube_artwork_async(clean_art, clean_tit, cache_key, [apply_success_result](const artwork_result& res) {
                 if (res.success && res.data.get_size() > 0) apply_success_result(res);
             });
             return;
@@ -3639,9 +3720,9 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
     };
     callback = wrapped_callback;
 
-    // YouTube decoder artwork and cached thumbnails must not bypass API policy.
+    // Reuse YouTube cache entries without bypassing the selected provider policy.
     if (is_youtube) {
-        search_apis_async(artist, track_name, cache_key, callback);
+        search_youtube_artwork_async(artist, track_name, cache_key, callback);
         return;
     }
 
