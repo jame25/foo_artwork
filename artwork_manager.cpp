@@ -744,7 +744,12 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
                     titleformat_provider::set_track_artwork_info(now_track, display_artist.c_str(), display_title.c_str(),
                         cache_file.c_str(), effective_source.c_str(), display_artist.c_str(), res.album.c_str());
                 }
-                titleformat_provider::set_status((pfc::string8("Artwork loaded from ") + effective_source).c_str());
+                // Metadata-driven radio requests must publish the same detailed
+                // status as track requests, including cache hits and ACR results.
+                int w = 0, h = 0;
+                if (res.data.get_size() > 0) get_image_dimensions_from_data(res.data.get_ptr(), res.data.get_size(), w, h);
+                titleformat_provider::set_status_artwork_loaded(effective_source.c_str(), w, h,
+                    res.data.get_size(), res.is_acrcloud_recognized);
                 artwork_result final_res = res;
                 final_res.source = effective_source;
                 original_callback(final_res);
@@ -982,11 +987,13 @@ void artwork_manager::check_youtube_cache_async(const pfc::string8& cache_key, b
                 return;
             }
 
-            // Older caches can contain decoder art or thumbnails from thumbnail-only
-            // mode. Only a known API result may satisfy an API-first lookup.
-            const bool allowed_source = thumbnail_only ? source == "YouTube Thumbnail" :
+            // A thumbnail is also a completed per-video result. Replaying it must
+            // not repeat failed API searches or spend another recognition request.
+            // Thumbnail-only mode still excludes API covers; unknown decoder art
+            // remains ineligible in either mode.
+            const bool allowed_source = source == "YouTube Thumbnail" || (!thumbnail_only &&
                 (source == "iTunes" || source == "Deezer" || source == "Last.fm" ||
-                 source == "MusicBrainz" || source == "Discogs");
+                 source == "MusicBrainz" || source == "Discogs"));
             if (!allowed_source || g_rejected_providers_for_current_track.count(source.c_str())) {
                 callback(artwork_result());
                 return;
@@ -1078,8 +1085,8 @@ void artwork_manager::search_youtube_thumbnail_async(const pfc::string8& video_i
         callback(result);
     };
 
-    // A cached thumbnail is eligible only after the API/recognition fallback has
-    // selected it, or when the user explicitly chose thumbnail-only mode.
+    // Also reuse the thumbnail when explicitly selected by fallback or by the
+    // thumbnail-only preference.
     check_youtube_cache_async(cache_key, true,
         [video_id, should_crop, prepare_thumbnail, complete, generation](const artwork_result& cached) {
             if (generation != g_search_generation.load()) return;
@@ -3024,14 +3031,16 @@ static void start_rms_silence_detector(const pfc::string8& stream_url) {
 
                 async_io_manager::instance().post_to_main_thread([resolved_url, current_token, trigger_reason]() {
                     if (current_token == g_rms_detector_token.load() && g_current_stream_url == resolved_url) {
-                        foo_artwork::log_printf("foo_artwork: %s. Waiting 2s for new song to settle before sampling...", trigger_reason);
+                        foo_artwork::log_printf("foo_artwork: %s. Waiting 6s for new song to settle before sampling...", trigger_reason);
 
-                        // Schedule 2-second post-transition settling delay on background thread
-                        async_io_manager::instance().submit_task([resolved_url, current_token]() {
-                            std::this_thread::sleep_for(std::chrono::seconds(2));
+                        // A manual scan during settling supersedes this scheduled scan.
+                        const uint64_t task_id = g_acrcloud_task_id.load();
+                        async_io_manager::instance().submit_task([resolved_url, current_token, task_id]() {
+                            std::this_thread::sleep_for(std::chrono::seconds(6));
 
-                            async_io_manager::instance().post_to_main_thread([resolved_url, current_token]() {
-                                if (current_token == g_rms_detector_token.load() && g_current_stream_url == resolved_url) {
+                            async_io_manager::instance().post_to_main_thread([resolved_url, current_token, task_id]() {
+                                if (!g_is_shutting_down.load() && current_token == g_rms_detector_token.load() &&
+                                    task_id == g_acrcloud_task_id.load() && g_current_stream_url == resolved_url) {
                                     foo_artwork::log_printf("foo_artwork: Settling period complete. Initiating ACRCloud audio recognition...");
                                     artwork_manager::rescan_stream_acrcloud();
                                 }
@@ -4663,6 +4672,11 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                         return;
                     }
 
+                    // The saved image belongs to the previous recognition. If
+                    // this song's cover lookup fails, it must not be reused as
+                    // an unchanged match or returned during the new cooldown.
+                    g_last_recognized_result = artwork_result();
+                    g_last_recognized_stream_url.reset();
                     g_last_recognized_artist = rec_meta.first_artist.c_str();
                     g_last_recognized_title = rec_meta.clean_title.c_str();
                     remember_search_metadata(rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str(), cache_key);
@@ -4690,7 +4704,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                             }
                         }
                         callback(res_acr);
-                    }, api_order, 0, false);
+                    }, api_order, 0, false, current_task_id);
                     return;
                 }
             } else {
@@ -4722,13 +4736,14 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
     });
 }
 
-void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index, bool force_enable_apis) {
+void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index, bool force_enable_apis, uint64_t recognition_task_id) {
     ASSERT_MAIN_THREAD();
     if (g_is_shutting_down.load() || core_api::is_shutting_down()) return;
     const uint64_t generation = g_search_generation.load();
     auto original_callback = callback;
-    callback = [generation, original_callback](const artwork_result& result) {
-        if (generation != g_search_generation.load()) return;
+    callback = [generation, original_callback, recognition_task_id](const artwork_result& result) {
+        if (generation != g_search_generation.load() ||
+            (recognition_task_id != 0 && recognition_task_id != g_acrcloud_task_id.load())) return;
         original_callback(result);
     };
     
@@ -4768,7 +4783,7 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
     
     if (!api_enabled) {
         // Skip this API and try the next one
-        search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1, force_enable_apis);
+        search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1, force_enable_apis, recognition_task_id);
         return;
     }
     
@@ -4784,7 +4799,7 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
     // Check if this provider has been rejected by user for current track
     if (g_rejected_providers_for_current_track.find(current_api_name.c_str()) != g_rejected_providers_for_current_track.end()) {
         foo_artwork::log_printf("foo_artwork: Skipping rejected provider '%s' for current track.", current_api_name.c_str());
-        search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1, force_enable_apis);
+        search_apis_by_priority(artist, track, cache_key, callback, api_order, index + 1, force_enable_apis, recognition_task_id);
         return;
     }
 
@@ -4793,6 +4808,9 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
     api_dedup_key += artist.c_str();
     api_dedup_key += "|";
     api_dedup_key += track.c_str();
+    // Acoustic cover searches must retain their owning task through retries and
+    // cannot share a completion that cancels recognition as a text-search result.
+    api_dedup_key += "|acr:" + std::to_string(recognition_task_id);
 
     {
         std::lock_guard<std::mutex> lock(g_in_flight_mutex);
@@ -4835,9 +4853,11 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
     }
     
     // Create a callback that will either return success or try the next API for all pending callbacks
-    auto api_callback = [artist, track, cache_key, api_order, index, force_enable_apis, api_dedup_key, generation](const artwork_result& in_result) {
-        if (generation != g_search_generation.load() || g_force_noart) return;
+    auto api_callback = [artist, track, cache_key, api_order, index, force_enable_apis, api_dedup_key, generation, recognition_task_id](const artwork_result& in_result) {
+        if (generation != g_search_generation.load() || g_force_noart ||
+            (recognition_task_id != 0 && recognition_task_id != g_acrcloud_task_id.load())) return;
         artwork_result result = in_result;
+        if (recognition_task_id != 0) result.is_acrcloud_recognized = true;
         pfc::string8 api_name;
         switch (api_order[index]) {
             case ApiType::iTunes: api_name = "iTunes"; break;
@@ -4869,7 +4889,10 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
             if (result.data.get_size() > 0) get_image_dimensions_from_data(result.data.get_ptr(), result.data.get_size(), w, h);
             titleformat_provider::set_status_artwork_loaded(api_name.c_str(), w, h, (size_t)result.data.get_size(), result.is_acrcloud_recognized);
 
-            cancel_acrcloud_tasks(); // Cancel any pending background ACRCloud sampling tasks
+            // This provider may be resolving the cover for an ACRCloud match.
+            // Cancelling its owner here discards all recognition subscribers,
+            // including the manual command's callback that displays the image.
+            if (recognition_task_id == 0) cancel_acrcloud_tasks();
             pfc::string8 disp_artist;
             if (!g_last_stream_artist_full.is_empty()) {
                 disp_artist = g_last_stream_artist_full;
@@ -4927,7 +4950,7 @@ void artwork_manager::search_apis_by_priority(const pfc::string8& artist, const 
                     if (cb) cb(next_res);
                 }
             };
-            search_apis_by_priority(artist, track, cache_key, combined_cb, api_order, index + 1, force_enable_apis);
+            search_apis_by_priority(artist, track, cache_key, combined_cb, api_order, index + 1, force_enable_apis, recognition_task_id);
         }
     };
 
