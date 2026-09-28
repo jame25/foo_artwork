@@ -59,6 +59,8 @@ extern cfg_int cfg_noart_cycle_mode; // 0 = Single / Disabled, 1 = Sequential, 2
 extern cfg_bool cfg_disable_instream_artwork;
 extern cfg_bool cfg_disable_ext_api_autoprobe;
 extern cfg_bool cfg_skip_youtube_apis;
+extern cfg_bool cfg_acrcloud_fallback_radio;
+extern cfg_bool cfg_acrcloud_fallback_local;
 extern cfg_string cfg_custom_blacklist;
 extern cfg_bool cfg_trim_secondary_artists;
 extern cfg_bool cfg_normalize_api_metadata_case;

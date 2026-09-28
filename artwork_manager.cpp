@@ -345,6 +345,8 @@ static pfc::string8 g_active_resolved_provider;
 static pfc::string8 g_active_cache_key;
 static std::set<std::string> g_rejected_providers_for_current_track;
 static std::atomic<uint64_t> g_search_generation{0};
+// Main-thread state: at most one optional recognition attempt per playback cue.
+static uint64_t g_automatic_acrcloud_generation = 0;
 static bool g_force_noart = false; // Main-thread state, reset on the next song or manual search.
 static bool g_manual_external_probe = false;
 // Main-thread subscribers share one recognition task per playback cue. Starting
@@ -607,7 +609,7 @@ class artwork_manager_playback_callback : public play_callback_static {
 public:
     unsigned get_flags() override {
         return flag_on_playback_starting | flag_on_playback_new_track | flag_on_playback_stop |
-            flag_on_playback_dynamic_info_track;
+            flag_on_playback_dynamic_info | flag_on_playback_dynamic_info_track;
     }
     void on_playback_starting(play_control::t_track_command, bool) override {
         // Also reset when reconnecting to the same URL or replaying the same handle.
@@ -622,14 +624,20 @@ public:
     void on_playback_seek(double) override {}
     void on_playback_pause(bool) override {}
     void on_playback_edited(metadb_handle_ptr) override {}
-    void on_playback_dynamic_info(const file_info&) override {}
+    void on_playback_dynamic_info(const file_info& info) override { on_playback_dynamic_info_track(info); }
     void on_playback_dynamic_info_track(const file_info& info) override {
         const char* artist = info.meta_get("ARTIST", 0);
         const char* title = info.meta_get("TITLE", 0);
         if (!title || !*title) title = info.meta_get("STREAMTITLE", 0);
         if (!title || !*title) title = info.meta_get("ICY_TITLE", 0);
         // Keep the cue together; never combine a new artist with the previous title.
-        if (title && *title) artwork_manager::on_stream_metadata_changed(artist ? artist : "", title);
+        if ((title && *title) || (artist && *artist)) {
+            const char* inverted_tag = info.meta_get("STREAM_INVERTED", 0);
+            const bool inverted = (inverted_tag && strcmp(inverted_tag, "1") == 0) ||
+                artwork_manager::has_url_flag(g_current_stream_url.c_str(), "inverted", g_active_playing_track);
+            artwork_manager::on_stream_metadata_changed(artist ? artist : "", title ? title : "",
+                nullptr, nullptr, nullptr, inverted);
+        }
     }
     void on_playback_time(double) override {}
     void on_volume_change(float) override {}
@@ -1367,8 +1375,15 @@ pfc::string8 artwork_manager::get_url_param_value(const char* url, const char* p
         if (!val.is_empty()) return val;
     }
 
-    // 2. Check current stream URL if different from url
-    if (!g_current_stream_url.is_empty() && (!url || strcmp(url, g_current_stream_url.c_str()) != 0)) {
+    // Proxy paths may carry modifiers independently of their underlying @ URL.
+    if (track.is_valid()) {
+        pfc::string8 val = extract_param_value_from_url_string(track->get_path(), param_name);
+        if (!val.is_empty()) return val;
+    }
+
+    // Only inherit parameters from the requested track's active connection.
+    if ((!track.is_valid() || track == g_active_playing_track) &&
+        !g_current_stream_url.is_empty() && (!url || strcmp(url, g_current_stream_url.c_str()) != 0)) {
         pfc::string8 val = extract_param_value_from_url_string(g_current_stream_url.c_str(), param_name);
         if (!val.is_empty()) return val;
     }
@@ -1413,7 +1428,7 @@ pfc::string8 artwork_manager::get_url_param_value(const char* url, const char* p
 }
 
 int artwork_manager::extract_coversync_seconds(metadb_handle_ptr track) {
-    pfc::string8 sync_val = artwork_manager::get_url_param_value(g_current_stream_url.c_str(), "coversync", track);
+    pfc::string8 sync_val = artwork_manager::get_url_param_value(track.is_valid() ? track->get_path() : nullptr, "coversync", track);
     if (!sync_val.is_empty()) {
         try {
             return std::atoi(sync_val.c_str());
@@ -2474,7 +2489,7 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                                 if (!reject_station && !cfg_disable_instream_artwork && !art_url_c.empty() && (art_url_c.find("http://") == 0 || art_url_c.find("https://") == 0) &&
                                     (g_rejected_providers_for_current_track.find("Broadcast Artwork") == g_rejected_providers_for_current_track.end())) {
                                     pfc::string8 cache_key = cfg_single_file_cache ? pfc::string8("current") : generate_cache_key(clean_art.c_str(), clean_tit.c_str());
-                                    search_broadcast_artwork_async(art_url_c.c_str(), cache_key, [clean_art, clean_tit, clean_art_full, album_c, listeners_c, cache_key](const artwork_result& res) {
+                                    search_broadcast_artwork_async(art_url_c.c_str(), cache_key, [clean_art, clean_tit, clean_art_full, album_c, listeners_c, cache_key, applied_sync_delay](const artwork_result& res) {
                                         if (res.success) {
                                             g_last_stream_artist = clean_art;
                                             g_last_stream_artist_full = clean_art_full;
@@ -2505,11 +2520,11 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                                             refresh_all_dui_artwork_panels();
                                             refresh_all_cui_artwork_panels();
                                         } else {
-                                            artwork_manager::on_stream_metadata_changed(clean_art.c_str(), clean_tit.c_str(), clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str());
+                                            artwork_manager::on_stream_metadata_changed(clean_art.c_str(), clean_tit.c_str(), clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str(), false, applied_sync_delay);
                                         }
                                     });
                                 } else {
-                                    artwork_manager::on_stream_metadata_changed(clean_art.c_str(), clean_tit.c_str(), clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str());
+                                    artwork_manager::on_stream_metadata_changed(clean_art.c_str(), clean_tit.c_str(), clean_art_full.c_str(), album_c.c_str(), listeners_c.c_str(), false, applied_sync_delay);
                                 }
                             };
 
@@ -2517,10 +2532,10 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                             pc_resp->get_now_playing(cur_track);
                             bool is_first_cue = !g_has_received_first_stream_cue.exchange(true);
                             int sync_delay_sec = is_first_cue ? 0 : extract_coversync_seconds(cur_track);
+                            uint64_t cue_token = ++g_coversync_cue_token;
                             if (sync_delay_sec > 0) {
                                 g_pending_external_api_artist = clean_art.c_str();
                                 g_pending_external_api_title = clean_tit.c_str();
-                                uint64_t cue_token = ++g_coversync_cue_token;
                                 foo_artwork::log_printf("foo_artwork: Applying coversync delay of %d seconds for external API track cue '%s - %s'", 
                                                        sync_delay_sec, clean_art.c_str(), clean_tit.c_str());
                                 char status_buf[128];
@@ -2551,7 +2566,8 @@ void artwork_manager::poll_external_stream_api(const pfc::string8& endpoint_url,
                             } else {
                                 apply_cue(clean_art.c_str(), clean_tit.c_str(), art_url, album, listeners, track_duration, track_elapsed, 0);
                             }
-                        } else {
+                        } else if (!is_different_from_last && g_pending_external_api_artist.is_empty() &&
+                                   g_pending_external_api_title.is_empty()) {
                             if (track_duration > 0.0) {
                                 titleformat_provider::set_stream_track_timing(track_duration, track_elapsed);
                             }
@@ -3086,7 +3102,7 @@ static void log_simplified_track_info(const char* artist, const char* title) {
     foo_artwork::log_track_info("foo_artwork: '%s - %s' %s", artist, title, ts.c_str());
 }
 
-void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const char* raw_title, const char* raw_artist_full, const char* raw_album, const char* raw_listeners) {
+void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const char* raw_title, const char* raw_artist_full, const char* raw_album, const char* raw_listeners, bool inverted, int applied_sync_delay) {
     ASSERT_MAIN_THREAD();
     if (!raw_artist || !raw_title) return;
 
@@ -3104,7 +3120,8 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
     // supersede local artwork with the radio cache/API-only search pipeline.
     if (active_track.is_valid() && !is_internet_stream_track(active_track)) return;
 
-    if (has_url_flag(g_current_stream_url.c_str(), "forceacr", active_track)) return;
+    if (has_url_flag(g_current_stream_url.c_str(), "bypass", active_track) ||
+        has_url_flag(g_current_stream_url.c_str(), "forceacr", active_track)) return;
 
     bool is_youtube = false;
     if (active_track.is_valid()) {
@@ -3128,10 +3145,18 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
     }
     StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(raw_artist, raw_title, is_youtube, is_youtube && (g_is_youtube_art_track || g_is_youtube_topic_track));
     if (!meta.is_valid_search || meta.is_station_or_url) return;
+    // Invert complete fields after parsing a combined title, just as the panels do.
+    if (!is_youtube && inverted) {
+        std::swap(meta.clean_artist, meta.clean_title);
+        meta.first_artist = MetadataCleaner::extract_first_artist(meta.clean_artist.c_str());
+        meta.second_artist = MetadataCleaner::extract_second_artist(meta.clean_artist.c_str());
+        meta.primary_title = MetadataCleaner::extract_primary_title(meta.clean_title.c_str());
+    }
 
     pfc::string8 clean_art = meta.first_artist.c_str();
     pfc::string8 clean_tit = meta.clean_title.c_str();
     pfc::string8 clean_art_full = (!is_youtube && raw_artist_full && raw_artist_full[0] != '\0') ? raw_artist_full : meta.clean_artist.c_str();
+    const bool artist_was_inferred = !is_youtube && meta.artist_was_inferred;
     pfc::string8 clean_album = raw_album ? raw_album : "";
     pfc::string8 clean_listeners = raw_listeners ? raw_listeners : "";
 
@@ -3149,7 +3174,7 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         return;
     }
 
-    auto execute_stream_cue = [clean_art, clean_tit, clean_art_full, clean_album, clean_listeners](int applied_delay) {
+    auto execute_stream_cue = [clean_art, clean_tit, clean_art_full, clean_album, clean_listeners, artist_was_inferred, applied_sync_delay](int applied_delay) {
         ASSERT_MAIN_THREAD();
         static_api_ptr_t<playback_control> pc_cue;
         if (!pc_cue->is_playing() && !pc_cue->is_paused()) return;
@@ -3159,7 +3184,8 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         titleformat_provider::reset_stream_track_timer(applied_delay);
 
         g_last_stream_artist = clean_art;
-        g_last_stream_artist_full = clean_art_full;
+        // Keep inferred names provisional so a reversed API match can correct them.
+        g_last_stream_artist_full = artist_was_inferred ? pfc::string8() : clean_art_full;
         g_last_stream_title = clean_tit;
 
         g_force_noart = false;
@@ -3185,7 +3211,7 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         pfc::string8 az_param = get_url_param_value(g_current_stream_url.c_str(), "azuracast_api", track);
         pfc::string8 rr_param = get_url_param_value(g_current_stream_url.c_str(), "radioreg_api", track);
         bool force_autoprobe = g_manual_external_probe || has_url_flag(g_current_stream_url.c_str(), "ext_api_autoprobe", track);
-        if (az_param.is_empty() && rr_param.is_empty() && !force_autoprobe) {
+        if (applied_sync_delay < 0 && az_param.is_empty() && rr_param.is_empty() && !force_autoprobe) {
             stop_external_stream_api_poller();
         }
 
@@ -3224,7 +3250,7 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         bool try_broadcast_artwork = !broadcast_art_url.is_empty() &&
             (g_rejected_providers_for_current_track.find("Broadcast Artwork") == g_rejected_providers_for_current_track.end());
 
-        auto apply_success_result = [gen, clean_art, clean_tit, clean_art_full, clean_album, clean_listeners, cache_key](const artwork_result& res) {
+        auto apply_success_result = [gen, clean_art, clean_tit, clean_art_full, clean_album, clean_listeners, cache_key, artist_was_inferred](const artwork_result& res) {
             if (gen != g_search_generation.load() || clean_art != g_last_stream_artist || clean_tit != g_last_stream_title) {
                 // A newer metadata cue or track has arrived - discard this stale result
                 return;
@@ -3238,7 +3264,7 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
                 g_active_source = res.source;
             }
             pfc::string8 effective_source = (!g_active_resolved_provider.is_empty() && g_active_resolved_provider != "Cache") ? g_active_resolved_provider : res.source;
-            pfc::string8 final_artist = (res.is_acrcloud_recognized && !res.artist.is_empty()) ? res.artist :
+            pfc::string8 final_artist = ((res.is_acrcloud_recognized || artist_was_inferred) && !res.artist.is_empty()) ? res.artist :
                 (!clean_art_full.is_empty() ? clean_art_full : (!res.artist.is_empty() ? res.artist : clean_art));
             pfc::string8 final_title = !res.title.is_empty() ? res.title : clean_tit;
             pfc::string8 final_album = !res.album.is_empty() ? res.album : clean_album;
@@ -3354,12 +3380,20 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         }
     };
 
+    if (applied_sync_delay >= 0) {
+        execute_stream_cue(applied_sync_delay);
+        return;
+    }
+
     bool is_first_cue = !g_has_received_first_stream_cue.exchange(true);
     int sync_delay_sec = is_first_cue ? 0 : extract_coversync_seconds(active_track);
+    // Every newly accepted cue supersedes the previous timer, even with no delay.
+    uint64_t cue_token = ++g_coversync_cue_token;
+    g_pending_external_api_artist.reset();
+    g_pending_external_api_title.reset();
     if (sync_delay_sec > 0) {
         g_pending_external_api_artist = clean_art.c_str();
         g_pending_external_api_title = clean_tit.c_str();
-        uint64_t cue_token = ++g_coversync_cue_token;
         foo_artwork::log_printf("foo_artwork: Applying coversync delay of %d seconds for stream track cue '%s - %s'", 
                                sync_delay_sec, clean_art.c_str(), clean_tit.c_str());
         char status_buf[128];
@@ -3416,34 +3450,20 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                     pfc::string8 track_stream_url;
                     bool is_st = artwork_manager::is_internet_stream_track(track, &track_stream_url);
                     if (is_st && (track->get_path() == stream_url || track_stream_url == stream_url || g_current_stream_url == stream_url)) {
-                    if (has_url_flag(stream_url.c_str(), "forceacr", track)) return;
-                    pfc::string8 artist, title;
-                    service_ptr_t<titleformat_object> script_art, script_tit;
-                    static_api_ptr_t<titleformat_compiler>()->compile_safe(script_art, "%artist%");
-                    static_api_ptr_t<titleformat_compiler>()->compile_safe(script_tit, "%title%");
-                    pc->playback_format_title(nullptr, artist, script_art, nullptr, playback_control::display_level_titles);
-                    pc->playback_format_title(nullptr, title, script_tit, nullptr, playback_control::display_level_titles);
+                        if (has_url_flag(stream_url.c_str(), "forceacr", track)) return;
+                        pfc::string8 artist, title;
+                        service_ptr_t<titleformat_object> script_art, script_tit;
+                        static_api_ptr_t<titleformat_compiler>()->compile_safe(script_art, "%artist%");
+                        static_api_ptr_t<titleformat_compiler>()->compile_safe(script_tit, "%title%");
+                        pc->playback_format_title(nullptr, artist, script_art, nullptr, playback_control::display_level_titles);
+                        pc->playback_format_title(nullptr, title, script_tit, nullptr, playback_control::display_level_titles);
 
-                    if (artist.is_empty() && !title.is_empty()) {
-                        std::string t_str = title.c_str();
-                        std::string delimiters[] = { " - ", " ˗ ", " / ", " by " };
-                        for (const auto& delim : delimiters) {
-                            size_t pos = t_str.find(delim);
-                            if (pos != std::string::npos) {
-                                artist = t_str.substr(0, pos).c_str();
-                                title = t_str.substr(pos + delim.length()).c_str();
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!artist.is_empty() && !title.is_empty()) {
                         StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), title.c_str());
                         if (meta.is_valid_search && !meta.is_station_or_url) {
                             valid_meta_found->store(true);
-                            on_stream_metadata_changed(artist.c_str(), title.c_str());
+                            on_stream_metadata_changed(artist.c_str(), title.c_str(), nullptr, nullptr, nullptr,
+                                has_url_flag(g_current_stream_url.c_str(), "inverted", track));
                         }
-                    }
                     }
                 }
             });
@@ -3542,6 +3562,9 @@ static void extract_track_metadata_dynamic(metadb_handle_ptr track, pfc::string8
 
     pfc::string8 file_path = track->get_path();
     bool is_internet_stream = artwork_manager::is_internet_stream_track(track);
+    bool is_youtube = !artwork_manager::extract_youtube_video_id(file_path.c_str()).is_empty() ||
+                      !artwork_manager::extract_youtube_video_id(g_current_stream_url.c_str()).is_empty();
+    const bool is_radio = is_internet_stream && !is_youtube;
 
     static_api_ptr_t<playback_control> pc;
     metadb_handle_ptr now_playing;
@@ -3560,7 +3583,10 @@ static void extract_track_metadata_dynamic(metadb_handle_ptr track, pfc::string8
         }
     }
 
-    if (out_artist.is_empty() || out_title.is_empty()) {
+    // Radio metadata is a cue snapshot: never fill a missing artist/title from
+    // stale station tags when the other field already describes the current song.
+    if (is_radio ? (out_artist.is_empty() && out_title.is_empty())
+                 : (out_artist.is_empty() || out_title.is_empty())) {
         try {
             metadb_info_container::ptr info_container = track->get_info_ref();
             if (info_container.is_valid()) {
@@ -3570,9 +3596,6 @@ static void extract_track_metadata_dynamic(metadb_handle_ptr track, pfc::string8
             }
         } catch (...) {}
     }
-
-    bool is_youtube = !artwork_manager::extract_youtube_video_id(file_path.c_str()).is_empty() ||
-                      !artwork_manager::extract_youtube_video_id(g_current_stream_url.c_str()).is_empty();
 
     g_is_youtube_art_track = false;
     g_is_youtube_topic_track = false;
@@ -3628,16 +3651,29 @@ static void extract_track_metadata_dynamic(metadb_handle_ptr track, pfc::string8
         }
     }
 
-    if (is_internet_stream && (out_artist.is_empty() || out_artist == "Unknown Artist" || out_title.is_empty() || out_title == "Unknown Track")) {
+    // A title-only update may contain the complete next song. Only reuse the
+    // previous cue when neither field contains new track information.
+    const bool missing_artist = out_artist.is_empty() || out_artist == "?" || out_artist == "Unknown Artist";
+    const bool missing_title = out_title.is_empty() || out_title == "?" || out_title == "Unknown Track";
+    if (is_internet_stream && (is_radio ? (missing_artist && missing_title) : (missing_artist || missing_title))) {
         if (!g_last_stream_artist.is_empty() && !g_last_stream_title.is_empty()) {
             out_artist = g_last_stream_artist;
             out_title = g_last_stream_title;
+            // Native radio cues have already been parsed and inverted.
+            if (is_radio) return;
         }
     }
 
     if (is_internet_stream) {
         if (artwork_manager::has_url_flag(file_path.c_str(), "inverted", track) ||
             artwork_manager::has_url_flag(g_current_stream_url.c_str(), "inverted", track)) {
+            if (is_radio) {
+                auto meta = MetadataCleaner::sanitize_stream_metadata(out_artist.c_str(), out_title.c_str());
+                if (meta.is_valid_search) {
+                    out_artist = meta.clean_artist.c_str();
+                    out_title = meta.clean_title.c_str();
+                }
+            }
             std::swap(out_artist, out_title);
         }
     }
@@ -4240,9 +4276,26 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
             }
         }
 
-        // Valid radio/file metadata reached this path. A missing cover does not
-        // justify fingerprinting or enabling the acoustic detector. Untagged
-        // streams and explicit forceacr/manual requests have separate paths.
+        // Optional one-shot recognition after ordinary text searches fail.
+        // YouTube, untagged streams and explicit forceacr/manual requests keep
+        // their existing policies. Never fingerprint a selected, inactive track.
+        if (yt_video_id.is_empty() && g_active_playing_track.is_valid() && !g_force_noart) {
+            const bool is_radio = is_internet_stream_track(g_active_playing_track);
+            const bool enabled = is_radio ? cfg_acrcloud_fallback_radio : cfg_acrcloud_fallback_local;
+            if (enabled && cfg_enable_acrcloud && is_acrcloud_configured() &&
+                generation != g_automatic_acrcloud_generation &&
+                std::chrono::steady_clock::now() >= g_acrcloud_cooldown_until) {
+                auto pc = playback_control::get();
+                metadb_handle_ptr now_playing;
+                if (pc->is_playing() && !pc->is_paused() &&
+                    pc->get_now_playing(now_playing) && now_playing == g_active_playing_track) {
+                    g_automatic_acrcloud_generation = generation;
+                    foo_artwork::log_printf("foo_artwork: Text searches exhausted. Trying optional ACRCloud fallback for %s...", is_radio ? "radio" : "local file");
+                    search_acrcloud_fallback_async(cache_key, final_callback, false, false);
+                    return;
+                }
+            }
+        }
         artwork_result fail_res;
         fail_res.success = false;
         fail_res.error_message = "No artwork found in text search";
@@ -4254,7 +4307,7 @@ void artwork_manager::search_apis_async(const pfc::string8& raw_artist, const pf
     // Tier 1: Full Track Title (First Artist -> Second Artist -> Full Clean Artist)
     // Tier 2: Primary Track Title (First Artist -> Second Artist -> Full Clean Artist)
     // Tier 3: Swapped Fallback (Title as Artist, Artist as Track)
-    // Tagged radio/file failures stop here; non-Art-Track YouTube retains its recognition fallback.
+    // Radio/file recognition is opt-in; YouTube retains its existing fallback.
 
     // Tier 1 Execution
     search_apis_by_priority(first_art, clean_title, cache_key, [=](const artwork_result& r1) {
@@ -4337,7 +4390,7 @@ struct AcrAudioCapture {
     double next_time = -1.0;
 };
 
-void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_key, artwork_callback callback, bool is_manual_trigger) {
+void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_key, artwork_callback callback, bool is_manual_trigger, bool allow_acoustic_monitoring) {
     pfc::string8 video_id = g_active_playing_track.is_valid()
         ? extract_youtube_video_id(g_active_playing_track->get_path()) : pfc::string8();
     if (video_id.is_empty()) video_id = extract_youtube_video_id(g_current_stream_url.c_str());
@@ -4445,7 +4498,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
     get_persistent_vis_stream();
 
     // Submit task to background worker thread (NON-BLOCKING FOR FOOBAR2000 UI)
-    async_io_manager::instance().submit_task([cache_key, callback, is_manual_trigger, current_task_id]() {
+    async_io_manager::instance().submit_task([cache_key, callback, is_manual_trigger, current_task_id, allow_acoustic_monitoring]() {
         std::vector<int16_t> pcm_samples;
         int sample_rate = 16000;
 
@@ -4634,7 +4687,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
             );
         }
 
-        async_io_manager::instance().post_to_main_thread([rec, cache_key, callback, current_task_id]() {
+        async_io_manager::instance().post_to_main_thread([rec, cache_key, callback, current_task_id, allow_acoustic_monitoring]() {
             if (g_is_shutting_down.load() || current_task_id != g_acrcloud_task_id.load()) return;
             if (rec.success) {
                 log_simplified_track_info(rec.artist.c_str(), rec.title.c_str());
@@ -4684,7 +4737,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                     foo_artwork::log_printf("foo_artwork: Querying online APIs with ACRCloud recognized track '%s - %s'...", rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str());
                     auto api_order = get_api_search_order();
                     pfc::string8 current_url = g_current_stream_url;
-                    search_apis_by_priority(rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str(), cache_key, [callback, current_url, rec_meta, rec](const artwork_result& res) {
+                    search_apis_by_priority(rec_meta.first_artist.c_str(), rec_meta.clean_title.c_str(), cache_key, [callback, current_url, rec_meta, rec, allow_acoustic_monitoring](const artwork_result& res) {
                         artwork_result res_acr = res;
                         res_acr.is_acrcloud_recognized = true;
                         if (res_acr.artist.is_empty()) res_acr.artist = rec_meta.clean_artist.c_str();
@@ -4698,7 +4751,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                                 stop_rms_silence_detector();
                             }
                         } else {
-                            if (cfg_enable_acrcloud && !current_url.is_empty()) {
+                            if (allow_acoustic_monitoring && cfg_enable_acrcloud && !current_url.is_empty()) {
                                 foo_artwork::log_printf("foo_artwork: Stage 3 text search for ACRCloud metadata returned no artwork. Enabling Log-Spectral Acoustic Shift detection...");
                                 start_rms_silence_detector(current_url);
                             }
@@ -4716,7 +4769,7 @@ void artwork_manager::search_acrcloud_fallback_async(const pfc::string8& cache_k
                 } else {
                     titleformat_provider::set_status("ACRCloud returned No Result");
                 }
-                if (cfg_enable_acrcloud && !g_current_stream_url.is_empty()) {
+                if (allow_acoustic_monitoring && cfg_enable_acrcloud && !g_current_stream_url.is_empty()) {
                     foo_artwork::log_printf("foo_artwork: ACRCloud recognition returned no match. Enabling Log-Spectral Acoustic Shift detection...");
                     start_rms_silence_detector(g_current_stream_url);
                 }

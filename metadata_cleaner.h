@@ -16,6 +16,7 @@ struct StreamMetadataResult {
     std::string second_artist;
     std::string primary_title;
     std::string clean_album;
+    bool artist_was_inferred = false; // Split from combined text, not an explicit artist tag.
     bool is_valid_search = false;
     bool is_station_or_url = false;
 };

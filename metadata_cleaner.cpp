@@ -1335,8 +1335,8 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
     to_lower_ascii(lower_art_chk);
     bool artist_is_placeholder = res.clean_artist.empty() ||
                                   res.clean_artist == "?" ||
-                                  res.clean_artist == "Unknown" ||
-                                  res.clean_artist == "Unknown Artist" ||
+                                  lower_art_chk == "unknown" ||
+                                  lower_art_chk == "unknown artist" ||
                                   lower_art_chk == "release" ||
                                   lower_art_chk == "release - topic" ||
                                   is_station_name_or_url(res.clean_artist.c_str());
@@ -1410,6 +1410,7 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
         if (try_split_multipart_title(res.raw_title, res.raw_artist, f1, f2, true)) {
             res.clean_artist = f1;
             res.clean_title = f2;
+            res.artist_was_inferred = true;
             split_done = true;
         }
     }
@@ -1420,6 +1421,7 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
         if (try_split_multipart_title(res.raw_title, res.raw_artist, f1, f2, false)) {
             res.clean_artist = f1;
             res.clean_title = f2;
+            res.artist_was_inferred = true;
             split_done = true;
         }
     }
@@ -1431,12 +1433,14 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
             if (try_split_combined(res.clean_title, split_art, split_tit)) {
                 res.clean_artist = split_art;
                 res.clean_title = split_tit;
+                res.artist_was_inferred = true;
             }
         } else if (title_is_placeholder && !res.clean_artist.empty()) {
             std::string split_art, split_tit;
             if (try_split_combined(res.clean_artist, split_art, split_tit)) {
                 res.clean_artist = split_art;
                 res.clean_title = split_tit;
+                res.artist_was_inferred = true;
             }
         }
     }

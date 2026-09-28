@@ -1064,100 +1064,23 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
                 return;
             }
         }
-        // Get artist and track from the updated info safely
+        // Parse the raw cue before cleaning: cleaning alone discards text after | or •.
         const char* artist_ptr = p_info.meta_get("ARTIST", 0);
         const char* track_ptr = p_info.meta_get("TITLE", 0);
-        const char* album_ptr = p_info.meta_get("ALBUM", 0);
-        const char* station_ptr = p_info.meta_get("STREAM_NAME", 0);															
-        
-        pfc::string8 artist = artist_ptr ? artist_ptr : "";
-        pfc::string8 track = track_ptr ? track_ptr : "";
-        pfc::string8 album = album_ptr ? album_ptr : "";
-        pfc::string8 station = station_ptr ? station_ptr : "";		
-
-                
-        // Extract only the first artist for better artwork search results
-        std::string first_artist = MetadataCleaner::extract_first_artist(artist.c_str());
-        
-        // Clean metadata using the unified UTF-8 safe cleaner
-        std::string cleaned_artist = MetadataCleaner::clean_for_search(first_artist.c_str(), true);
-        std::string cleaned_track = MetadataCleaner::clean_for_search(track.c_str(), true);
-        
-		//If inverted swap artist title
-        bool is_inverted_stream = is_inverted_internet_stream(m_current_track,p_info);
-
-        if (is_inverted_stream) {
-            std::string clean_artist_old = cleaned_artist;
-            std::string clean_title_old = cleaned_track;
-            cleaned_artist = clean_title_old;
-            cleaned_track = clean_artist_old;
-        }  
-
-        //If no artist and title is "artist - title" (eg https://stream.radioclub80.cl:8022/retro80.opus)  split 
-        if (cleaned_artist.empty()) {
-            std::string delimiter = " - ";
-            size_t pos = cleaned_track.find(delimiter);
-            if (pos != std::string::npos) {
-                std::string lvalue = cleaned_track.substr(0, pos);
-                std::string rvalue = cleaned_track.substr(pos + delimiter.length());
-                cleaned_artist = lvalue;
-                cleaned_track = rvalue;
-            }
-
-            //or "artist ˗ title" (eg https ://energybasel.ice.infomaniak.ch/energybasel-high.mp3)
-
-            std::string delimiter2 = " ˗ ";
-            size_t pos2 = cleaned_track.find(delimiter2);
-            if (pos2 != std::string::npos) {
-                std::string lvalue = cleaned_track.substr(0, pos2);
-                std::string rvalue = cleaned_track.substr(pos2 + delimiter2.length());
-                cleaned_artist = lvalue;
-                cleaned_track = rvalue;
-            }
-
-            //or "artist / title" (eg https://radiostream.pl/tuba8-1.mp3?cache=1650763965 )
-
-            std::string delimiter3 = " / ";
-            size_t pos3 = cleaned_track.find(delimiter3);
-            if (pos3 != std::string::npos) {
-                std::string lvalue = cleaned_track.substr(0, pos3);
-                std::string rvalue = cleaned_track.substr(pos3 + delimiter3.length());
-                cleaned_artist = lvalue;
-                cleaned_track = rvalue;
-            }
-
+        if (!track_ptr || !*track_ptr) track_ptr = p_info.meta_get("STREAMTITLE", 0);
+        if (!track_ptr || !*track_ptr) track_ptr = p_info.meta_get("ICY_TITLE", 0);
+        StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist_ptr, track_ptr);
+        std::string cleaned_artist = meta.first_artist;
+        std::string cleaned_track = meta.clean_title;
+        if (is_inverted_internet_stream(m_current_track, p_info)) {
+            std::swap(cleaned_artist, cleaned_track);
         }
-            //with inverted (eg https://icy.unitedradio.it/um049.mp3?inverted )
-            else if (cleaned_track.empty() && is_inverted_stream) {
-                std::string delimiter = " - ";
-                size_t pos = cleaned_artist.find(delimiter);
-                if (pos != std::string::npos) {
-                    std::string lvalue = cleaned_artist.substr(0, pos);
-                    std::string rvalue = cleaned_artist.substr(pos + delimiter.length());
-                    cleaned_artist = rvalue;
-                    cleaned_track =  lvalue;
-                }
-            else {
-                //do nothing
-            }
-        }  
 
-		        //WalmRadio
-        //If no title and artist is "title by artist" (eg https://icecast.walmradio.com:8443/classic)  split 
-        if (cleaned_track.empty()) {
+        const char* album_ptr = p_info.meta_get("ALBUM", 0);
+        const char* station_ptr = p_info.meta_get("STREAM_NAME", 0);
+        pfc::string8 album = album_ptr ? album_ptr : meta.clean_album.c_str();
+        pfc::string8 station = station_ptr ? station_ptr : "";
 
-            //not use extract_first_artist , clean again
-            cleaned_artist = MetadataCleaner::clean_for_search(artist.c_str(), true);
-           
-            std::string delimiter = " by ";
-            size_t pos = cleaned_artist.find(delimiter);
-            if (pos != std::string::npos) {
-                std::string lvalue = cleaned_artist.substr(0, pos);
-                std::string rvalue = cleaned_artist.substr(pos + delimiter.length());
-                cleaned_artist = rvalue;
-                cleaned_track = lvalue;
-            }
-        }	   
         //Don't search if received same artist title
         //same info - don't search - stop
         if (m_dinfo_artist == cleaned_artist && m_dinfo_title == cleaned_track) {
@@ -1170,7 +1093,7 @@ void artwork_ui_element::on_dynamic_info_track(const file_info& p_info) {
         }
         
         // Apply comprehensive metadata validation rules
-        bool is_valid_metadata = MetadataCleaner::is_valid_for_search(cleaned_artist.c_str(), cleaned_track.c_str());
+        bool is_valid_metadata = meta.is_valid_search && !meta.is_station_or_url;
 
 
         //Infobar

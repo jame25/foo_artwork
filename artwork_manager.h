@@ -38,7 +38,8 @@ public:
     static void rescan_stream_acrcloud(); // Automatic acoustic transition/safety timer.
     static void reset_acrcloud_cooldown();
     static void cancel_acrcloud_tasks();
-    static void on_stream_metadata_changed(const char* artist, const char* title, const char* artist_full = nullptr, const char* album = nullptr, const char* listeners = nullptr);
+    // applied_sync_delay is supplied only by the external API cue scheduler to avoid a second delay.
+    static void on_stream_metadata_changed(const char* artist, const char* title, const char* artist_full = nullptr, const char* album = nullptr, const char* listeners = nullptr, bool inverted = false, int applied_sync_delay = -1);
     static int extract_coversync_seconds(metadb_handle_ptr track = nullptr);
     
     // Reject artwork and cycle to next provider
@@ -114,7 +115,7 @@ private:
     static void search_discogs_api_async(const char* artist, const char* track, artwork_callback callback);
     static void search_lastfm_api_async(const char* artist, const char* track, artwork_callback callback);
     static void search_musicbrainz_api_async(const char* artist, const char* track, artwork_callback callback);
-    static void search_acrcloud_fallback_async(const pfc::string8& cache_key, artwork_callback callback, bool is_manual_trigger = false);
+    static void search_acrcloud_fallback_async(const pfc::string8& cache_key, artwork_callback callback, bool is_manual_trigger = false, bool allow_acoustic_monitoring = true);
     
     // Async HTTP utilities
     static void download_image_async(const char* url, artwork_callback callback);

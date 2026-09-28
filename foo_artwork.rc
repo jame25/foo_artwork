@@ -51,7 +51,7 @@ IDD_PREFERENCES_ADVANCED DIALOGEX 0, 0, 350, 310
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
-    GROUPBOX        "Station Logos",IDC_STATIC,10,10,320,185
+    GROUPBOX        "Station Logos",IDC_STATIC,10,10,320,165
 
     CONTROL         "Enable custom station logos",IDC_ENABLE_CUSTOM_LOGOS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,25,200,12
 
@@ -66,28 +66,31 @@ BEGIN
     LTEXT           "No-Art Image Cycling:",IDC_STATIC_NOART_CYCLE,20,104,80,10
     COMBOBOX        IDC_NOART_CYCLE_MODE,105,102,120,50,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    LTEXT           "Logo files can use either full URL path or domain name:",IDC_STATIC,20,122,295,10
-    LTEXT           "Full path: ice1.somafm.com_indiepop-128-aac.png / Domain: somafm.com.png",IDC_STATIC,35,134,280,10
-    LTEXT           "No-Art: Place noart.png or multiple images in folder to cycle through.",IDC_STATIC,35,146,280,10
-    LTEXT           "Supported formats: PNG, JPG, JPEG, WEBP, GIF, BMP",IDC_STATIC,20,162,200,10
+    LTEXT           "Logo files can use either full URL path or domain name:",IDC_STATIC,20,118,295,10
+    LTEXT           "Full path: ice1.somafm.com_indiepop-128-aac.png / Domain: somafm.com.png",IDC_STATIC,35,130,280,10
+    LTEXT           "No-Art: Place noart.png or multiple images in folder to cycle through.",IDC_STATIC,35,142,280,10
+    LTEXT           "Supported formats: PNG, JPG, JPEG, WEBP, GIF, BMP",IDC_STATIC,20,156,200,10
 
-    GROUPBOX        "Miscellaneous",IDC_STATIC,10,200,320,100
+    GROUPBOX        "Miscellaneous",IDC_STATIC,10,180,320,120
 
-    CONTROL         "Clear panel when playback stopped",IDC_CLEAR_PANEL_WHEN_NOT_PLAYING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,214,135,12
-    CONTROL         "[ Use noart image ]",IDC_USE_NOART_IMAGE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,214,92,12
-    CONTROL         "Show Infobar (DUI only)",IDC_INFOBAR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,228,128,12
-    CONTROL         "Disable in-stream artwork",IDC_DISABLE_INSTREAM_ARTWORK,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,228,160,12
-    CONTROL         "Disable auto-probing on radio connection",IDC_DISABLE_EXT_API_AUTOPROBE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,242,155,12
-    CONTROL         "Always skip APIs for YouTube",IDC_SKIP_YOUTUBE_APIS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,180,242,140,12
+    CONTROL         "Clear panel when playback stopped",IDC_CLEAR_PANEL_WHEN_NOT_PLAYING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,194,135,12
+    CONTROL         "[ Use noart image ]",IDC_USE_NOART_IMAGE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,194,92,12
+    CONTROL         "Show Infobar (DUI only)",IDC_INFOBAR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,208,128,12
+    CONTROL         "Disable in-stream artwork",IDC_DISABLE_INSTREAM_ARTWORK,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,208,160,12
+    CONTROL         "Disable auto-probing on radio connection",IDC_DISABLE_EXT_API_AUTOPROBE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,222,155,12
+    CONTROL         "Always skip APIs for YouTube",IDC_SKIP_YOUTUBE_APIS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,180,222,140,12
 
-    LTEXT           "HTTP timeout:",IDC_STATIC_TIMEOUT,20,262,50,10
-    EDITTEXT        IDC_HTTP_TIMEOUT,72,260,30,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "seconds",IDC_STATIC_SECONDS,106,262,30,10
+    CONTROL         "Automatic ACRCloud fallback for radio",IDC_ACRCLOUD_FALLBACK_RADIO,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,236,290,12
+    CONTROL         "Automatic ACRCloud fallback for local files",IDC_ACRCLOUD_FALLBACK_LOCAL,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,250,290,12
 
-    LTEXT           "Retry count:",IDC_STATIC_RETRY,155,262,45,10
-    EDITTEXT        IDC_RETRY_COUNT,202,260,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "HTTP timeout:",IDC_STATIC_TIMEOUT,20,270,50,10
+    EDITTEXT        IDC_HTTP_TIMEOUT,72,268,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "seconds",IDC_STATIC_SECONDS,106,270,30,10
 
-    LTEXT           "(0 = no retries, max 5)",IDC_STATIC,236,262,80,10
+    LTEXT           "Retry count:",IDC_STATIC_RETRY,155,270,45,10
+    EDITTEXT        IDC_RETRY_COUNT,202,268,30,14,ES_AUTOHSCROLL | ES_NUMBER
+
+    LTEXT           "(0 = no retries, max 5)",IDC_STATIC,236,270,80,10
 END
 
 IDD_PREFERENCES_BLACKLIST DIALOGEX 0, 0, 350, 270

@@ -65,6 +65,8 @@
 #define IDC_NORMALIZE_API_METADATA_CASE 1059
 #define IDC_DISABLE_EXT_API_AUTOPROBE   1060
 #define IDC_SKIP_YOUTUBE_APIS           1061
+#define IDC_ACRCLOUD_FALLBACK_RADIO     1062
+#define IDC_ACRCLOUD_FALLBACK_LOCAL     1063
 
 // Next default values for new objects
 //
@@ -72,7 +74,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        105
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1062
+#define _APS_NEXT_CONTROL_VALUE         1064
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

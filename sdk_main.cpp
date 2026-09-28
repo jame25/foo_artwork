@@ -73,6 +73,8 @@ static constexpr GUID guid_cfg_infobar = { 0x59b0b41b, 0x2d12, 0x4965, { 0xaa, 0
 static constexpr GUID guid_cfg_disable_instream_artwork = { 0x7c2d91b4, 0x8a3e, 0x4f52, { 0x9b, 0x6e, 0x1d, 0x3f, 0x7a, 0x5c, 0x92, 0xe1 } };
 static constexpr GUID guid_cfg_disable_ext_api_autoprobe = { 0x7c2d91b5, 0x8a3e, 0x4f52, { 0x9b, 0x6e, 0x1d, 0x3f, 0x7a, 0x5c, 0x92, 0xe2 } };
 static constexpr GUID guid_cfg_skip_youtube_apis = { 0x769e427a, 0xc830, 0x48cb, { 0x8a, 0xbd, 0xa1, 0x61, 0xdd, 0xec, 0x65, 0x30 } };
+static constexpr GUID guid_cfg_acrcloud_fallback_radio = { 0x0e0ac23b, 0x0a46, 0x4ae9, { 0xbc, 0xf1, 0xef, 0x82, 0x7e, 0xbc, 0xce, 0xa3 } };
+static constexpr GUID guid_cfg_acrcloud_fallback_local = { 0x0ca16263, 0x0d20, 0x4012, { 0xa6, 0x2a, 0xb0, 0xa3, 0x0c, 0x23, 0x18, 0x5a } };
 static constexpr GUID guid_cfg_http_timeout = { 0x1234568d, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfd } };
 static constexpr GUID guid_cfg_retry_count = { 0x1234568e, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xfe } };
 static constexpr GUID guid_cfg_enable_disk_cache = { 0x1234568f, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xff } };
@@ -173,6 +175,8 @@ cfg_bool cfg_infobar(guid_cfg_infobar, false);  // DUI infobar (default disabled
 cfg_bool cfg_disable_instream_artwork(guid_cfg_disable_instream_artwork, false);  // Disable in-stream artwork detection (default false)
 cfg_bool cfg_disable_ext_api_autoprobe(guid_cfg_disable_ext_api_autoprobe, true);  // Disable auto-probing on radio connection by default
 cfg_bool cfg_skip_youtube_apis(guid_cfg_skip_youtube_apis, false);  // YouTube APIs first by default
+cfg_bool cfg_acrcloud_fallback_radio(guid_cfg_acrcloud_fallback_radio, false);
+cfg_bool cfg_acrcloud_fallback_local(guid_cfg_acrcloud_fallback_local, false);
 
 // Network settings
 cfg_int cfg_http_timeout(guid_cfg_http_timeout, 15);  // HTTP timeout in seconds (default 15)
@@ -402,7 +406,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.8",
+    "1.7.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -419,7 +423,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.7.8",
+    "1.7.9",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -2641,6 +2645,19 @@ void trigger_main_component_search_with_metadata(const std::string& artist, cons
     metadb_handle_ptr now_playing;
     if (playback_control::get()->get_now_playing(now_playing) && now_playing.is_valid()) {
         artwork_manager::on_playback_new_track(now_playing);
+    }
+    // The playback callback / external API poller owns CoverSync radio cues.
+    // Panel timers and integration feedback must not search the incoming song
+    // independently while its cue is waiting, or restart it after publication.
+    pfc::string8 stream_url;
+    if (now_playing.is_valid() && artwork_manager::is_internet_stream_track(now_playing, &stream_url) &&
+        artwork_manager::extract_coversync_seconds(now_playing) > 0 &&
+        artwork_manager::extract_youtube_video_id(now_playing->get_path()).is_empty() &&
+        artwork_manager::extract_youtube_video_id(stream_url.c_str()).is_empty() &&
+        !artwork_manager::has_url_flag(stream_url.c_str(), "forceacr", now_playing)) {
+        // The legacy track bridge may have set this before handing off metadata.
+        g_artwork_loading = false;
+        return;
     }
     if (artwork_manager::is_noart_forced()) {
         artwork_manager::on_stream_metadata_changed(artist.c_str(), title.c_str());
