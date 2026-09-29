@@ -955,8 +955,10 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         break;
 
     case WM_USER + 12: // Artwork cleared on main thread
+        if (static_cast<LPARAM>(artwork_manager::get_search_generation()) != lParam) break;
+        if (wParam == 2 && artwork_manager::get_active_source() != "None") break;
         m_last_event_bitmap = nullptr;
-        if (wParam && artwork_manager::is_noart_forced()) {
+        if (wParam == 2 || (wParam == 1 && artwork_manager::is_noart_forced())) {
             KillTimer(m_hWnd, 100);
             KillTimer(m_hWnd, 101);
             m_artwork_source.clear();
@@ -2017,7 +2019,9 @@ void CUIArtworkPanel::on_artwork_event(const ArtworkEvent& event) {
         case ArtworkEventType::ARTWORK_CLEARED:
             // Post to main thread to clear dedup state
             if (m_hWnd) {
-                PostMessage(m_hWnd, WM_USER + 12, event.source == "No-Art", 0);
+                PostMessage(m_hWnd, WM_USER + 12,
+                    event.source == "No artwork found" ? 2 : (event.source == "No-Art" ? 1 : 0),
+                    static_cast<LPARAM>(artwork_manager::get_search_generation()));
             }
             break;
     }

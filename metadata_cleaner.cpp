@@ -1318,6 +1318,27 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
         res.clean_title = clean_for_search(res.raw_title.c_str(), true);
     }
 
+    // United Radio ICY records use Title~Artist~Album~Year~...~Duration~
+    // StartTime~UpdateTime~Station~Elapsed~ID. Preserve empty fields and parse
+    // before station detection: the station and changing timing are not song tags.
+    std::vector<std::string> tilde_fields;
+    size_t field_start = 0;
+    while (field_start <= res.raw_title.size()) {
+        const auto end = res.raw_title.find('~', field_start);
+        tilde_fields.push_back(trim(res.raw_title.substr(field_start, end - field_start)));
+        if (end == std::string::npos) break;
+        field_start = end + 1;
+    }
+    static const std::regex stream_timestamp("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}.*$");
+    const bool has_tilde_record = !has_xml && !is_youtube && !known_track_metadata &&
+        tilde_fields.size() >= 9 && !tilde_fields[0].empty() && !tilde_fields[1].empty() &&
+        std::regex_match(tilde_fields[6], stream_timestamp) &&
+        std::regex_match(tilde_fields[7], stream_timestamp);
+    if (has_tilde_record) {
+        res.clean_title = clean_for_search(tilde_fields[0].c_str(), true);
+        res.clean_album = clean_for_search(tilde_fields[2].c_str(), true);
+    }
+
     // Strip trailing " - Topic" or "- Topic" from artist name (YouTube auto-generated channel suffix)
     std::string lower_art_suffix = res.clean_artist;
     to_lower_ascii(lower_art_suffix);
@@ -1328,7 +1349,8 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
     }
 
     // Stage 1: Noise Pre-Cleaning & Station/URL Detection
-    res.is_station_or_url = is_station_name_or_url(res.raw_artist.c_str()) || is_station_name_or_url(res.raw_title.c_str());
+    res.is_station_or_url = is_station_name_or_url(res.raw_artist.c_str()) ||
+        is_station_name_or_url(has_tilde_record ? tilde_fields[0].c_str() : res.raw_title.c_str());
 
     // Stage 2: Smart Stream Splitter
     std::string lower_art_chk = res.clean_artist;
@@ -1340,6 +1362,11 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
                                   lower_art_chk == "release" ||
                                   lower_art_chk == "release - topic" ||
                                   is_station_name_or_url(res.clean_artist.c_str());
+
+    if (has_tilde_record && artist_is_placeholder) {
+        res.clean_artist = clean_for_search(tilde_fields[1].c_str(), true);
+        res.artist_was_inferred = true;
+    }
 
     bool title_is_placeholder = res.clean_title.empty() ||
                                  res.clean_title == "?" ||
@@ -1401,7 +1428,7 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
         return false;
     };
 
-    bool split_done = known_track_metadata || (is_youtube && is_youtube_topic_artist(raw_artist));
+    bool split_done = has_tilde_record || known_track_metadata || (is_youtube && is_youtube_topic_artist(raw_artist));
 
     // 1. YouTube track: inspect title for multi-part delimiters (Field1 - Field2 - Channel)
     // Discard uploader/channel name in favour of the first two fields
@@ -1444,6 +1471,12 @@ StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_a
             }
         }
     }
+
+    // A genuine title without an artist still identifies a new playback cue.
+    // Keep it out of text providers, but allow the optional acoustic fallback.
+    res.is_title_only = artist_is_placeholder && !res.artist_was_inferred &&
+        !res.is_station_or_url && is_valid_for_search(res.clean_title.c_str(), res.clean_title.c_str());
+    if (res.is_title_only) res.clean_artist.clear();
 
     // Stage 3: Multilingual Collaboration & Token Extraction
     res.first_artist = extract_first_artist(res.clean_artist.c_str());

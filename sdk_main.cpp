@@ -8467,7 +8467,7 @@ public:
             try {
                 if (event.type == ArtworkEventType::ARTWORK_LOADED) {
                     cb(true, event.bitmap);
-                } else if (event.type == ArtworkEventType::ARTWORK_FAILED) {
+                } else if (event.type == ArtworkEventType::ARTWORK_FAILED || event.type == ArtworkEventType::ARTWORK_CLEARED) {
                     cb(false, nullptr);
                 }
             } catch (...) {}

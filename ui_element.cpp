@@ -93,6 +93,7 @@ extern void unsubscribe_from_artwork_events(IArtworkEventListener* listener);
 
 // Heap-allocated struct for passing artwork event data via PostMessage
 struct ArtworkEventData {
+    uint64_t generation = 0;
     ArtworkEventType type;
     HBITMAP bitmap;
     std::string source;
@@ -2128,6 +2129,7 @@ void artwork_ui_element::on_artwork_event(const ArtworkEvent& event) {
     // Marshal to the main thread via PostMessage to avoid modifying GDI+ state
     // from background threads. Heap-allocate a copy of the event data.
     auto* data = new ArtworkEventData();
+    data->generation = artwork_manager::get_search_generation();
     data->type = event.type;
     data->bitmap = event.bitmap;
     data->source = event.source;
@@ -2188,11 +2190,13 @@ LRESULT artwork_ui_element::OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lPar
             break;
             
         case ArtworkEventType::ARTWORK_CLEARED:
+            if (event->generation != artwork_manager::get_search_generation()) break;
+            if (event->source == "No artwork found" && artwork_manager::get_active_source() != "None") break;
             if (event->source == "No-Art" && !artwork_manager::is_noart_forced()) break;
             cleanup_gdiplus_image();
             m_artwork_loading = false;
             m_artwork_source.clear();
-            if (event->source == "No-Art") load_noart_image();
+            if (event->source == "No-Art" || event->source == "No artwork found") load_noart_image();
             Invalidate();
             break;
 
