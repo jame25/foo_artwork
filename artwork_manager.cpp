@@ -633,6 +633,28 @@ static void publish_artwork_failure(metadb_handle_ptr track, const pfc::string8&
     notify_artwork_cleared("No artwork found");
 }
 
+// A radio song without a cover returns to the station's tagged artwork. It is
+// never cached under the song key, so a later play still searches for a cover.
+static void publish_stream_tagged_artwork_info(metadb_handle_ptr track, const artwork_manager::artwork_result& res,
+    const pfc::string8& artist, const pfc::string8& title, const pfc::string8& album = "", const pfc::string8& listeners = "") {
+    ASSERT_MAIN_THREAD();
+    g_current_artwork_source = res.source;
+    if (cfg_single_file_cache) async_io_manager::instance().cache_remove("current");
+    if (track.is_valid()) {
+        titleformat_provider::set_track_artwork_info(track, artist.c_str(), title.c_str(),
+            "", res.source.c_str(), artist.c_str(), album.c_str(), listeners.c_str());
+    }
+    int w = 0, h = 0;
+    if (res.data.get_size() > 0) get_image_dimensions_from_data(res.data.get_ptr(), res.data.get_size(), w, h);
+    titleformat_provider::set_status_artwork_loaded(res.source.c_str(), w, h, (size_t)res.data.get_size(), false);
+}
+
+// Title-only radio cues exist for the optional recognition fallback. With it
+// off, an artist-less title (often the station name) keeps the station path.
+static bool title_only_stream_cues_enabled() {
+    return cfg_acrcloud_fallback_radio && cfg_enable_acrcloud && is_acrcloud_configured();
+}
+
 class artwork_manager_playback_callback : public play_callback_static {
 public:
     unsigned get_flags() override {
@@ -761,38 +783,45 @@ void artwork_manager::get_artwork_async_with_metadata(const char* artist, const 
                 // Stale callback for previous track/cue - drop updates
                 return;
             }
-            if (res.success) {
-                if (!res.source.is_empty() && res.source != "Cache") {
-                    g_active_resolved_provider = res.source;
-                    g_active_source = res.source;
-                } else if (!g_active_resolved_provider.is_empty()) {
-                    g_active_source = g_active_resolved_provider;
-                } else {
-                    g_active_source = res.source;
-                }
-                pfc::string8 effective_source = (!g_active_resolved_provider.is_empty() && g_active_resolved_provider != "Cache") ? g_active_resolved_provider : res.source;
-                pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
-                metadb_handle_ptr now_track;
-                static_api_ptr_t<playback_control> pc;
-                if (pc->get_now_playing(now_track)) {
-                    const pfc::string8 display_artist = !res.artist.is_empty() ? res.artist : artist_str;
-                    const pfc::string8 display_title = !res.title.is_empty() ? res.title : track_str;
-                    titleformat_provider::set_track_artwork_info(now_track, display_artist.c_str(), display_title.c_str(),
-                        cache_file.c_str(), effective_source.c_str(), display_artist.c_str(), res.album.c_str());
-                }
-                // Metadata-driven radio requests must publish the same detailed
-                // status as track requests, including cache hits and ACR results.
-                int w = 0, h = 0;
-                if (res.data.get_size() > 0) get_image_dimensions_from_data(res.data.get_ptr(), res.data.get_size(), w, h);
-                titleformat_provider::set_status_artwork_loaded(effective_source.c_str(), w, h,
-                    res.data.get_size(), res.is_acrcloud_recognized);
-                artwork_result final_res = res;
-                final_res.source = effective_source;
-                original_callback(final_res);
+            if (!res.success) {
+                resolve_stream_artwork_miss(g_active_playing_track, [gen, artist_str, track_str, original_callback](const artwork_result& tagged) {
+                    if (gen != g_search_generation.load()) return;
+                    publish_stream_tagged_artwork_info(g_active_playing_track, tagged, artist_str, track_str);
+                    original_callback(tagged);
+                }, [gen, artist_str, track_str, res, original_callback]() {
+                    if (gen != g_search_generation.load()) return;
+                    publish_artwork_failure(g_active_playing_track, artist_str, track_str);
+                    original_callback(res);
+                });
                 return;
             }
-            publish_artwork_failure(g_active_playing_track, artist_str, track_str);
-            original_callback(res);
+            if (!res.source.is_empty() && res.source != "Cache") {
+                g_active_resolved_provider = res.source;
+                g_active_source = res.source;
+            } else if (!g_active_resolved_provider.is_empty()) {
+                g_active_source = g_active_resolved_provider;
+            } else {
+                g_active_source = res.source;
+            }
+            pfc::string8 effective_source = (!g_active_resolved_provider.is_empty() && g_active_resolved_provider != "Cache") ? g_active_resolved_provider : res.source;
+            pfc::string8 cache_file = async_io_manager::instance().get_cache_file_path(cache_key);
+            metadb_handle_ptr now_track;
+            static_api_ptr_t<playback_control> pc;
+            if (pc->get_now_playing(now_track)) {
+                const pfc::string8 display_artist = !res.artist.is_empty() ? res.artist : artist_str;
+                const pfc::string8 display_title = !res.title.is_empty() ? res.title : track_str;
+                titleformat_provider::set_track_artwork_info(now_track, display_artist.c_str(), display_title.c_str(),
+                    cache_file.c_str(), effective_source.c_str(), display_artist.c_str(), res.album.c_str());
+            }
+            // Metadata-driven radio requests must publish the same detailed
+            // status as track requests, including cache hits and ACR results.
+            int w = 0, h = 0;
+            if (res.data.get_size() > 0) get_image_dimensions_from_data(res.data.get_ptr(), res.data.get_size(), w, h);
+            titleformat_provider::set_status_artwork_loaded(effective_source.c_str(), w, h,
+                res.data.get_size(), res.is_acrcloud_recognized);
+            artwork_result final_res = res;
+            final_res.source = effective_source;
+            original_callback(final_res);
         };
         callback = wrapped_callback;
 
@@ -3172,7 +3201,7 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
         if (g_is_youtube_release_topic && !g_is_youtube_art_track) return;
     }
     StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(raw_artist, raw_title, is_youtube, is_youtube && (g_is_youtube_art_track || g_is_youtube_topic_track));
-    if ((!meta.is_valid_search && !meta.is_title_only) || meta.is_station_or_url) return;
+    if ((!meta.is_valid_search && !(meta.is_title_only && title_only_stream_cues_enabled())) || meta.is_station_or_url) return;
     // Invert complete fields after parsing a combined title, just as the panels do.
     if (!is_youtube && inverted && meta.is_valid_search) {
         std::swap(meta.clean_artist, meta.clean_title);
@@ -3284,7 +3313,20 @@ void artwork_manager::on_stream_metadata_changed(const char* raw_artist, const c
                 return;
             }
             if (!res.success || res.data.get_size() == 0) {
-                publish_artwork_failure(g_active_playing_track, clean_art_full, clean_tit, clean_album, clean_listeners);
+                auto is_current_cue = [gen, clean_art, clean_tit]() {
+                    return gen == g_search_generation.load() && clean_art == g_last_stream_artist && clean_tit == g_last_stream_title;
+                };
+                resolve_stream_artwork_miss(g_active_playing_track, [is_current_cue, clean_art_full, clean_tit, clean_album, clean_listeners](const artwork_result& tagged) {
+                    if (!is_current_cue()) return;
+                    publish_stream_tagged_artwork_info(g_active_playing_track, tagged, clean_art_full, clean_tit, clean_album, clean_listeners);
+                    std::vector<BYTE> vec(tagged.data.get_ptr(), tagged.data.get_ptr() + tagged.data.get_size());
+                    create_bitmap_from_image_data(vec);
+                    refresh_all_dui_artwork_panels();
+                    refresh_all_cui_artwork_panels();
+                }, [is_current_cue, clean_art_full, clean_tit, clean_album, clean_listeners]() {
+                    if (!is_current_cue()) return;
+                    publish_artwork_failure(g_active_playing_track, clean_art_full, clean_tit, clean_album, clean_listeners);
+                });
                 return;
             }
             if (!res.source.is_empty() && res.source != "Cache") {
@@ -3485,7 +3527,7 @@ void artwork_manager::start_initial_stream_metadata_monitor(const pfc::string8& 
                         pc->playback_format_title(nullptr, title, script_tit, nullptr, playback_control::display_level_titles);
 
                         StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), title.c_str());
-                        if ((meta.is_valid_search || meta.is_title_only) && !meta.is_station_or_url) {
+                        if ((meta.is_valid_search || (meta.is_title_only && title_only_stream_cues_enabled())) && !meta.is_station_or_url) {
                             valid_meta_found->store(true);
                             on_stream_metadata_changed(artist.c_str(), title.c_str(), nullptr, nullptr, nullptr,
                                 has_url_flag(g_current_stream_url.c_str(), "inverted", track));
@@ -3788,8 +3830,15 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
             original_callback(final_res);
             return;
         }
-        publish_artwork_failure(track, artist, track_name);
-        original_callback(res);
+        resolve_stream_artwork_miss(track, [gen, track, artist, track_name, original_callback](const artwork_result& tagged) {
+            if (gen != g_search_generation.load()) return;
+            publish_stream_tagged_artwork_info(track, tagged, artist, track_name);
+            original_callback(tagged);
+        }, [gen, track, artist, track_name, res, original_callback]() {
+            if (gen != g_search_generation.load()) return;
+            publish_artwork_failure(track, artist, track_name);
+            original_callback(res);
+        });
     };
     callback = wrapped_callback;
 
@@ -3801,6 +3850,7 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
 
     if (is_internet_stream) {
         StreamMetadataResult meta = MetadataCleaner::sanitize_stream_metadata(artist.c_str(), track_name.c_str(), is_youtube, is_youtube && (g_is_youtube_art_track || g_is_youtube_topic_track));
+        const bool is_song_cue = meta.is_valid_search || (meta.is_title_only && title_only_stream_cues_enabled());
         pfc::string8 target_stream_url = !effective_stream_url.is_empty() ? effective_stream_url : file_path;
         bool force_acrcloud = has_url_flag(file_path.c_str(), "forceacr", track) || 
                               has_url_flag(target_stream_url.c_str(), "forceacr", track) || 
@@ -3820,7 +3870,7 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
             if (force_acrcloud) {
                 start_rms_silence_detector(target_stream_url); // Active immediately for ?forceacr streams
             }
-            if (meta.is_station_or_url || (!meta.is_valid_search && !meta.is_title_only)) {
+            if (meta.is_station_or_url || !is_song_cue) {
                 start_initial_stream_metadata_monitor(target_stream_url);
             }
             start_external_stream_api_poller(target_stream_url);
@@ -3866,7 +3916,7 @@ void artwork_manager::search_artwork_pipeline(metadb_handle_ptr track, artwork_c
             return;
         }
 
-        if (meta.is_station_or_url || (!meta.is_valid_search && !meta.is_title_only)) {
+        if (meta.is_station_or_url || !is_song_cue) {
             if (cfg_skip_local_artwork || is_youtube || is_reject_station_covers) {
                 if (try_broadcast_artwork && !is_reject_station_covers) {
                     search_broadcast_artwork_async(broadcast_art_url, cache_key, [artist, track_name, callback](const artwork_result& res) {
@@ -4143,6 +4193,33 @@ void artwork_manager::search_local_async(const pfc::string8& file_path, const pf
         } else {
             // Local search failed - continue to API search
             search_apis_async(artist, track_name, cache_key, callback);
+        }
+    });
+}
+
+// A radio song without a cover falls back to the stream entry's own tagged
+// artwork (m-TAGS images or Album Art source patterns) before the panels'
+// station logo / no-art chain. Other tracks report the miss immediately.
+void artwork_manager::resolve_stream_artwork_miss(metadb_handle_ptr track, artwork_callback on_tagged, std::function<void()> on_miss) {
+    ASSERT_MAIN_THREAD();
+    pfc::string8 stream_url;
+    const bool try_tagged = track.is_valid() && !g_force_noart && !cfg_skip_local_artwork &&
+        is_internet_stream_track(track, &stream_url) &&
+        extract_youtube_video_id(track->get_path()).is_empty() &&
+        extract_youtube_video_id(stream_url.c_str()).is_empty() &&
+        !has_url_flag(track->get_path(), "rejectstationcovers", track) &&
+        !has_url_flag(stream_url.c_str(), "rejectstationcovers", track);
+    if (!try_tagged) {
+        on_miss();
+        return;
+    }
+    // Completions for a superseded cue are dropped by find_local_artwork_async.
+    find_local_artwork_async(track, [on_tagged, on_miss](const artwork_result& local) {
+        if (g_force_noart) return;
+        if (local.success && local.data.get_size() > 0) {
+            on_tagged(local);
+        } else {
+            on_miss();
         }
     });
 }

@@ -173,6 +173,7 @@ public:
     void update_clear_panel_timer();  // Start/stop clear panel monitoring timer based on setting
     void force_clear_artwork_bitmap();  // Force clear bitmap for "clear panel when not playing" option
     void load_noart_image();  // Load noart image for "use noart image" option
+    bool load_stream_fallback_image(metadb_handle_ptr track);  // Station logo -> station no-art -> generic no-art
     
     // Required uie::window interface
     const GUID& get_extension_guid() const override;
@@ -253,6 +254,7 @@ private:
     bool m_show_osd;
     std::string m_osd_text;
     std::string m_artwork_source; // Track the source of current artwork
+    uint64_t m_stream_fallback_generation = ~0ULL; // Cue whose station fallback is displayed
     std::string m_delayed_search_artist; // Store artist for delayed search
     std::string m_delayed_search_title; // Store title for delayed search
     DWORD m_osd_start_time;
@@ -557,6 +559,12 @@ bool CUIArtworkPanel::is_available(const uie::window_host_ptr& p_host) const {
 // Window procedure and message handling
 //=============================================================================
 
+// Station-level images are not song covers: a later miss keeps them on screen.
+static bool is_station_artwork_source(const std::string& source) {
+    return source == "Local artwork" || source == "Station logo" ||
+        source == "Station fallback (no artwork)" || source == "Generic fallback (no artwork)";
+}
+
 LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     // Store window handle for compatibility
     if (!m_hWnd) {
@@ -853,100 +861,20 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
             if (m_artwork_loaded && !m_artwork_source.empty() && m_artwork_source == "Local artwork") {
                 break;
             }
+            // This cue's station fallback is already displayed; reloading would
+            // advance no-art image cycling a second time.
+            if (m_artwork_loaded && m_stream_fallback_generation == artwork_manager::get_search_generation() &&
+                is_station_artwork_source(m_artwork_source)) {
+                break;
+            }
             
             // Now it's safe to access foobar2000 APIs and UI functions
             try {
                 static_api_ptr_t<playback_control> pc;
                 metadb_handle_ptr current_track;
-                if (pc->get_now_playing(current_track) && current_track.is_valid()) {
-                    // SAFE PATH ACCESS: Add try-catch to prevent crashes
-                    pfc::string8 path;
-                    bool is_internet_stream = false;
-                    // SAFE PATH ACCESS: Use safer helper function
-                    if (get_safe_track_path(current_track, path)) {
-                        is_internet_stream = artwork_manager::is_internet_stream_track(current_track);
-                    } else {
-                        is_internet_stream = false;
-                    }
-                    
-                    if (is_internet_stream && cfg_enable_custom_logos) {
-                        // CRASH FIX: Add safe guards before complex file operations
-                        try {
-                            // First check if track is still valid
-                            if (!current_track.is_valid()) return DefWindowProc(wnd, msg, wParam, lParam);
-                            
-                            // Try to extract domain from URL - do this safely
-                            pfc::string8 domain = extract_domain_from_stream_url(current_track);
-                            if (!domain.is_empty() && domain.length() < 256) { // Prevent overly long domains
-                            
-                                // CRASH FIX: Use safer logo loading without direct file operations in CUI
-                                // Instead of complex file path building, use the SDK functions which are already crash-protected
-                                bool fallback_loaded = false;
-                                
-                                // Priority 1: Station logo (with full path + domain fallback)
-                                if (!fallback_loaded) {
-                                    // First try direct GDI+ loading to preserve transparency
-                                    Gdiplus::Bitmap* gdi_logo = load_station_logo_gdiplus(current_track);
-                                    if (gdi_logo && gdi_logo->GetLastStatus() == Gdiplus::Ok) {
-                                        
-                                        // Set the artwork directly from GDI+ bitmap
-                                        m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(gdi_logo);
-                                        m_artwork_loaded = true;
-                                        m_artwork_source = "Station logo";
-                                        fallback_loaded = true;
-                                        InvalidateRect(get_wnd(), NULL, TRUE);
-                                    } else {
-                                        // Clean up failed GDI+ bitmap
-                                        delete gdi_logo;
-                                        
-                                        // Fallback to HBITMAP method
-                                        HBITMAP logo_bitmap = load_station_logo(current_track);
-                                        if (logo_bitmap) {
-                                            // CRASH FIX: Use WIC-based loading for CUI compatibility
-                                            if (load_custom_logo_with_wic(logo_bitmap)) {
-                                                m_artwork_loaded = true;
-                                                m_artwork_source = "Station logo";
-                                                fallback_loaded = true;
-                                            }
-                                            DeleteObject(logo_bitmap); // Always clean up the source bitmap
-                                        }
-                                    }
-                                }
-                                
-                                // Priority 2: Station-specific noart (with full URL path support)
-                                if (!fallback_loaded) {
-                                    auto noart_bitmap = load_noart_logo_gdiplus(current_track);
-                                    if (noart_bitmap && noart_bitmap->GetLastStatus() == Gdiplus::Ok) {
-                                        // Set the artwork directly from GDI+ bitmap
-                                        m_artwork_bitmap = std::move(noart_bitmap);
-                                        m_artwork_loaded = true;
-                                        m_artwork_source = "Station fallback (no artwork)";
-                                        fallback_loaded = true;
-                                    }
-                                }
-                                
-                                // Priority 3: Generic noart (with full URL path support)
-                                if (!fallback_loaded) {
-                                    auto generic_bitmap = load_generic_noart_logo_gdiplus();
-                                    if (generic_bitmap && generic_bitmap->GetLastStatus() == Gdiplus::Ok) {
-                                        // Set the artwork directly from GDI+ bitmap
-                                        m_artwork_bitmap = std::move(generic_bitmap);
-                                        m_artwork_loaded = true;
-                                        m_artwork_source = "Generic fallback (no artwork)";
-                                        fallback_loaded = true;
-                                    }
-                                }
-                                
-                                if (fallback_loaded) {
-                                    resize_artwork_to_fit();
-                                    InvalidateRect(m_hWnd, NULL, FALSE);
-                                    UpdateWindow(m_hWnd);
-                                }
-                            } // End domain check
-                        } catch (...) {
-                            // Silently handle any exceptions in custom logo loading
-                        }
-                    }
+                if (pc->get_now_playing(current_track) && current_track.is_valid() &&
+                    load_stream_fallback_image(current_track)) {
+                    m_stream_fallback_generation = artwork_manager::get_search_generation();
                 }
             } catch (...) {
                 // Silently handle any exceptions in track processing
@@ -958,11 +886,36 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         if (static_cast<LPARAM>(artwork_manager::get_search_generation()) != lParam) break;
         if (wParam == 2 && artwork_manager::get_active_source() != "None") break;
         m_last_event_bitmap = nullptr;
-        if (wParam == 2 || (wParam == 1 && artwork_manager::is_noart_forced())) {
+        if (wParam == 1 && artwork_manager::is_noart_forced()) {
             KillTimer(m_hWnd, 100);
             KillTimer(m_hWnd, 101);
             m_artwork_source.clear();
             load_noart_image();
+        } else if (wParam == 2 && !artwork_manager::is_noart_forced()) {
+            // A completed miss is not a user no-art lock: keep the station logo
+            // timer and any delayed search, which belong to the current cue.
+            static_api_ptr_t<playback_control> pc;
+            metadb_handle_ptr current_track;
+            pfc::string8 path;
+            if (pc->get_now_playing(current_track) && current_track.is_valid() &&
+                get_safe_track_path(current_track, path) && artwork_manager::is_internet_stream_track(current_track)) {
+                // Retire the previous song's cover, but keep station artwork already on
+                // screen (tagged artwork or a logo loaded by the failure fallback).
+                m_stream_fallback_generation = artwork_manager::get_search_generation();
+                if (m_artwork_loaded && is_station_artwork_source(m_artwork_source)) break;
+                m_artwork_source.clear();
+                force_clear_artwork_bitmap();
+                bool fallback_loaded = false;
+                try {
+                    fallback_loaded = load_stream_fallback_image(current_track);
+                } catch (...) {
+                    // Silently handle any exceptions in custom logo loading
+                }
+                if (!fallback_loaded) load_noart_image();
+            } else {
+                m_artwork_source.clear();
+                load_noart_image();
+            }
         }
         break;
 
@@ -1489,6 +1442,83 @@ void CUIArtworkPanel::force_clear_artwork_bitmap() {
     if (m_hWnd) {
         InvalidateRect(m_hWnd, NULL, TRUE);
     }
+}
+
+// Fallback images for internet streams after a failed search.
+bool CUIArtworkPanel::load_stream_fallback_image(metadb_handle_ptr current_track) {
+    if (!current_track.is_valid() || !cfg_enable_custom_logos) return false;
+    pfc::string8 path;
+    // SAFE PATH ACCESS: Use safer helper function
+    if (!get_safe_track_path(current_track, path) || !artwork_manager::is_internet_stream_track(current_track)) return false;
+
+    // Try to extract domain from URL - do this safely
+    pfc::string8 domain = extract_domain_from_stream_url(current_track);
+    if (domain.is_empty() || domain.length() >= 256) return false; // Prevent overly long domains
+
+    // CRASH FIX: Use safer logo loading without direct file operations in CUI
+    // Instead of complex file path building, use the SDK functions which are already crash-protected
+    bool fallback_loaded = false;
+    
+    // Priority 1: Station logo (with full path + domain fallback)
+    if (!fallback_loaded) {
+        // First try direct GDI+ loading to preserve transparency
+        Gdiplus::Bitmap* gdi_logo = load_station_logo_gdiplus(current_track);
+        if (gdi_logo && gdi_logo->GetLastStatus() == Gdiplus::Ok) {
+        
+            // Set the artwork directly from GDI+ bitmap
+            m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(gdi_logo);
+            m_artwork_loaded = true;
+            m_artwork_source = "Station logo";
+            fallback_loaded = true;
+            InvalidateRect(get_wnd(), NULL, TRUE);
+        } else {
+            // Clean up failed GDI+ bitmap
+            delete gdi_logo;
+        
+            // Fallback to HBITMAP method
+            HBITMAP logo_bitmap = load_station_logo(current_track);
+            if (logo_bitmap) {
+                // CRASH FIX: Use WIC-based loading for CUI compatibility
+                if (load_custom_logo_with_wic(logo_bitmap)) {
+                    m_artwork_loaded = true;
+                    m_artwork_source = "Station logo";
+                    fallback_loaded = true;
+                }
+                DeleteObject(logo_bitmap); // Always clean up the source bitmap
+            }
+        }
+    }
+    
+    // Priority 2: Station-specific noart (with full URL path support)
+    if (!fallback_loaded) {
+        auto noart_bitmap = load_noart_logo_gdiplus(current_track);
+        if (noart_bitmap && noart_bitmap->GetLastStatus() == Gdiplus::Ok) {
+            // Set the artwork directly from GDI+ bitmap
+            m_artwork_bitmap = std::move(noart_bitmap);
+            m_artwork_loaded = true;
+            m_artwork_source = "Station fallback (no artwork)";
+            fallback_loaded = true;
+        }
+    }
+    
+    // Priority 3: Generic noart (with full URL path support)
+    if (!fallback_loaded) {
+        auto generic_bitmap = load_generic_noart_logo_gdiplus();
+        if (generic_bitmap && generic_bitmap->GetLastStatus() == Gdiplus::Ok) {
+            // Set the artwork directly from GDI+ bitmap
+            m_artwork_bitmap = std::move(generic_bitmap);
+            m_artwork_loaded = true;
+            m_artwork_source = "Generic fallback (no artwork)";
+            fallback_loaded = true;
+        }
+    }
+    
+    if (fallback_loaded) {
+        resize_artwork_to_fit();
+        InvalidateRect(m_hWnd, NULL, FALSE);
+        UpdateWindow(m_hWnd);
+    }
+    return fallback_loaded;
 }
 
 // Load noart image for "use noart image" option

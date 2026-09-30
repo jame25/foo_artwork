@@ -102,6 +102,7 @@ private:
     static void search_local_async(const pfc::string8& file_path, const pfc::string8& cache_key, metadb_handle_ptr track, artwork_callback callback);
     static void search_apis_async(const pfc::string8& artist, const pfc::string8& album, const pfc::string8& cache_key, artwork_callback callback);
     static bool try_automatic_acrcloud_fallback(const pfc::string8& cache_key, artwork_callback callback);
+    static void resolve_stream_artwork_miss(metadb_handle_ptr track, artwork_callback on_tagged, std::function<void()> on_miss);
     static void start_initial_stream_metadata_monitor(const pfc::string8& stream_url);
     static void search_apis_by_priority(const pfc::string8& artist, const pfc::string8& track, const pfc::string8& cache_key, artwork_callback callback, const std::vector<ApiType>& api_order, size_t index, bool force_enable_apis = false, uint64_t recognition_task_id = 0);
     
