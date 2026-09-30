@@ -4281,9 +4281,12 @@ bool artwork_manager::try_automatic_acrcloud_fallback(const pfc::string8& cache_
     // negative offsets. Local playback also needs no extra settling interval.
     const bool has_coversync = !get_url_param_value(track->get_path(), "coversync", track).is_empty();
     if (is_radio && !has_coversync) {
-        titleformat_provider::set_status("ACRCloud: Waiting 6 seconds for radio audio...");
+        static constexpr int radio_settle_seconds = 16;
+        pfc::string8 status;
+        status << "ACRCloud: Waiting " << radio_settle_seconds << " seconds for radio audio...";
+        titleformat_provider::set_status(status.c_str());
         async_io_manager::instance().submit_task([request, listen]() {
-            for (int seconds = 0; seconds < 6; ++seconds) {
+            for (int seconds = 0; seconds < radio_settle_seconds; ++seconds) {
                 if (g_is_shutting_down.load() || request->generation != g_search_generation.load() ||
                     request->task_id != g_acrcloud_task_id.load()) return;
                 std::this_thread::sleep_for(std::chrono::seconds(1));
