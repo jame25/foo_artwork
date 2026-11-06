@@ -406,7 +406,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.8.0",
+    "1.8.1",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -423,7 +423,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.8.0",
+    "1.8.1",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -841,6 +841,174 @@ pfc::string8 extract_station_name_from_metadata(metadb_handle_ptr track) {
     return "";
 }
 
+// Helper function to convert a GDI+ Bitmap into a 32-bit top-down DIB HBITMAP while preserving straight alpha
+HBITMAP create_hbitmap_from_gdiplus_bitmap(Gdiplus::Bitmap* bitmap) {
+    if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
+        return nullptr;
+    }
+
+    UINT width = bitmap->GetWidth();
+    UINT height = bitmap->GetHeight();
+    if (width == 0 || height == 0 || width > 16384 || height > 16384) {
+        return nullptr;
+    }
+
+    HBITMAP gdi_bitmap = nullptr;
+    HDC screen_dc = GetDC(NULL);
+    if (screen_dc) {
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = (LONG)width;
+        bmi.bmiHeader.biHeight = -(LONG)height; // Top-down DIB
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void* pixel_data = nullptr;
+        gdi_bitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &pixel_data, NULL, 0);
+        ReleaseDC(NULL, screen_dc);
+
+        if (gdi_bitmap && pixel_data) {
+            Gdiplus::Rect rect(0, 0, (INT)width, (INT)height);
+            Gdiplus::BitmapData bitmapData = {};
+            int dst_stride = (int)width * 4;
+            bool copied = false;
+
+            if (bitmap->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bitmapData) == Gdiplus::Ok) {
+                const BYTE* src = static_cast<const BYTE*>(bitmapData.Scan0);
+                BYTE* dst = static_cast<BYTE*>(pixel_data);
+                for (UINT y = 0; y < height; y++) {
+                    memcpy(dst + (size_t)y * dst_stride, src + (ptrdiff_t)y * bitmapData.Stride, (size_t)width * 4);
+                }
+                bitmap->UnlockBits(&bitmapData);
+                copied = true;
+            } else {
+                // Fallback for indexed/16bpc formats where direct LockBits conversion to 32bppARGB may fail
+                Gdiplus::Bitmap converted(width, height, PixelFormat32bppARGB);
+                if (converted.GetLastStatus() == Gdiplus::Ok) {
+                    Gdiplus::Graphics g(&converted);
+                    g.Clear(Gdiplus::Color(0, 0, 0, 0));
+                    g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+                    g.DrawImage(bitmap, Gdiplus::Rect(0, 0, (INT)width, (INT)height));
+                    if (converted.LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bitmapData) == Gdiplus::Ok) {
+                        const BYTE* src = static_cast<const BYTE*>(bitmapData.Scan0);
+                        BYTE* dst = static_cast<BYTE*>(pixel_data);
+                        for (UINT y = 0; y < height; y++) {
+                            memcpy(dst + (size_t)y * dst_stride, src + (ptrdiff_t)y * bitmapData.Stride, (size_t)width * 4);
+                        }
+                        converted.UnlockBits(&bitmapData);
+                        copied = true;
+                    }
+                }
+            }
+
+            if (copied) {
+                return gdi_bitmap;
+            }
+
+            DeleteObject(gdi_bitmap);
+            gdi_bitmap = nullptr;
+        }
+    }
+
+    if (bitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &gdi_bitmap) != Gdiplus::Ok) {
+        gdi_bitmap = nullptr;
+    }
+    return gdi_bitmap;
+}
+
+// Helper function to convert an HBITMAP into a GDI+ Bitmap while preserving 32-bit alpha channel
+// (Gdiplus::Bitmap::FromHBITMAP ignores the alpha byte and produces an opaque PixelFormat32bppRGB bitmap)
+Gdiplus::Bitmap* create_gdiplus_bitmap_from_hbitmap(HBITMAP source_bitmap) {
+    if (!source_bitmap) {
+        return nullptr;
+    }
+
+    try {
+        BITMAP bmp_info = {};
+        if (!GetObject(source_bitmap, sizeof(BITMAP), &bmp_info)) {
+            return nullptr;
+        }
+
+        if (bmp_info.bmWidth <= 0 || bmp_info.bmHeight == 0 ||
+            bmp_info.bmWidth > 16384 || std::abs(bmp_info.bmHeight) > 16384) {
+            return nullptr;
+        }
+
+        UINT width = (UINT)bmp_info.bmWidth;
+        UINT height = (UINT)std::abs(bmp_info.bmHeight);
+
+        if (bmp_info.bmBitsPixel == 32) {
+            std::vector<BYTE> pixels((size_t)width * height * 4);
+            bool got_pixels = false;
+
+            HDC screen_dc = GetDC(NULL);
+            if (screen_dc) {
+                BITMAPINFO bmi = {};
+                bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                bmi.bmiHeader.biWidth = (LONG)width;
+                bmi.bmiHeader.biHeight = -(LONG)height; // Request top-down rows
+                bmi.bmiHeader.biPlanes = 1;
+                bmi.bmiHeader.biBitCount = 32;
+                bmi.bmiHeader.biCompression = BI_RGB;
+
+                if (GetDIBits(screen_dc, source_bitmap, 0, height, pixels.data(), &bmi, DIB_RGB_COLORS) > 0) {
+                    got_pixels = true;
+                }
+                ReleaseDC(NULL, screen_dc);
+            }
+
+            if (!got_pixels && bmp_info.bmBits) {
+                const BYTE* src = static_cast<const BYTE*>(bmp_info.bmBits);
+                int src_stride = bmp_info.bmWidthBytes > 0 ? bmp_info.bmWidthBytes : (int)(width * 4);
+                for (UINT y = 0; y < height; y++) {
+                    memcpy(pixels.data() + (size_t)y * width * 4, src + (size_t)y * src_stride, (size_t)width * 4);
+                }
+                got_pixels = true;
+            }
+
+            if (got_pixels) {
+                bool any_alpha_nonzero = false;
+                bool any_rgb_nonzero = false;
+                const size_t total_bytes = pixels.size();
+                for (size_t i = 0; i + 3 < total_bytes; i += 4) {
+                    if (pixels[i + 3] != 0) {
+                        any_alpha_nonzero = true;
+                        break;
+                    }
+                    if (pixels[i] != 0 || pixels[i + 1] != 0 || pixels[i + 2] != 0) {
+                        any_rgb_nonzero = true;
+                    }
+                }
+
+                // Preserve alpha channel unless this is a legacy 32-bit RGB bitmap with 0 in all alpha bytes
+                Gdiplus::PixelFormat dst_format = (any_alpha_nonzero || !any_rgb_nonzero)
+                    ? PixelFormat32bppARGB
+                    : PixelFormat32bppRGB;
+
+                Gdiplus::Bitmap* result = new Gdiplus::Bitmap(width, height, dst_format);
+                if (result && result->GetLastStatus() == Gdiplus::Ok) {
+                    Gdiplus::Rect rect(0, 0, (INT)width, (INT)height);
+                    Gdiplus::BitmapData bmpData = {};
+                    if (result->LockBits(&rect, Gdiplus::ImageLockModeWrite, dst_format, &bmpData) == Gdiplus::Ok) {
+                        BYTE* dst = static_cast<BYTE*>(bmpData.Scan0);
+                        for (UINT y = 0; y < height; y++) {
+                            memcpy(dst + (ptrdiff_t)y * bmpData.Stride, pixels.data() + (size_t)y * width * 4, (size_t)width * 4);
+                        }
+                        result->UnlockBits(&bmpData);
+                        return result;
+                    }
+                }
+                delete result;
+            }
+        }
+
+        return Gdiplus::Bitmap::FromHBITMAP(source_bitmap, NULL);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 // CRASH FIX: Helper function to safely create GDI+ bitmap from file
 HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
     
@@ -864,63 +1032,8 @@ HBITMAP safe_load_gdiplus_bitmap(const std::wstring& wide_path) {
                             UINT width = bitmap->GetWidth();
                             UINT height = bitmap->GetHeight();
                             if (width > 0 && height > 0 && width <= 4096 && height <= 4096) {
-                                // Debug: Check GDI+ bitmap pixel format before conversion
-                                Gdiplus::PixelFormat format = bitmap->GetPixelFormat();
-                                
-                                HBITMAP gdi_bitmap = nullptr;
-                                
-                                // Use alpha-preserving method for 32-bit ARGB images
-                                if (format == PixelFormat32bppARGB) {
-                                    // Create DIB section that preserves alpha channel
-                                    HDC screen_dc = GetDC(NULL);
-                                    if (screen_dc) {
-                                        BITMAPINFO bmi = {};
-                                        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-                                        bmi.bmiHeader.biWidth = width;
-                                        bmi.bmiHeader.biHeight = -(LONG)height; // Top-down DIB
-                                        bmi.bmiHeader.biPlanes = 1;
-                                        bmi.bmiHeader.biBitCount = 32;
-                                        bmi.bmiHeader.biCompression = BI_RGB;
-                                        
-                                        void* pixel_data = nullptr;
-                                        gdi_bitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &pixel_data, NULL, 0);
-                                        
-                                        if (gdi_bitmap && pixel_data) {
-                                            // Lock bitmap bits and copy with alpha preservation
-                                            Gdiplus::Rect rect(0, 0, width, height);
-                                            Gdiplus::BitmapData bitmapData;
-                                            if (bitmap->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bitmapData) == Gdiplus::Ok) {
-                                                // Calculate stride for DIB section
-                                                int stride = ((width * 32 + 31) / 32) * 4;
-                                                
-                                                // Copy pixel data row by row to preserve alpha
-                                                BYTE* src = (BYTE*)bitmapData.Scan0;
-                                                BYTE* dst = (BYTE*)pixel_data;
-                                                for (UINT y = 0; y < height; y++) {
-                                                    memcpy(dst + y * stride, src + y * bitmapData.Stride, width * 4);
-                                                }
-                                                
-                                                bitmap->UnlockBits(&bitmapData);
-                                                
-                                            } else {
-                                                DeleteObject(gdi_bitmap);
-                                                gdi_bitmap = nullptr;
-                                            }
-                                        }
-                                        ReleaseDC(NULL, screen_dc);
-                                    }
-                                } else {
-                                    // Use standard method for non-alpha images
-                                    Gdiplus::Status status = bitmap->GetHBITMAP(NULL, &gdi_bitmap);
-                                    if (status != Gdiplus::Ok) {
-                                        gdi_bitmap = nullptr;
-                                    }
-                                }
-                                
+                                HBITMAP gdi_bitmap = create_hbitmap_from_gdiplus_bitmap(bitmap);
                                 if (gdi_bitmap) {
-                                    // Debug: Check resulting HBITMAP
-                                    BITMAP bm;
-                                    GetObject(gdi_bitmap, sizeof(BITMAP), &bm);
                                     delete bitmap;
                                     return gdi_bitmap;
                                 }
@@ -1159,21 +1272,28 @@ Gdiplus::Bitmap* load_station_logo_gdiplus(metadb_handle_ptr track) {
         return nullptr;
     }
     
-    // Get the directory path (using same logic as existing functions)
-    pfc::string8 profile_url = core_api::get_profile_path();
-    pfc::string8 profile_path;
-    if (profile_url.startsWith("file://")) {
-        profile_path = profile_url.c_str() + 7; // Skip "file://"
-        for (size_t i = 0; i < profile_path.length(); i++) {
-            if (profile_path[i] == '/') {
-                profile_path.set_char(i, '\\');
-            }
+    // Get the directory path (respecting cfg_logos_folder if configured)
+    pfc::string8 logos_dir;
+    if (!cfg_logos_folder.is_empty()) {
+        logos_dir = cfg_logos_folder.get_ptr();
+        if (!logos_dir.is_empty() && logos_dir[logos_dir.length() - 1] != '\\' && logos_dir[logos_dir.length() - 1] != '/') {
+            logos_dir += "\\";
         }
     } else {
-        profile_path = profile_url;
+        pfc::string8 profile_url = core_api::get_profile_path();
+        pfc::string8 profile_path;
+        if (profile_url.startsWith("file://")) {
+            profile_path = profile_url.c_str() + 7; // Skip "file://"
+            for (size_t i = 0; i < profile_path.length(); i++) {
+                if (profile_path[i] == '/') {
+                    profile_path.set_char(i, '\\');
+                }
+            }
+        } else {
+            profile_path = profile_url;
+        }
+        logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
     }
-    
-    pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
     
     try {
         // Get stream URL or path
@@ -1248,21 +1368,28 @@ std::unique_ptr<Gdiplus::Bitmap> load_noart_logo_gdiplus(metadb_handle_ptr track
     
     if (!track.is_valid()) return nullptr;
     
-    // Get the directory path (using same logic as existing functions)
-    pfc::string8 profile_url = core_api::get_profile_path();
-    pfc::string8 profile_path;
-    if (profile_url.startsWith("file://")) {
-        profile_path = profile_url.c_str() + 7; // Skip "file://"
-        for (size_t i = 0; i < profile_path.length(); i++) {
-            if (profile_path[i] == '/') {
-                profile_path.set_char(i, '\\');
-            }
+    // Get the directory path (respecting cfg_logos_folder if configured)
+    pfc::string8 logos_dir;
+    if (!cfg_logos_folder.is_empty()) {
+        logos_dir = cfg_logos_folder.get_ptr();
+        if (!logos_dir.is_empty() && logos_dir[logos_dir.length() - 1] != '\\' && logos_dir[logos_dir.length() - 1] != '/') {
+            logos_dir += "\\";
         }
     } else {
-        profile_path = profile_url;
+        pfc::string8 profile_url = core_api::get_profile_path();
+        pfc::string8 profile_path;
+        if (profile_url.startsWith("file://")) {
+            profile_path = profile_url.c_str() + 7; // Skip "file://"
+            for (size_t i = 0; i < profile_path.length(); i++) {
+                if (profile_path[i] == '/') {
+                    profile_path.set_char(i, '\\');
+                }
+            }
+        } else {
+            profile_path = profile_url;
+        }
+        logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
     }
-    
-    pfc::string8 logos_dir = profile_path + "\\foo_artwork_data\\logos\\";
     
     try {
         // Extract domain and full path using existing functions
@@ -1651,9 +1778,7 @@ HBITMAP load_generic_noart_logo() {
     try {
         auto gdiplus_bitmap = load_generic_noart_logo_gdiplus();
         if (gdiplus_bitmap && gdiplus_bitmap->GetLastStatus() == Gdiplus::Ok) {
-            HBITMAP hBmp = NULL;
-            gdiplus_bitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBmp);
-            return hBmp;
+            return create_hbitmap_from_gdiplus_bitmap(gdiplus_bitmap.get());
         }
     } catch (...) {
         // Silently fail - this is just a fallback feature
@@ -7898,8 +8023,8 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
         if (is_webp_signature(data.data(), data.size())) {
             Gdiplus::Bitmap* webp_bitmap = decode_webp_via_wic(data.data(), data.size());
             if (webp_bitmap) {
-                HBITMAP hBitmap = nullptr;
-                if (webp_bitmap->GetHBITMAP(NULL, &hBitmap) == Gdiplus::Ok && hBitmap) {
+                HBITMAP hBitmap = create_hbitmap_from_gdiplus_bitmap(webp_bitmap);
+                if (hBitmap) {
                     delete webp_bitmap;
                     if (::g_shared_artwork_bitmap) {
                         DeleteObject(::g_shared_artwork_bitmap);
@@ -7971,9 +8096,9 @@ bool create_bitmap_from_image_data(const std::vector<BYTE>& data) {
 #ifdef _DEBUG
 #endif
 
-        // Convert to HBITMAP and store in shared bitmap
-        HBITMAP hBitmap = nullptr;
-        if (bitmap->GetHBITMAP(NULL, &hBitmap) == Gdiplus::Ok && hBitmap) {
+        // Convert to HBITMAP (preserving alpha channel) and store in shared bitmap
+        HBITMAP hBitmap = create_hbitmap_from_gdiplus_bitmap(bitmap);
+        if (hBitmap) {
             // Clean up old shared bitmap
             if (g_shared_artwork_bitmap) {
                 DeleteObject(g_shared_artwork_bitmap);

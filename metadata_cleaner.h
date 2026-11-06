@@ -71,6 +71,8 @@ public:
     static std::vector<std::string> get_active_blacklist_tokens();
     
 private:
+    static StreamMetadataResult sanitize_stream_metadata_uncached(const char* raw_artist, const char* raw_title, bool is_youtube, bool known_track_metadata);
+
     // Core cleaning operations - UTF-8 safe
     static std::string remove_timestamps(const std::string& str);
     static std::string remove_parenthetical_content(const std::string& str, bool preserve_cyrillic = true);

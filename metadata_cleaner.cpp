@@ -3,6 +3,7 @@
 #include "preferences.h"
 #include <algorithm>
 #include <cctype>
+#include <mutex>
 
 // Locale-independent ASCII case conversion helpers
 // Operates exclusively on ASCII characters [A-Za-z] to protect multi-byte UTF-8 sequences
@@ -744,7 +745,7 @@ std::string MetadataCleaner::normalize_whitespace(const std::string& str) {
 bool MetadataCleaner::contains_cyrillic(const std::string& str) {
     // Check for Cyrillic Unicode range (U+0400 to U+052F)
     // In UTF-8, this is encoded as 0xD0 0x80 to 0xD4 0xAF
-    for (size_t i = 0; i < str.length() - 1; ++i) {
+    for (size_t i = 0; i + 1 < str.length(); ++i) {
         unsigned char byte1 = static_cast<unsigned char>(str[i]);
         unsigned char byte2 = static_cast<unsigned char>(str[i + 1]);
         
@@ -1298,6 +1299,44 @@ bool MetadataCleaner::try_split_multipart_title(const std::string& title, const 
 }
 
 StreamMetadataResult MetadataCleaner::sanitize_stream_metadata(const char* raw_artist, const char* raw_title, bool is_youtube, bool known_track_metadata) {
+    // Stream technical-info updates (bitrate etc.) repeat the current cue to every
+    // playback callback, several times a second for m-TAGS radio. Reuse recent
+    // results: cleaning rebuilds about 130 blacklist regexes and would block the
+    // main thread. The key covers every input, including the blacklist and options.
+    struct cached_cue {
+        std::string artist, title, blacklist;
+        bool is_youtube, known_track_metadata, trim_secondary_artists;
+        StreamMetadataResult result;
+    };
+    static std::mutex cache_mutex;
+    static std::vector<cached_cue> cache;
+
+    cached_cue cue;
+    cue.artist = raw_artist ? raw_artist : "";
+    cue.title = raw_title ? raw_title : "";
+    cue.blacklist = get_custom_blacklist_active_content().c_str();
+    cue.is_youtube = is_youtube;
+    cue.known_track_metadata = known_track_metadata;
+    cue.trim_secondary_artists = cfg_trim_secondary_artists;
+    auto same_cue = [&cue](const cached_cue& entry) {
+        return entry.artist == cue.artist && entry.title == cue.title && entry.blacklist == cue.blacklist &&
+            entry.is_youtube == cue.is_youtube && entry.known_track_metadata == cue.known_track_metadata &&
+            entry.trim_secondary_artists == cue.trim_secondary_artists;
+    };
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        auto hit = std::find_if(cache.begin(), cache.end(), same_cue);
+        if (hit != cache.end()) return hit->result;
+    }
+
+    cue.result = sanitize_stream_metadata_uncached(cue.artist.c_str(), cue.title.c_str(), is_youtube, known_track_metadata);
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    if (cache.size() >= 8) cache.erase(cache.begin());
+    cache.push_back(cue);
+    return cue.result;
+}
+
+StreamMetadataResult MetadataCleaner::sanitize_stream_metadata_uncached(const char* raw_artist, const char* raw_title, bool is_youtube, bool known_track_metadata) {
     StreamMetadataResult res;
     res.raw_artist = raw_artist ? raw_artist : "";
     res.raw_title = raw_title ? raw_title : "";

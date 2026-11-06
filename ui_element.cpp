@@ -41,6 +41,7 @@ extern void trigger_main_component_local_search(metadb_handle_ptr track);
 
 // External function to get main component artwork bitmap (for priority checking)
 extern HBITMAP get_main_component_artwork_bitmap();
+extern Gdiplus::Bitmap* create_gdiplus_bitmap_from_hbitmap(HBITMAP source_bitmap);
 
 // Global list to track DUI artwork element instances for external refresh
 static pfc::list_t<class artwork_ui_element*> g_dui_artwork_panels;
@@ -1298,7 +1299,7 @@ void artwork_ui_element::on_artwork_loaded(const artwork_manager::artwork_result
                     HBITMAP logo_bitmap = load_station_logo(m_current_track);
                     if (logo_bitmap) {
                         try {
-                            m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
+                            m_artwork_image = create_gdiplus_bitmap_from_hbitmap(logo_bitmap);
                             if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
                                 m_artwork_loading = false;
                                 m_artwork_source = "Station logo";
@@ -1417,7 +1418,9 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
     bool has_alpha = false;
     if (m_artwork_image) {
         Gdiplus::PixelFormat format = m_artwork_image->GetPixelFormat();
-        has_alpha = (format == PixelFormat32bppARGB);
+        UINT img_flags = m_artwork_image->GetFlags();
+        has_alpha = Gdiplus::IsAlphaPixelFormat(format) ||
+                    ((img_flags & Gdiplus::ImageFlagsHasAlpha) != 0);
     }
     
     // Fill background (simpler approach)
@@ -1426,11 +1429,7 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
     DeleteObject(bg_brush);
     
     if (m_artwork_image) {
-        // Check if we have alpha channel
-        Gdiplus::PixelFormat format = m_artwork_image->GetPixelFormat();
-        bool has_alpha = (format == PixelFormat32bppARGB);
-        
-        if (has_alpha) {
+        if (has_alpha && !cfg_infobar) {
             // First, fill the background with the proper theme color
             HBRUSH bg_brush = CreateSolidBrush(bg_color);
             FillRect(hdc, &rect, bg_brush);
@@ -1480,10 +1479,12 @@ void artwork_ui_element::draw_artwork(HDC hdc, const RECT& rect) {
             DeleteDC(mem_dc);
             return;
         } else {
-            // For non-transparent images, use memory DC as before
+            // For non-transparent images (or when infobar is enabled), use memory DC with alpha compositing
             Gdiplus::Graphics graphics(mem_dc);
             graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
             graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+            graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
 
             
             // Calculate aspect ratio preserving rectangle
@@ -2155,7 +2156,7 @@ bool artwork_ui_element::load_stream_fallback_image() {
                 HBITMAP logo_bitmap = load_station_logo(m_current_track);
                 if (logo_bitmap) {
                     try {
-                        m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(logo_bitmap, NULL);
+                        m_artwork_image = create_gdiplus_bitmap_from_hbitmap(logo_bitmap);
                         if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
                             m_artwork_loading = false;
                             m_artwork_source = "Station logo";
@@ -2251,7 +2252,7 @@ LRESULT artwork_ui_element::OnArtworkEvent(UINT uMsg, WPARAM wParam, LPARAM lPar
                 GetObject(event->bitmap, sizeof(BITMAP), &bm);
 
                 try {
-                    m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(event->bitmap, NULL);
+                    m_artwork_image = create_gdiplus_bitmap_from_hbitmap(event->bitmap);
 
                     if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
                         m_artwork_source = event->source;
@@ -2352,7 +2353,7 @@ bool artwork_ui_element::load_local_artwork_from_main_component() {
     cleanup_gdiplus_image();
     
     try {
-        m_artwork_image = Gdiplus::Bitmap::FromHBITMAP(main_bitmap, NULL);
+        m_artwork_image = create_gdiplus_bitmap_from_hbitmap(main_bitmap);
         
         if (m_artwork_image && m_artwork_image->GetLastStatus() == Gdiplus::Ok) {
             m_artwork_loading = false;

@@ -86,6 +86,7 @@ extern cfg_bool cfg_use_noart_image;
 
 // Access to main component's artwork bitmap
 extern HBITMAP get_main_component_artwork_bitmap();
+extern Gdiplus::Bitmap* create_gdiplus_bitmap_from_hbitmap(HBITMAP source_bitmap);
 
 // Shared bitmap from standalone search
 extern HBITMAP g_shared_artwork_bitmap;
@@ -1306,8 +1307,14 @@ void CUIArtworkPanel::load_artwork_from_data(album_art_data::ptr data) {
         if (is_webp_signature((const unsigned char*)artwork_data, artwork_size)) {
             Gdiplus::Bitmap* webp_bitmap = decode_webp_via_wic((const unsigned char*)artwork_data, artwork_size);
             if (webp_bitmap) {
+                if (m_artwork_stream) {
+                    m_artwork_stream->Release();
+                    m_artwork_stream = nullptr;
+                }
                 m_artwork_bitmap = std::unique_ptr<Gdiplus::Bitmap>(webp_bitmap);
                 m_artwork_loaded = true;
+                m_current_artwork_source = "Local file";
+                resize_artwork_to_fit();
                 return;
             }
             return; // WebP detected but decoding failed
@@ -1954,10 +1961,13 @@ void CUIArtworkPanel::resize_artwork_to_fit() {
             m_scaled_gdi_bitmap = NULL;
         }
         
-        // Create temporary GDI+ scaled bitmap for conversion
-        auto temp_scaled = std::make_unique<Gdiplus::Bitmap>(new_width, new_height);
+        // Create temporary GDI+ scaled bitmap for conversion (explicit 32bpp ARGB to preserve transparency)
+        auto temp_scaled = std::make_unique<Gdiplus::Bitmap>(new_width, new_height, PixelFormat32bppARGB);
         if (temp_scaled && temp_scaled->GetLastStatus() == Gdiplus::Ok) {
             Gdiplus::Graphics g(temp_scaled.get());
+            g.Clear(Gdiplus::Color(0, 0, 0, 0));
+            g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+            g.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
             g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
             g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
             g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
@@ -1971,9 +1981,8 @@ void CUIArtworkPanel::resize_artwork_to_fit() {
             g.DrawImage(m_artwork_bitmap.get(), dest_rect, 0, 0, img_width, img_height, 
                        Gdiplus::UnitPixel, &img_attr);
             
-            // Convert to GDI HBITMAP - preserve alpha channel for transparency
-            // Don't pass background color to preserve 32-bit ARGB format with alpha channel
-            if (temp_scaled->GetHBITMAP(NULL, &m_scaled_gdi_bitmap) != Gdiplus::Ok) {
+            // Convert to GDI HBITMAP - preserve premultiplied alpha channel for AlphaBlend(AC_SRC_ALPHA)
+            if (temp_scaled->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &m_scaled_gdi_bitmap) != Gdiplus::Ok) {
                 m_scaled_gdi_bitmap = NULL;
             }
         }
@@ -2137,93 +2146,20 @@ bool CUIArtworkPanel::copy_bitmap_from_main_component(HBITMAP source_bitmap) {
     if (!source_bitmap) return false;
     
     try {
-        // CRASH FIX: Safer HBITMAP to GDI+ Bitmap conversion
-        // Get bitmap info first to validate format
-        BITMAP bmp_info;
-        if (!GetObject(source_bitmap, sizeof(BITMAP), &bmp_info)) {
-            return false;
-        }
-        
-        // Only proceed if bitmap has valid dimensions and depth
-        if (bmp_info.bmWidth > 0 && bmp_info.bmHeight > 0 && 
-            bmp_info.bmBitsPixel >= 1 && bmp_info.bmBitsPixel <= 32) {
-            
-            // Create compatible DC and copy bitmap data safely
-            HDC screen_dc = GetDC(NULL);
-            if (screen_dc) {
-                HDC mem_dc = CreateCompatibleDC(screen_dc);
-                if (mem_dc) {
-                    HBITMAP old_bmp = (HBITMAP)SelectObject(mem_dc, source_bitmap);
-                    
-                    // Create 32-bit ARGB bitmap to preserve transparency
-                    BITMAPINFO bmi = {};
-                    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-                    bmi.bmiHeader.biWidth = bmp_info.bmWidth;
-                    bmi.bmiHeader.biHeight = -bmp_info.bmHeight; // Top-down DIB
-                    bmi.bmiHeader.biPlanes = 1;
-                    bmi.bmiHeader.biBitCount = 32; // Use 32-bit to preserve alpha channel
-                    bmi.bmiHeader.biCompression = BI_RGB;
-                    
-                    void* pixel_data = nullptr;
-                    HBITMAP compatible_bitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &pixel_data, NULL, 0);
-                    if (compatible_bitmap && pixel_data) {
-                        HDC compatible_dc = CreateCompatibleDC(screen_dc);
-                        if (compatible_dc) {
-                            HBITMAP old_compatible_bmp = (HBITMAP)SelectObject(compatible_dc, compatible_bitmap);
-                            
-                            // Copy original bitmap to compatible format, preserving alpha if present
-                            bool copy_success = false;
-                            if (bmp_info.bmBitsPixel == 32) {
-                                // Use AlphaBlend for 32-bit bitmaps to preserve alpha channel
-                                BLENDFUNCTION blend = {};
-                                blend.BlendOp = AC_SRC_OVER;
-                                blend.BlendFlags = 0;
-                                blend.SourceConstantAlpha = 255; // Use per-pixel alpha
-                                blend.AlphaFormat = AC_SRC_ALPHA;
-                                
-                                copy_success = AlphaBlend(compatible_dc, 0, 0, bmp_info.bmWidth, bmp_info.bmHeight,
-                                                        mem_dc, 0, 0, bmp_info.bmWidth, bmp_info.bmHeight, blend);
-                            } else {
-                                // Use BitBlt for non-alpha bitmaps
-                                copy_success = BitBlt(compatible_dc, 0, 0, bmp_info.bmWidth, bmp_info.bmHeight, mem_dc, 0, 0, SRCCOPY);
-                            }
-                            
-                            if (copy_success) {
-                                
-                                // Create GDI+ bitmap using safer method
-                                std::unique_ptr<Gdiplus::Bitmap> new_bitmap = std::make_unique<Gdiplus::Bitmap>(compatible_bitmap, nullptr);
-                                
-                                if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
-                                    m_artwork_bitmap = std::move(new_bitmap);
-                                    m_artwork_loaded = true;
-                                    m_current_artwork_source = "Main component";
-                                    
-                                    // Resize to fit window
-                                    resize_artwork_to_fit();
-                                    
-                                    // Clean up and return success
-                                    SelectObject(compatible_dc, old_compatible_bmp);
-                                    DeleteDC(compatible_dc);
-                                    DeleteObject(compatible_bitmap);
-                                    SelectObject(mem_dc, old_bmp);
-                                    DeleteDC(mem_dc);
-                                    ReleaseDC(NULL, screen_dc);
-                                    
-                                    return true;
-                                }
-                            }
-                            
-                            SelectObject(compatible_dc, old_compatible_bmp);
-                            DeleteDC(compatible_dc);
-                        }
-                        DeleteObject(compatible_bitmap);
-                    }
-                    
-                    SelectObject(mem_dc, old_bmp);
-                    DeleteDC(mem_dc);
-                }
-                ReleaseDC(NULL, screen_dc);
+        // Convert HBITMAP to GDI+ Bitmap while preserving 32-bit alpha channel
+        std::unique_ptr<Gdiplus::Bitmap> new_bitmap(create_gdiplus_bitmap_from_hbitmap(source_bitmap));
+        if (new_bitmap && new_bitmap->GetLastStatus() == Gdiplus::Ok) {
+            if (m_artwork_stream) {
+                m_artwork_stream->Release();
+                m_artwork_stream = nullptr;
             }
+            m_artwork_bitmap = std::move(new_bitmap);
+            m_artwork_loaded = true;
+            m_current_artwork_source = "Main component";
+            
+            // Resize to fit window
+            resize_artwork_to_fit();
+            return true;
         }
     } catch (...) {
         // Silently handle any GDI+/bitmap conversion errors
