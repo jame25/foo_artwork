@@ -771,7 +771,7 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
     
     pfc::string8 path = track->get_path();
     
-            // Check mtag file internet streams
+            // Check mtag / utag file internet streams
         const double length = track->get_length();
         if (strstr(path.c_str(), "://")) {
             // Has protocol - check if it's a local file protocol and is mtag without duration

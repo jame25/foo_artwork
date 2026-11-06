@@ -1347,7 +1347,7 @@ bool artwork_manager::is_internet_stream_track(metadb_handle_ptr track, pfc::str
             }
         }
 
-        // 4. m-TAGS files with length <= 0 (live stream proxy without duration)
+        // 4. m-TAGS / utags files with length <= 0 (live stream proxy without duration)
         const double length = track->get_length();
         if (strstr(path.c_str(), ".tags") || strstr(path.c_str(), ".utag") && length <= 0) {
             if (out_stream_url && out_stream_url->is_empty()) {
@@ -2095,7 +2095,7 @@ void artwork_manager::probe_external_stream_api(const pfc::string8& stream_url, 
 
     std::string s = stream_url.c_str();
 
-    // If stream_url is a .tags file or file:// path, resolve underlying HTTP/HTTPS URL from @ tag if available
+    // If stream_url is a .tags file or .utag file  or file:// path, resolve underlying HTTP/HTTPS URL from @ tag if available
     if (s.find("file://") == 0 || s.rfind(".tags") != std::string::npos || s.rfind(".utag") != std::string::npos) {
         metadb_handle_ptr track = g_active_playing_track;
         if (!track.is_valid() && core_api::is_main_thread()) {
