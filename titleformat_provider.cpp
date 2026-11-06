@@ -80,7 +80,7 @@ static pfc::string8 get_static_track_cache_key(metadb_handle* handle) {
         // Untagged proxies must not use their station file name as a song key.
         if (info.meta_get("@", 0)) return "";
     }
-    if (!path || !*path || strstr(path, ".tags")) return "";
+    if (!path || !*path || strstr(path, ".tags") || strstr(path, ".utag")) return "";
     std::string local_path = path;
     if (local_path.find("file://") == 0) local_path.erase(0, 7);
     else if (local_path.find("file-relative://") == 0) local_path.erase(0, 16);

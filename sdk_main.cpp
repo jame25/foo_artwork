@@ -775,7 +775,7 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
         const double length = track->get_length();
         if (strstr(path.c_str(), "://")) {
             // Has protocol - check if it's a local file protocol and is mtag without duration
-            if ((strstr(path.c_str(), "file://") == path.c_str()) && (!strstr(path.c_str(), ".tags")) && (!length <= 0)) {
+            if ((strstr(path.c_str(), "file://") == path.c_str()) && (!strstr(path.c_str(), ".tags")) && (!strstr(path.c_str(), ".utag")) && (!length <= 0)) {
                 return "";
             }
         
