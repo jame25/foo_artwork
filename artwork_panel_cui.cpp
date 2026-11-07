@@ -987,6 +987,14 @@ LRESULT CUIArtworkPanel::on_message(HWND wnd, UINT msg, WPARAM wParam, LPARAM lP
         break;
     }
 
+    // Swallow right-click and context menu messages so the Columns UI host does not
+    // display its panel configuration menu, matching Default UI behavior.
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
+    case WM_CONTEXTMENU:
+        return 0;
+
     case WM_LBUTTONDBLCLK:
         // Open artwork viewer popup on double-click
         if (m_artwork_loaded && m_artwork_bitmap) {
