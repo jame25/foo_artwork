@@ -1347,9 +1347,9 @@ bool artwork_manager::is_internet_stream_track(metadb_handle_ptr track, pfc::str
             }
         }
 
-        // 4. m-TAGS files with length <= 0 (live stream proxy without duration)
+        // 4. m-TAGS / utag files with length <= 0 (live stream proxy without duration)
         const double length = track->get_length();
-        if (strstr(path.c_str(), ".tags") && length <= 0) {
+        if ((strstr(path.c_str(), ".tags") || strstr(path.c_str(), ".utag")) && length <= 0) {
             if (out_stream_url && out_stream_url->is_empty()) {
                 *out_stream_url = path;
             }
@@ -2095,8 +2095,8 @@ void artwork_manager::probe_external_stream_api(const pfc::string8& stream_url, 
 
     std::string s = stream_url.c_str();
 
-    // If stream_url is a .tags file or file:// path, resolve underlying HTTP/HTTPS URL from @ tag if available
-    if (s.find("file://") == 0 || s.rfind(".tags") != std::string::npos) {
+    // If stream_url is a .tags file, .utag file, or file:// path, resolve underlying HTTP/HTTPS URL from @ tag if available
+    if (s.find("file://") == 0 || s.rfind(".tags") != std::string::npos || s.rfind(".utag") != std::string::npos) {
         metadb_handle_ptr track = g_active_playing_track;
         if (!track.is_valid() && core_api::is_main_thread()) {
             playback_control::get()->get_now_playing(track);
@@ -2994,7 +2994,7 @@ static void stop_rms_silence_detector(bool force) {
 static void start_rms_silence_detector(const pfc::string8& stream_url) {
     pfc::string8 resolved_url = stream_url;
     std::string s_url = resolved_url.c_str();
-    if (s_url.find("file://") == 0 || s_url.rfind(".tags") != std::string::npos) {
+    if (s_url.find("file://") == 0 || s_url.rfind(".tags") != std::string::npos || s_url.rfind(".utag") != std::string::npos) {
         metadb_handle_ptr track = g_active_playing_track;
         if (!track.is_valid() && core_api::is_main_thread()) {
             playback_control::get()->get_now_playing(track);

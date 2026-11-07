@@ -406,7 +406,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #ifdef COLUMNS_UI_AVAILABLE
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.8.1",
+    "1.8.2",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -423,7 +423,7 @@ DECLARE_COMPONENT_VERSION(
 #else
 DECLARE_COMPONENT_VERSION(
     "Artwork Display",
-    "1.8.1",
+    "1.8.2",
     "Cover artwork display component for foobar2000.\n"
     "Features:\n"
     "- Local artwork search (Cover.jpg, folder.jpg, etc.)\n"
@@ -775,7 +775,7 @@ pfc::string8 extract_full_path_from_stream_url(metadb_handle_ptr track) {
         const double length = track->get_length();
         if (strstr(path.c_str(), "://")) {
             // Has protocol - check if it's a local file protocol and is mtag without duration
-            if ((strstr(path.c_str(), "file://") == path.c_str()) && (!strstr(path.c_str(), ".tags")) && (!length <= 0)) {
+            if ((strstr(path.c_str(), "file://") == path.c_str()) && (!(strstr(path.c_str(), ".tags") || strstr(path.c_str(), ".utag")) || length > 0)) {
                 return "";
             }
         
